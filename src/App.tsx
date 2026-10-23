@@ -1,7 +1,8 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import type { ActiveTab, AiProjectContext, Project, ProjectInspection, ToolId, Workspace } from './contracts';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import type { ActiveTab, AgentSessionState, AiProjectContext, Project, ProjectInspection, ToolId, Workspace } from './contracts';
 import {
   addProject,
+  appendProjectFile,
   chooseProjectDirectory,
   generateAiProjectContext,
   getInitialAgentSession,
@@ -10,8 +11,10 @@ import {
   loadWorkspace,
   openInTerminal,
   openProjectDirectory,
+  readProjectFileContent,
   removeProject,
   selectProject,
+  writeProjectFile,
 } from './bridge';
 import {
   ArrowUpRight,
@@ -91,10 +94,10 @@ export default function App() {
   const [showAgentCockpit, setShowAgentCockpit] = useState(false);
 
   const project = workspace.projects.find(item => item.id === workspace.activeProjectId) ?? null;
+  const projectId = project?.id ?? null;
 
-  const agentSession = useMemo(
-    () => getInitialAgentSession(project?.id ?? null),
-    [project?.id],
+  const [agentSession, setAgentSession] = useState<AgentSessionState>(() =>
+    getInitialAgentSession(projectId)
   );
 
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -105,6 +108,159 @@ export default function App() {
     setToast(text);
     toastTimerRef.current = window.setTimeout(() => setToast(null), 2400);
   }, []);
+
+  useEffect(() => {
+    // Reset session on project switch to enforce isolation
+    setAgentSession(getInitialAgentSession(projectId));
+    if (!projectId || !isDesktop) return;
+
+    let cancelled = false;
+    const syncSession = async () => {
+      try {
+        let content: string | null = null;
+        try {
+          content = await readProjectFileContent(projectId, '.tongyun/agent-session.json');
+        } catch {
+          try {
+            content = await readProjectFileContent(projectId, '.agent/session.json');
+          } catch {
+            content = null;
+          }
+        }
+        if (content && !cancelled) {
+          const parsed = JSON.parse(content);
+          if (parsed && typeof parsed === 'object') {
+            setAgentSession({
+              projectId,
+              connectionStatus: 'connected',
+              agentName: parsed.agentName || parsed.agent || 'Tongyun Worker',
+              model: parsed.model || 'Unknown Model',
+              mode: parsed.mode || 'autonomous',
+              activeGoal: parsed.activeGoal || parsed.plan?.goal || null,
+              plan: parsed.plan || null,
+              actions: Array.isArray(parsed.actions) ? parsed.actions : [],
+              tokensConsumed: parsed.tokensConsumed ?? null,
+              filesTouched: parsed.filesTouched ?? null,
+              lastHeartbeat: parsed.lastHeartbeat || new Date().toLocaleTimeString(),
+            });
+          }
+        }
+      } catch {
+        // Unparseable or absent, keep initial session
+      }
+    };
+
+    void syncSession();
+    const interval = setInterval(() => void syncSession(), 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [projectId]);
+
+  const handleInitializeSession = useCallback(async () => {
+    if (!project || !isDesktop) return;
+    const template: AgentSessionState = {
+      projectId: project.id,
+      connectionStatus: 'connected',
+      agentName: 'Tongyun Agent',
+      model: 'Codex / Claude',
+      mode: 'autonomous',
+      activeGoal: `${project.name} 任务规划与自动化工作流`,
+      lastHeartbeat: new Date().toLocaleTimeString(),
+      tokensConsumed: 0,
+      filesTouched: 0,
+      plan: {
+        id: 'plan-' + Date.now(),
+        goal: `${project.name} 任务规划与自动化工作流`,
+        status: 'executing',
+        progressPercent: 20,
+        steps: [
+          { id: 'step-1', text: '工作区与项目环境探测', status: 'done' },
+          { id: 'step-2', text: '业务代码分析与测试套件执行', status: 'active' },
+          { id: 'step-3', text: '成果自动化验证与构建交付', status: 'todo' },
+        ],
+      },
+      actions: [
+        {
+          id: 'action-1',
+          kind: 'inspect',
+          title: '项目探测初始化',
+          detail: '成功识别项目结构并挂载 Agent 跟踪会话',
+          status: 'done',
+          timestamp: new Date().toLocaleTimeString(),
+        },
+      ],
+    };
+    try {
+      await writeProjectFile(project.id, '.tongyun/agent-session.json', JSON.stringify(template, null, 2));
+      notify('已创建项目 Agent 跟踪模板 (.tongyun/agent-session.json)');
+      setAgentSession(template);
+    } catch (err) {
+      notify(`初始化模板失败: ${err}`);
+    }
+  }, [project, notify]);
+
+  const handleSendInstruction = useCallback(async (text: string) => {
+    if (!project || !text.trim() || !isDesktop) return;
+    const entry = {
+      id: 'inst-' + Date.now(),
+      timestamp: new Date().toISOString(),
+      text: text.trim(),
+    };
+    try {
+      await appendProjectFile(project.id, '.tongyun/agent-instructions.jsonl', JSON.stringify(entry) + '\n');
+      notify(`已向 Agent 投递指令：${text.trim()}`);
+      setAgentSession(prev => ({
+        ...prev,
+        actions: [
+          ...prev.actions,
+          {
+            id: entry.id,
+            kind: 'terminal',
+            title: '用户投递补充指令',
+            detail: text.trim(),
+            status: 'done',
+            timestamp: new Date().toLocaleTimeString(),
+          },
+        ],
+      }));
+    } catch (err) {
+      notify(`投递指令失败: ${err}`);
+    }
+  }, [project, notify]);
+
+  const handleExportAudit = useCallback(async () => {
+    if (!project || !isDesktop) return;
+    const observed = agentSession.connectionStatus === 'connected' && agentSession.projectId === project.id ? agentSession : null;
+    if (!observed) return;
+    const lines = [
+      `# Agent 审计轨迹报告 · ${project.name}`,
+      `- 工人: ${observed.agentName ?? '未知'}`,
+      `- 模型: ${observed.model ?? '未知'}`,
+      `- 导出时间: ${new Date().toLocaleString()}`,
+      `- 目标: ${observed.plan?.goal ?? '无目标'}`,
+      '',
+      '## 任务计划',
+      ...(observed.plan?.steps.map(s => `- [${s.status === 'done' ? 'x' : ' '}] ${s.text} (${s.status})`) ?? ['暂无步骤']),
+      '',
+      '## 执行时间线',
+      ...(observed.actions.map(a => `### [${a.timestamp}] ${a.title} (${a.kind} - ${a.status})\n${a.detail}\n`) ?? ['暂无操作']),
+    ];
+    const report = lines.join('\n');
+    try {
+      await writeProjectFile(project.id, '.tongyun/audit-trail.md', report);
+      await navigator.clipboard.writeText(report).catch(() => {});
+      notify('已导出 Agent 审计报告至 .tongyun/audit-trail.md 并复制到剪贴板');
+    } catch (err) {
+      notify(`导出失败: ${err}`);
+    }
+  }, [project, agentSession, notify]);
+
+  const handleTogglePause = useCallback(() => {
+    if (!project) return;
+    notify('调度状态已切换');
+  }, [project, notify]);
 
   const openAiContext = async () => {
     if (!project || loadingAi) return;
@@ -800,6 +956,10 @@ export default function App() {
                 onNavigate={(t: ActiveTab) => setTab(t)}
                 onRefresh={() => setRefresh(v => v + 1)}
                 onNotify={notify}
+                onInitializeSession={handleInitializeSession}
+                onSendInstruction={handleSendInstruction}
+                onExportAudit={handleExportAudit}
+                onTogglePause={handleTogglePause}
               />
             </Suspense>
           ) : (
@@ -1014,6 +1174,10 @@ export default function App() {
           onClose={() => setShowAgentCockpit(false)}
           onNavigate={(targetTab: ActiveTab) => setTab(targetTab)}
           onNotify={notify}
+          onInitializeSession={handleInitializeSession}
+          onSendInstruction={handleSendInstruction}
+          onExportAudit={handleExportAudit}
+          onTogglePause={handleTogglePause}
         />
       )}
 

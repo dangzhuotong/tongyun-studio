@@ -324,6 +324,33 @@ fn restart_project_service(
     state.services.restart(&id, &service_id)
 }
 
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    studio_core::open_url(&url)
+}
+
+#[tauri::command]
+fn write_project_file(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    relative_path: String,
+    content: String,
+) -> Result<(), String> {
+    let project = state.store.project(&id)?;
+    studio_core::write_project_file(&project, &relative_path, &content)
+}
+
+#[tauri::command]
+fn append_project_file(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    relative_path: String,
+    content: String,
+) -> Result<(), String> {
+    let project = state.store.project(&id)?;
+    studio_core::append_project_file(&project, &relative_path, &content)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -372,6 +399,9 @@ pub fn run() {
             list_project_services,
             stop_project_service,
             restart_project_service,
+            open_url,
+            write_project_file,
+            append_project_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -262,6 +262,12 @@ export const openInTerminal = (id: string) => native<void>('open_in_terminal', {
 export const openProjectFile = (id: string, relativePath: string) =>
   native<void>('open_project_file', { id, relativePath });
 export const chooseProjectDirectory = () => native<string | null>('choose_project_directory');
+export const openUrl = (url: string) =>
+  isDesktop ? native<void>('open_url', { url }) : Promise.resolve();
+export const writeProjectFile = (id: string, relativePath: string, content: string) =>
+  isDesktop ? native<void>('write_project_file', { id, relativePath, content }) : Promise.resolve();
+export const appendProjectFile = (id: string, relativePath: string, content: string) =>
+  isDesktop ? native<void>('append_project_file', { id, relativePath, content }) : Promise.resolve();
 
 export const startProjectService = (id: string, command: string) =>
   native<import('./contracts').ManagedService>('start_project_service', { id, command });

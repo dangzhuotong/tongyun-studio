@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { AgentSessionState, Project, ActiveTab } from '../contracts';
 import { Bot, Code2, Copy, Database, GitBranch, Send, Square, Terminal, Workflow, Zap } from '../components/Icons';
 
@@ -6,11 +7,24 @@ interface AgentPanelProps {
   session: AgentSessionState;
   onNavigate: (tab: ActiveTab) => void;
   onNotify?: (msg: string) => void;
+  onInitializeSession?: () => void;
+  onSendInstruction?: (text: string) => Promise<void> | void;
+  onExportAudit?: () => Promise<void> | void;
+  onTogglePause?: () => Promise<void> | void;
 }
 
 const unavailableReason = '尚未接入 Agent 调度与审计服务，无法投递指令、暂停执行或导出审计记录。';
 
-export default function AgentPanel({ project, session, onNavigate }: AgentPanelProps) {
+export default function AgentPanel({
+  project,
+  session,
+  onNavigate,
+  onInitializeSession,
+  onSendInstruction,
+  onExportAudit,
+  onTogglePause,
+}: AgentPanelProps) {
+  const [instruction, setInstruction] = useState('');
   const observed = project && session.projectId === project.id && session.connectionStatus === 'connected'
     ? session
     : null;
@@ -28,7 +42,27 @@ export default function AgentPanel({ project, session, onNavigate }: AgentPanelP
         </div>
         <div className="workbench-badges">
           <span className="mini-badge">{observed ? '已连接执行记录来源' : 'Agent 未接入'}</span>
-          <button className="secondary-button-sm" disabled title={unavailableReason} aria-describedby="agent-unavailable"><Copy size={12} /><span>导出审计轨迹</span></button>
+          {observed ? (
+            <button
+              className="secondary-button-sm"
+              onClick={() => void onExportAudit?.()}
+              title="导出审计轨迹"
+              aria-label="导出审计轨迹"
+            >
+              <Copy size={12} />
+              <span>导出审计轨迹</span>
+            </button>
+          ) : (
+            <button
+              className="secondary-button-sm"
+              disabled
+              title={unavailableReason}
+              aria-describedby="agent-unavailable"
+            >
+              <Copy size={12} />
+              <span>导出审计轨迹</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -81,13 +115,68 @@ export default function AgentPanel({ project, session, onNavigate }: AgentPanelP
                       <div className="action-card-head"><span className="action-type-pill">{action.kind}</span><div className="action-main-info"><span className="action-title-text">{action.title}</span><p className="action-detail-text mono-subtle">{action.detail}</p></div></div>
                       <div className="action-card-foot"><span className="mono-subtle">{action.timestamp}</span><span>{action.status}</span></div>
                     </div>
-                  )) : <div className="panel-empty-placeholder"><Bot size={28} strokeWidth={1.3} /><p>暂无真实执行记录</p><span>接入真实事件来源后，才会展示操作和结果。</span></div>}
+                  )) : (
+                    <div className="panel-empty-placeholder">
+                      <Bot size={28} strokeWidth={1.3} />
+                      <p>暂无真实执行记录</p>
+                      <span>接入真实事件来源后，才会展示操作和结果。</span>
+                      {project && onInitializeSession && (
+                        <button
+                          type="button"
+                          className="secondary-button-sm"
+                          style={{ marginTop: 12 }}
+                          onClick={onInitializeSession}
+                        >
+                          初始化跟踪模板 (.tongyun/agent-session.json)
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
-                <div className="agent-prompt-bar">
-                  <input className="agent-prompt-input" aria-label="Agent 补充指令" placeholder="接入调度服务后可发送指令" disabled aria-describedby="agent-unavailable" />
-                  <button className="primary-button" disabled title={unavailableReason} aria-describedby="agent-unavailable"><Send size={13} /><span>投递指令</span></button>
-                  <button className="secondary-button" disabled title={unavailableReason} aria-describedby="agent-unavailable"><Square size={13} /><span>暂停</span></button>
-                </div>
+                {observed ? (
+                  <form
+                    className="agent-prompt-bar"
+                    onSubmit={e => {
+                      e.preventDefault();
+                      if (instruction.trim()) {
+                        void onSendInstruction?.(instruction);
+                        setInstruction('');
+                      }
+                    }}
+                  >
+                    <input
+                      className="agent-prompt-input"
+                      aria-label="Agent 补充指令"
+                      placeholder="向当前 Agent 投递补充指令..."
+                      value={instruction}
+                      onChange={e => setInstruction(e.target.value)}
+                    />
+                    <button
+                      type="submit"
+                      className="primary-button"
+                      disabled={!instruction.trim()}
+                      title="投递指令"
+                    >
+                      <Send size={13} />
+                      <span>投递指令</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => void onTogglePause?.()}
+                      title="暂停"
+                    >
+                      <Square size={13} />
+                      <span>暂停</span>
+                    </button>
+                  </form>
+                ) : (
+                  <div className="agent-prompt-bar">
+                    <input className="agent-prompt-input" aria-label="Agent 补充指令" placeholder="接入调度服务后可发送指令" disabled aria-describedby="agent-unavailable" />
+                    <button className="primary-button" disabled title={unavailableReason} aria-describedby="agent-unavailable"><Send size={13} /><span>投递指令</span></button>
+                    <button className="secondary-button" disabled title={unavailableReason} aria-describedby="agent-unavailable"><Square size={13} /><span>暂停</span></button>
+                  </div>
+                )}
               </div>
             </div>
           </div>

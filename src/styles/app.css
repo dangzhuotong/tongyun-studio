@@ -2623,6 +2623,52 @@ body, html {
   color: var(--accent-text);
 }
 
+.listening-ports-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.port-chips-list {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.port-chip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--ty-radius-sm);
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.port-chip-btn:hover {
+  background: var(--surface-hover);
+  border-color: var(--accent);
+}
+
+.port-dot.active {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px rgba(164, 196, 140, 0.4);
+}
+
+.port-proc-name {
+  color: var(--meta);
+  font-size: 10px;
+}
+
 .active-services-section {
   display: flex;
   flex-direction: column;

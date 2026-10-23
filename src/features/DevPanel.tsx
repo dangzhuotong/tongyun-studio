@@ -1,6 +1,14 @@
 import { useState, useRef, useEffect, useCallback, type FormEvent } from 'react';
-import type { Project, ProjectInspection, ManagedService } from '../contracts';
-import { isDesktop, startProjectService, listProjectServices, stopProjectService, restartProjectService } from '../bridge';
+import type { Project, ProjectInspection, ManagedService, ListeningPort } from '../contracts';
+import {
+  isDesktop,
+  startProjectService,
+  listProjectServices,
+  stopProjectService,
+  restartProjectService,
+  detectListeningPorts,
+  openUrl,
+} from '../bridge';
 import { Activity, Check, Copy, Cpu, LoaderCircle, Play, RotateCw, Square, Terminal } from '../components/Icons';
 
 const statusLabel: Record<ManagedService['status'], string> = { running: '进程运行中', stopped: '已停止', exited: '已完成', failed: '执行失败' };
@@ -12,6 +20,7 @@ export default function DevPanel({ project, inspection, onNotify }: {
   onNotify?: (msg: string) => void;
 }) {
   const [services, setServices] = useState<ManagedService[]>([]);
+  const [listeningPorts, setListeningPorts] = useState<ListeningPort[]>([]);
   const [customCommand, setCustomCommand] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -31,8 +40,15 @@ export default function DevPanel({ project, inspection, onNotify }: {
     if (!isDesktop || mutations.current.has(id)) return;
     const request = ++requestSequence.current;
     try {
-      const result = await listProjectServices(id);
-      if (mounted.current && currentProject.current === id && request === requestSequence.current) { setServices(result); setError(null); }
+      const [result, ports] = await Promise.all([
+        listProjectServices(id).catch(() => [] as ManagedService[]),
+        detectListeningPorts().catch(() => [] as ListeningPort[]),
+      ]);
+      if (mounted.current && currentProject.current === id && request === requestSequence.current) {
+        setServices(result);
+        setListeningPorts(ports);
+        setError(null);
+      }
     } catch (cause) {
       if (mounted.current && currentProject.current === id && request === requestSequence.current) setError(String(cause));
     } finally {
@@ -87,7 +103,40 @@ export default function DevPanel({ project, inspection, onNotify }: {
     {!project ? <div className="panel-empty-placeholder"><Terminal size={32} strokeWidth={1.2}/><p>请先在左侧选择或添加一个项目，以运行项目脚本与服务。</p></div> : <>
       <p className="meta">正常退出工作台会停止这里启动的全部进程组。仅支持 macOS / Unix；请以前台模式运行命令，不要使用自行脱离进程组的守护模式。</p>
       {error && <div className="error-banner" role="alert"><span>{error}</span><button className="text-button" disabled={!isDesktop || !!busy} onClick={() => void readServices(project.id)}>重新读取状态</button></div>}
-      <div className="dev-metrics-bar"><div className="metrics-ports-group"><Activity size={15}/><span className="toolbar-label">当前项目托管进程：</span><span>{loading ? '读取中…' : `${running} 个运行中`}</span><span className="meta">进程存活不代表服务已就绪</span></div>{stack.length > 0 && <div className="tech-badge-list"><span className="tech-badge-label"><Cpu size={13}/>运行时：</span>{stack.map(tech => <span key={tech} className="tech-badge">{tech}</span>)}</div>}</div>
+      <div className="dev-metrics-bar">
+        <div className="metrics-ports-group">
+          <Activity size={15}/>
+          <span className="toolbar-label">当前项目托管进程：</span>
+          <span>{loading ? '读取中…' : `${running} 个运行中`}</span>
+          <span className="meta">进程存活不代表服务已就绪</span>
+        </div>
+        {listeningPorts.length > 0 && (
+          <div className="listening-ports-group">
+            <span className="toolbar-label">活跃监听端口：</span>
+            <div className="port-chips-list">
+              {listeningPorts.map(p => (
+                <button
+                  key={p.port}
+                  type="button"
+                  className="port-chip-btn"
+                  title={`在浏览器中打开 http://localhost:${p.port} (${p.process})`}
+                  onClick={() => void openUrl(`http://localhost:${p.port}`)}
+                >
+                  <span className="port-dot active" />
+                  <span className="mono-subtle">:{p.port}</span>
+                  <span className="port-proc-name">({p.process})</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {stack.length > 0 && (
+          <div className="tech-badge-list">
+            <span className="tech-badge-label"><Cpu size={13}/>运行时：</span>
+            {stack.map(tech => <span key={tech} className="tech-badge">{tech}</span>)}
+          </div>
+        )}
+      </div>
       <section className="panel-subcard"><div className="section-heading"><div className="subcard-title"><Play size={15}/><h3>项目命令</h3></div><span className="meta">{scripts.length ? `${scripts.length} 个脚本` : '无 package 脚本'}</span></div>
         {scripts.length ? <div className="script-grid">{scripts.map(script => {
           const active = services.find(service => service.command === script.command && service.status === 'running');

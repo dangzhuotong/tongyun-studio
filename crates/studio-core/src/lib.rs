@@ -1434,6 +1434,82 @@ pub fn open_project_file(project: &Project, relative_path: &str) -> Result<()> {
     }
 }
 
+pub fn open_url(url: &str) -> Result<()> {
+    if !url.starts_with("http://localhost:")
+        && !url.starts_with("http://127.0.0.1:")
+        && !url.starts_with("https://")
+        && !url.starts_with("http://")
+    {
+        return Err("仅支持合法的 HTTP/HTTPS 链接".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let output = run_bounded(
+            Command::new("/usr/bin/open").arg("--").arg(url),
+            Duration::from_secs(5),
+        )?;
+        if !output.success {
+            return Err(format!("打开链接失败：{}", output_string(&output.stderr)));
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("此平台的浏览器入口尚未接入".into())
+    }
+}
+
+pub fn write_project_file(project: &Project, relative_path: &str, content: &str) -> Result<()> {
+    let root = fs::canonicalize(&project.path)
+        .map_err(|e| format!("无法访问项目根目录：{e}"))?;
+    let trimmed = relative_path.trim_start_matches('/');
+    if trimmed.is_empty() || trimmed.contains("..") {
+        return Err("非法相对路径".into());
+    }
+    let target = root.join(trimmed);
+    if let Some(parent) = target.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent).map_err(|e| format!("无法创建父目录：{e}"))?;
+        }
+        let canonical_parent = fs::canonicalize(parent)
+            .map_err(|e| format!("路径解析失败：{e}"))?;
+        if !canonical_parent.starts_with(&root) {
+            return Err("非法越界写入".into());
+        }
+    }
+    fs::write(&target, content).map_err(|e| format!("写入文件失败：{e}"))?;
+    Ok(())
+}
+
+pub fn append_project_file(project: &Project, relative_path: &str, content: &str) -> Result<()> {
+    let root = fs::canonicalize(&project.path)
+        .map_err(|e| format!("无法访问项目根目录：{e}"))?;
+    let trimmed = relative_path.trim_start_matches('/');
+    if trimmed.is_empty() || trimmed.contains("..") {
+        return Err("非法相对路径".into());
+    }
+    let target = root.join(trimmed);
+    if let Some(parent) = target.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent).map_err(|e| format!("无法创建父目录：{e}"))?;
+        }
+        let canonical_parent = fs::canonicalize(parent)
+            .map_err(|e| format!("路径解析失败：{e}"))?;
+        if !canonical_parent.starts_with(&root) {
+            return Err("非法越界写入".into());
+        }
+    }
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&target)
+        .map_err(|e| format!("打开文件失败：{e}"))?;
+    file.write_all(content.as_bytes())
+        .map_err(|e| format!("追加写入失败：{e}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1552,5 +1628,33 @@ mod tests {
         let result = run_bounded(Command::new("/bin/sleep").arg("2"), Duration::from_millis(40));
         assert!(result.unwrap_err().contains("超时"));
         assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn project_file_writing_and_appending_enforces_sandbox() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project {
+            id: "sandbox-test".into(),
+            name: "sandbox-test".into(),
+            path: dir.path().to_string_lossy().into_owned(),
+            created_at: "".into(),
+        };
+
+        // Write file inside nested directory
+        write_project_file(&project, ".tongyun/agent-session.json", r#"{"agent":"agy"}"#).unwrap();
+        let content = read_project_file_content(&project, ".tongyun/agent-session.json").unwrap();
+        assert_eq!(content, r#"{"agent":"agy"}"#);
+
+        // Append line
+        append_project_file(&project, ".tongyun/agent-instructions.jsonl", "line 1\n").unwrap();
+        append_project_file(&project, ".tongyun/agent-instructions.jsonl", "line 2\n").unwrap();
+        let appended = read_project_file_content(&project, ".tongyun/agent-instructions.jsonl").unwrap();
+        assert_eq!(appended, "line 1\nline 2\n");
+
+        // Reject directory traversal attempts
+        assert!(write_project_file(&project, "../outside.txt", "evil").is_err());
+        assert!(append_project_file(&project, "../../outside.txt", "evil").is_err());
+        assert!(open_url("ftp://example.com").is_err());
+        assert!(open_url("javascript:alert(1)").is_err());
     }
 }
