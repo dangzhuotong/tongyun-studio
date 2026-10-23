@@ -771,7 +771,7 @@ export default function App() {
             <div className="breadcrumb">
               <span>工作区</span>
               <ChevronRight size={13} />
-              <span>{project?.name ?? '开始'}</span>
+              <span className="breadcrumb-project">{project?.name ?? '开始'}</span>
               {tab !== 'overview' && (
                 <>
                   <ChevronRight size={13} />
@@ -782,6 +782,40 @@ export default function App() {
           </div>
 
           <div className="topbar-actions">
+            {project && (
+              <div className="topbar-project-actions">
+                <button
+                  className="topbar-action-btn"
+                  onClick={openDirectory}
+                  disabled={!isDesktop || current?.result?.exists === false}
+                  title="在访达中打开项目所在目录"
+                  aria-label="在访达中打开"
+                >
+                  <FolderOpen size={13} />
+                  <span>访达</span>
+                </button>
+                <button
+                  className="topbar-action-btn"
+                  onClick={openTerminal}
+                  disabled={!isDesktop || current?.result?.exists === false}
+                  title="在系统终端中打开当前目录"
+                  aria-label="在系统终端中打开"
+                >
+                  <Terminal size={13} />
+                  <span>终端</span>
+                </button>
+                <button
+                  className="topbar-action-btn"
+                  onClick={copyProjectPath}
+                  title="复制项目完整物理路径"
+                  aria-label="复制路径"
+                >
+                  {copiedPath ? <Check size={13} className="accent-color" /> : <Copy size={13} />}
+                  <span>{copiedPath ? '已复制' : '复制路径'}</span>
+                </button>
+              </div>
+            )}
+
             {project && (
               <button
                 className="ai-topbar-pill"
@@ -801,14 +835,12 @@ export default function App() {
             <button
               className={`agent-topbar-pill ${showAgentCockpit ? 'active' : ''}`}
               onClick={() => setShowAgentCockpit(prev => !prev)}
-              title="切换 Agent 监视舱 · 未接入 (⌘J)"
+              title={showAgentCockpit ? '收起 Agent 监视舱 (⌘J)' : '切换 Agent 监视舱 · 未接入 (⌘J)'}
             >
               <Bot size={13} />
               <span>Agent 监视舱</span>
-              <span className="meta">未接入</span>
+              <span className="meta">{agentSession.connectionStatus === 'connected' ? '已连接' : '未接入'}</span>
             </button>
-
-            <span className="topbar-label">本地集成开发者工作台</span>
           </div>
         </header>
 
@@ -819,108 +851,71 @@ export default function App() {
           </div>
         )}
 
-        <div className="project-header">
-          <div className="project-title-row">
-            <div className="project-emblem">
-              <FolderOpen size={22} strokeWidth={1.5} />
-            </div>
-            <div className="project-title">
-              <div className="title-with-stack">
-                <h1>{project?.name ?? '我的工作区'}</h1>
-                {techStack.map(t => (
-                  <span key={t} className="mini-badge">
-                    {t}
-                  </span>
-                ))}
+        {tab === 'overview' && (
+          <div className="project-header">
+            <div className="project-title-row">
+              <div className="project-emblem">
+                <FolderOpen size={22} strokeWidth={1.5} />
               </div>
-              <p title={project?.path}>
-                {project?.path ?? '集中管理本地项目，运行、接口、数据与版本一站式开发。'}
-              </p>
+              <div className="project-title">
+                <div className="title-with-stack">
+                  <h1>{project?.name ?? '我的工作区'}</h1>
+                  {techStack.map(t => (
+                    <span key={t} className="mini-badge">
+                      {t}
+                    </span>
+                  ))}
+                </div>
+                <p title={project?.path}>
+                  {project?.path ?? '集中管理本地项目，运行、接口、数据与版本一站式开发。'}
+                </p>
+              </div>
             </div>
+
+            {project && (
+              <div className="header-actions">
+                <button
+                  className="secondary-button"
+                  onClick={openDirectory}
+                  disabled={!isDesktop || current?.result?.exists === false}
+                  title="在访达中打开项目所在目录"
+                >
+                  <FolderOpen size={14} />
+                  访达
+                </button>
+                <button
+                  className="secondary-button"
+                  onClick={openTerminal}
+                  disabled={!isDesktop || current?.result?.exists === false}
+                  title="在系统终端中打开当前目录"
+                >
+                  <Terminal size={14} />
+                  终端
+                </button>
+                <button
+                  className="secondary-button"
+                  onClick={copyProjectPath}
+                  title="复制项目完整物理路径"
+                >
+                  {copiedPath ? <Check size={14} className="accent-color" /> : <Copy size={14} />}
+                  复制路径
+                </button>
+                <button
+                  className="icon-button"
+                  aria-label="移除项目登记"
+                  disabled={busy}
+                  onClick={() => {
+                    setFormError(null);
+                    setRemoving(project);
+                  }}
+                  title="仅从工作台移除登记"
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
+            )}
           </div>
-
-          {project && (
-            <div className="header-actions">
-              <button
-                className="secondary-button"
-                onClick={openDirectory}
-                disabled={!isDesktop || current?.result?.exists === false}
-                title="在访达中打开项目所在目录"
-              >
-                <FolderOpen size={14} />
-                访达
-              </button>
-              <button
-                className="secondary-button"
-                onClick={openTerminal}
-                disabled={!isDesktop || current?.result?.exists === false}
-                title="在系统终端中打开当前目录"
-              >
-                <Terminal size={14} />
-                终端
-              </button>
-              <button
-                className="secondary-button"
-                onClick={copyProjectPath}
-                title="复制项目完整物理路径"
-              >
-                {copiedPath ? <Check size={14} className="accent-color" /> : <Copy size={14} />}
-                复制路径
-              </button>
-              <button
-                className="icon-button"
-                aria-label="移除项目登记"
-                disabled={busy}
-                onClick={() => {
-                  setFormError(null);
-                  setRemoving(project);
-                }}
-                title="仅从工作台移除登记"
-              >
-                <Trash2 size={15} />
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Secondary Horizontal Quick Navigation Tabs */}
-        <nav className="tabs" aria-label="工作区快速导航">
-          <button
-            aria-current={tab === 'overview' ? 'page' : undefined}
-            className={tab === 'overview' ? 'active' : ''}
-            onClick={() => setTab('overview')}
-          >
-            <LayoutGrid size={15} />
-            概览
-          </button>
-          <button
-            aria-current={tab === 'agent' ? 'page' : undefined}
-            className={tab === 'agent' ? 'active' : ''}
-            onClick={() => setTab('agent')}
-          >
-            <Bot size={15} />
-            智能体视界
-          </button>
-          <button
-            aria-current={tab === 'files' ? 'page' : undefined}
-            className={tab === 'files' ? 'active' : ''}
-            onClick={() => setTab('files')}
-          >
-            <FolderOpen size={15} />
-            文件
-          </button>
-          {toolDefinitions.map(tool => (
-            <button
-              key={tool.id}
-              aria-current={tab === tool.id ? 'page' : undefined}
-              className={tab === tool.id ? 'active' : ''}
-              onClick={() => setTab(tool.id)}
-            >
-              <tool.Icon size={15} />
-              {tool.label}
-            </button>
-          ))}
-        </nav>
+        )}
 
         <main className="main-content">
           {actionError && (
