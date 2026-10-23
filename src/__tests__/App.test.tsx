@@ -22,7 +22,7 @@ describe('App', () => {
     expect(screen.getByText('Git')).toBeInTheDocument();
   });
 
-  it('allows switching to a tool panel tab', async () => {
+  it('allows switching to dev panel tab', async () => {
     render(<App />);
 
     const nav = screen.getByRole('navigation', { name: '工作区模块' });
@@ -32,6 +32,36 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: 'Tongyun Dev' })).toBeInTheDocument();
     expect(screen.getByText('尚未内嵌')).toBeInTheDocument();
     expect(screen.getByText('浏览器预览无法检测本机工具。')).toBeInTheDocument();
+  });
+
+  it('allows switching to api panel tab', async () => {
+    render(<App />);
+
+    const nav = screen.getByRole('navigation', { name: '工作区模块' });
+    const apiTab = within(nav).getByRole('button', { name: /接口/ });
+    fireEvent.click(apiTab);
+
+    expect(await screen.findByRole('heading', { name: 'Tongyun API' })).toBeInTheDocument();
+  });
+
+  it('allows switching to database panel tab', async () => {
+    render(<App />);
+
+    const nav = screen.getByRole('navigation', { name: '工作区模块' });
+    const dbTab = within(nav).getByRole('button', { name: /数据/ });
+    fireEvent.click(dbTab);
+
+    expect(await screen.findByRole('heading', { name: 'Tongyun Database' })).toBeInTheDocument();
+  });
+
+  it('allows switching to git panel tab', async () => {
+    render(<App />);
+
+    const nav = screen.getByRole('navigation', { name: '工作区模块' });
+    const gitTab = within(nav).getByRole('button', { name: /版本/ });
+    fireEvent.click(gitTab);
+
+    expect(await screen.findByRole('heading', { name: 'Tongyun Git' })).toBeInTheDocument();
   });
 
   it('verifies tool definitions completeness', () => {

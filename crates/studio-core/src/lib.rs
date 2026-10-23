@@ -3,16 +3,20 @@ use serde::{Deserialize, Serialize};
 use std::{fs, io::{Read, Write}, path::{Path, PathBuf}, process::{Command, Stdio}, sync::Mutex, time::{Duration, Instant}};
 
 pub type Result<T> = std::result::Result<T, String>;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Project { pub id: String, pub name: String, pub path: String, pub created_at: String }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace { pub version: u32, pub projects: Vec<Project>, pub active_project_id: Option<String> }
+
 impl Default for Workspace { fn default() -> Self { Self { version: 1, projects: vec![], active_project_id: None } } }
 
 /// All commands share this store. Reads and read/modify/write operations use one lock.
 pub struct WorkspaceStore { path: PathBuf, lock: Mutex<()> }
+
 impl WorkspaceStore {
     pub fn new(path: PathBuf) -> Self { Self { path, lock: Mutex::new(()) } }
     fn read(&self) -> Result<Workspace> {
@@ -78,16 +82,69 @@ impl WorkspaceStore {
     pub fn project(&self, id: &str) -> Result<Project> { self.load()?.projects.into_iter().find(|p| p.id == id).ok_or_else(|| "项目不存在".into()) }
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommit {
+    pub hash: String,
+    pub author: String,
+    pub relative_time: String,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GitSummary { pub is_repository: bool, pub branch: Option<String>, pub head: Option<String>, pub changed_files: usize, pub error: Option<String> }
-impl Default for GitSummary { fn default() -> Self { Self { is_repository: false, branch: None, head: None, changed_files: 0, error: None } } }
+pub struct GitSummary {
+    pub is_repository: bool,
+    pub branch: Option<String>,
+    pub head: Option<String>,
+    pub changed_files: usize,
+    pub recent_commits: Vec<GitCommit>,
+    pub error: Option<String>,
+}
+
+impl Default for GitSummary {
+    fn default() -> Self {
+        Self {
+            is_repository: false,
+            branch: None,
+            head: None,
+            changed_files: 0,
+            recent_commits: vec![],
+            error: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProjectInspection { pub exists: bool, pub git: GitSummary, pub http_files: usize }
+pub struct PackageScript {
+    pub name: String,
+    pub command: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbArtifact {
+    pub name: String,
+    pub path: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectInspection {
+    pub exists: bool,
+    pub git: GitSummary,
+    pub http_files: usize,
+    pub http_file_paths: Vec<String>,
+    pub tech_stack: Vec<String>,
+    pub scripts: Vec<PackageScript>,
+    pub db_artifacts: Vec<DbArtifact>,
+}
 
 #[derive(Debug)]
 struct CommandOutput { success: bool, stdout: Vec<u8>, stderr: Vec<u8> }
+
 /// Temporary output files avoid pipe deadlocks. Both execution and output reading are bounded.
 fn run_bounded(command: &mut Command, timeout: Duration) -> Result<CommandOutput> {
     let stdout = tempfile::tempfile().map_err(|e| e.to_string())?;
@@ -111,10 +168,13 @@ fn run_bounded(command: &mut Command, timeout: Duration) -> Result<CommandOutput
     }
     Ok(CommandOutput { success: status.success(), stdout: read_output(stdout)?, stderr: read_output(stderr)? })
 }
+
 fn git(path: &Path, args: &[&str]) -> Result<CommandOutput> {
     run_bounded(Command::new("git").arg("-C").arg(path).args(["-c", "core.fsmonitor=false"]).args(args).env("GIT_OPTIONAL_LOCKS", "0").env("LC_ALL", "C"), Duration::from_secs(4))
 }
+
 fn output_string(output: &[u8]) -> String { String::from_utf8_lossy(output).trim().to_owned() }
+
 fn inspect_git(path: &Path) -> GitSummary {
     let mut summary = GitSummary::default();
     let result = (|| -> Result<()> {
@@ -137,34 +197,168 @@ fn inspect_git(path: &Path) -> GitSummary {
             summary.changed_files += 1;
             if entry.first().is_some_and(|b| *b == b'R' || *b == b'C') || entry.get(1).is_some_and(|b| *b == b'R' || *b == b'C') { entries.next(); }
         }
+        // Read recent commits
+        if let Ok(log) = git(path, &["log", "-n", "5", "--format=%h%x09%an%x09%ar%x09%s"]) {
+            if log.success {
+                let text = output_string(&log.stdout);
+                for line in text.lines() {
+                    let parts: Vec<&str> = line.split('\t').collect();
+                    if parts.len() >= 4 {
+                        summary.recent_commits.push(GitCommit {
+                            hash: parts[0].to_owned(),
+                            author: parts[1].to_owned(),
+                            relative_time: parts[2].to_owned(),
+                            message: parts[3].to_owned(),
+                        });
+                    }
+                }
+            }
+        }
         Ok(())
     })();
-    if let Err(error) = result { summary.error = Some(error); } summary
+    if let Err(error) = result { summary.error = Some(error); }
+    summary
 }
-/// At most 20k entries, 12 levels, and 200ms; ignores symlinks and generated directories.
-fn count_http_files(root: &Path) -> usize {
-    let start = Instant::now(); let mut pending = vec![(root.to_path_buf(), 0)]; let mut visited = 0; let mut total = 0;
+
+/// Bounded file scanning for .http files and database artifacts.
+fn scan_project_files(root: &Path) -> (usize, Vec<String>, Vec<DbArtifact>) {
+    let start = Instant::now();
+    let mut pending = vec![(root.to_path_buf(), 0)];
+    let mut visited = 0;
+    let mut http_count = 0;
+    let mut http_paths = Vec::new();
+    let mut db_artifacts = Vec::new();
+
     while let Some((path, depth)) = pending.pop() {
-        let Ok(entries) = fs::read_dir(path) else { continue };
+        let Ok(entries) = fs::read_dir(&path) else { continue };
         for entry in entries.flatten() {
-            visited += 1; if visited > 20_000 || start.elapsed() > Duration::from_millis(200) { return total; }
-            let name = entry.file_name(); let name = name.to_string_lossy();
-            if name.starts_with('.') { continue; }
+            visited += 1;
+            if visited > 20_000 || start.elapsed() > Duration::from_millis(250) {
+                return (http_count, http_paths, db_artifacts);
+            }
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with('.') { continue; }
             let Ok(kind) = entry.file_type() else { continue };
-            if kind.is_dir() && depth < 12 && !matches!(name.as_ref(), "node_modules" | "target" | "dist" | "build" | "vendor" | "coverage" | "__pycache__") { pending.push((entry.path(), depth + 1)); }
-            if kind.is_file() && entry.path().extension().is_some_and(|e| e.eq_ignore_ascii_case("http")) { total += 1; }
+            let entry_path = entry.path();
+            let rel_path = entry_path.strip_prefix(root).unwrap_or(&entry_path).to_string_lossy().into_owned();
+
+            if kind.is_dir() {
+                if name_str == "migrations" && db_artifacts.len() < 10 {
+                    db_artifacts.push(DbArtifact { name: "migrations".into(), path: rel_path.clone(), kind: "migration".into() });
+                }
+                if depth < 12 && !matches!(name_str.as_ref(), "node_modules" | "target" | "dist" | "build" | "vendor" | "coverage" | "__pycache__") {
+                    pending.push((entry_path, depth + 1));
+                }
+            } else if kind.is_file() {
+                if entry_path.extension().is_some_and(|e| e.eq_ignore_ascii_case("http") || e.eq_ignore_ascii_case("rest")) {
+                    http_count += 1;
+                    if http_paths.len() < 20 {
+                        http_paths.push(rel_path.clone());
+                    }
+                }
+                if (name_str.ends_with(".sql") || name_str.ends_with(".prisma") || name_str.starts_with("drizzle") || name_str.ends_with(".sqlite") || name_str.ends_with(".db")) && db_artifacts.len() < 10 {
+                    let kind_str = if name_str.ends_with(".prisma") { "prisma" }
+                        else if name_str.starts_with("drizzle") { "drizzle" }
+                        else if name_str.ends_with(".sqlite") || name_str.ends_with(".db") { "sqlite" }
+                        else { "sql" };
+                    db_artifacts.push(DbArtifact { name: name_str.into_owned(), path: rel_path, kind: kind_str.into() });
+                }
+            }
         }
     }
-    total
+    (http_count, http_paths, db_artifacts)
 }
+
+fn detect_tech_and_scripts(root: &Path) -> (Vec<String>, Vec<PackageScript>) {
+    let mut stack = Vec::new();
+    let mut scripts = Vec::new();
+
+    if let Ok(pkg_data) = fs::read_to_string(root.join("package.json")) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&pkg_data) {
+            let mut detected_framework = false;
+            let check_deps = |key: &str| -> Vec<String> {
+                val.get(key).and_then(|d| d.as_object()).map(|obj| obj.keys().cloned().collect()).unwrap_or_default()
+            };
+            let all_deps: Vec<String> = [check_deps("dependencies"), check_deps("devDependencies")].concat();
+
+            for dep in &all_deps {
+                let dep_lower = dep.to_lowercase();
+                if dep_lower.contains("react") && !stack.contains(&"React".to_string()) {
+                    stack.push("React".into()); detected_framework = true;
+                } else if dep_lower.contains("vue") && !stack.contains(&"Vue".to_string()) {
+                    stack.push("Vue".into()); detected_framework = true;
+                } else if dep_lower.contains("svelte") && !stack.contains(&"Svelte".to_string()) {
+                    stack.push("Svelte".into()); detected_framework = true;
+                } else if dep_lower.contains("next") && !stack.contains(&"Next.js".to_string()) {
+                    stack.push("Next.js".into());
+                } else if dep_lower.contains("vite") && !stack.contains(&"Vite".to_string()) {
+                    stack.push("Vite".into());
+                } else if dep_lower.contains("tailwind") && !stack.contains(&"Tailwind".to_string()) {
+                    stack.push("Tailwind".into());
+                }
+            }
+            if root.join("tsconfig.json").is_file() || all_deps.iter().any(|d| d.contains("typescript")) {
+                stack.push("TypeScript".into());
+            } else if !detected_framework {
+                stack.push("Node.js".into());
+            }
+
+            if let Some(scripts_obj) = val.get("scripts").and_then(|s| s.as_object()) {
+                for (k, v) in scripts_obj {
+                    if let Some(cmd) = v.as_str() {
+                        scripts.push(PackageScript { name: k.clone(), command: cmd.to_owned() });
+                    }
+                }
+            }
+        }
+    }
+
+    if root.join("Cargo.toml").is_file() {
+        if !stack.contains(&"Rust".to_string()) { stack.push("Rust".into()); }
+        if root.join("src-tauri").is_dir() && !stack.contains(&"Tauri".to_string()) {
+            stack.push("Tauri".into());
+        }
+        if scripts.is_empty() {
+            scripts.push(PackageScript { name: "test".into(), command: "cargo test".into() });
+            scripts.push(PackageScript { name: "check".into(), command: "cargo check".into() });
+            scripts.push(PackageScript { name: "run".into(), command: "cargo run".into() });
+        }
+    }
+
+    if (root.join("pyproject.toml").is_file() || root.join("requirements.txt").is_file()) && !stack.contains(&"Python".to_string()) {
+        stack.push("Python".into());
+    }
+    if root.join("go.mod").is_file() && !stack.contains(&"Go".to_string()) {
+        stack.push("Go".into());
+    }
+    if (root.join("Dockerfile").is_file() || root.join("docker-compose.yml").is_file()) && !stack.contains(&"Docker".to_string()) {
+        stack.push("Docker".into());
+    }
+
+    (stack, scripts)
+}
+
 pub fn inspect_project(project: &Project) -> ProjectInspection {
-    let path = Path::new(&project.path); let exists = path.is_dir();
-    ProjectInspection { exists, git: if exists { inspect_git(path) } else { GitSummary::default() }, http_files: if exists { count_http_files(path) } else { 0 } }
+    let path = Path::new(&project.path);
+    let exists = path.is_dir();
+    let (http_files, http_file_paths, db_artifacts) = if exists { scan_project_files(path) } else { (0, vec![], vec![]) };
+    let (tech_stack, scripts) = if exists { detect_tech_and_scripts(path) } else { (vec![], vec![]) };
+    ProjectInspection {
+        exists,
+        git: if exists { inspect_git(path) } else { GitSummary::default() },
+        http_files,
+        http_file_paths,
+        tech_stack,
+        scripts,
+        db_artifacts,
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ToolId { Dev, Api, Database, Git }
+
 impl ToolId {
     fn info(self) -> (&'static str, &'static [&'static str]) {
         match self {
@@ -175,11 +369,14 @@ impl ToolId {
         }
     }
 }
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolStatus { pub id: ToolId, pub name: String, pub available: bool, pub application_path: Option<String>, pub detail: String }
+
 #[derive(Debug, Serialize)]
 pub struct LaunchResult { pub message: String }
+
 fn tool_status(id: ToolId) -> ToolStatus {
     let (name, _bundles) = id.info();
     #[cfg(target_os = "macos")]
@@ -194,7 +391,9 @@ fn tool_status(id: ToolId) -> ToolStatus {
     let detail = if !cfg!(target_os = "macos") { "此平台的应用入口尚未接入" } else if available { "打开独立应用后，请在原工具内选择项目" } else { "未在应用程序目录找到此工具" }.to_owned();
     ToolStatus { id, name: name.into(), available, application_path, detail }
 }
+
 pub fn list_tools() -> Vec<ToolStatus> { [ToolId::Dev, ToolId::Api, ToolId::Database, ToolId::Git].into_iter().map(tool_status).collect() }
+
 pub fn launch_tool(id: ToolId) -> Result<LaunchResult> {
     let status = tool_status(id);
     let path = status.application_path.ok_or(status.detail)?;
@@ -207,6 +406,7 @@ pub fn launch_tool(id: ToolId) -> Result<LaunchResult> {
     #[cfg(not(target_os = "macos"))]
     { let _ = path; Err("此平台的应用入口尚未接入".into()) }
 }
+
 pub fn open_project_directory(project: &Project) -> Result<()> {
     if !Path::new(&project.path).is_dir() { return Err("项目目录不存在，请恢复目录后重试".into()); }
     #[cfg(target_os = "macos")]
@@ -216,6 +416,29 @@ pub fn open_project_directory(project: &Project) -> Result<()> {
     }
     #[cfg(not(target_os = "macos"))]
     { Err("此平台的文件管理器入口尚未接入".into()) }
+}
+
+pub fn open_in_terminal(project: &Project) -> Result<()> {
+    if !Path::new(&project.path).is_dir() { return Err("项目目录不存在，请恢复目录后重试".into()); }
+    #[cfg(target_os = "macos")]
+    {
+        let output = run_bounded(Command::new("/usr/bin/open").args(["-a", "Terminal", &project.path]), Duration::from_secs(5))?;
+        if !output.success { return Err(format!("打开终端失败：{}", output_string(&output.stderr))); } Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    { Err("此平台的终端入口尚未接入".into()) }
+}
+
+pub fn open_project_file(project: &Project, relative_path: &str) -> Result<()> {
+    let full = Path::new(&project.path).join(relative_path);
+    if !full.is_file() { return Err("指定的文件不存在".into()); }
+    #[cfg(target_os = "macos")]
+    {
+        let output = run_bounded(Command::new("/usr/bin/open").arg("--").arg(full.to_string_lossy().as_ref()), Duration::from_secs(5))?;
+        if !output.success { return Err(format!("打开文件失败：{}", output_string(&output.stderr))); } Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    { Err("此平台的文件打开入口尚未接入".into()) }
 }
 
 #[cfg(test)]
@@ -249,7 +472,11 @@ mod tests {
         fs::write(dir.path().join("hello.txt"), "hello").unwrap(); assert_eq!(inspect_git(dir.path()).changed_files, 1);
         assert!(git(dir.path(), &["add", "hello.txt"]).unwrap().success);
         assert!(git(dir.path(), &["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "test"]).unwrap().success);
-        let committed = inspect_git(dir.path()); assert!(committed.head.is_some()); assert_eq!(committed.changed_files, 0);
+        let committed = inspect_git(dir.path());
+        assert!(committed.head.is_some());
+        assert_eq!(committed.changed_files, 0);
+        assert_eq!(committed.recent_commits.len(), 1);
+        assert_eq!(committed.recent_commits[0].message, "test");
         fs::rename(dir.path().join("hello.txt"), dir.path().join("renamed.txt")).unwrap();
         assert!(git(dir.path(), &["add", "-A"]).unwrap().success); assert_eq!(inspect_git(dir.path()).changed_files, 1);
     }
@@ -257,7 +484,11 @@ mod tests {
     fn scans_skip_generated_files_and_missing_directory_recovers() {
         let dir = tempfile::tempdir().unwrap(); fs::create_dir(dir.path().join("node_modules")).unwrap();
         fs::write(dir.path().join("test.http"), "GET /").unwrap(); fs::write(dir.path().join("node_modules/ignored.http"), "GET /").unwrap();
-        assert_eq!(count_http_files(dir.path()), 1);
+        fs::write(dir.path().join("schema.sql"), "CREATE TABLE users (id int);").unwrap();
+        let (count, paths, dbs) = scan_project_files(dir.path());
+        assert_eq!(count, 1);
+        assert_eq!(paths.len(), 1);
+        assert_eq!(dbs.len(), 1);
         let path = dir.path().join("later"); let project = Project { id: "x".into(), name: "x".into(), path: path.to_string_lossy().into_owned(), created_at: "".into() };
         assert!(!inspect_project(&project).exists); fs::create_dir(path).unwrap(); assert!(inspect_project(&project).exists);
     }

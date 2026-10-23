@@ -49,6 +49,18 @@ fn open_project_directory(state: tauri::State<'_, AppState>, id: String) -> Resu
 }
 
 #[tauri::command]
+fn open_in_terminal(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+    let project = state.store.project(&id)?;
+    studio_core::open_in_terminal(&project)
+}
+
+#[tauri::command]
+fn open_project_file(state: tauri::State<'_, AppState>, id: String, relative_path: String) -> Result<(), String> {
+    let project = state.store.project(&id)?;
+    studio_core::open_project_file(&project, &relative_path)
+}
+
+#[tauri::command]
 async fn choose_project_directory() -> Option<String> {
     let folder = rfd::AsyncFileDialog::new().pick_folder().await;
     folder.map(|f| f.path().to_string_lossy().to_string())
@@ -73,6 +85,8 @@ pub fn run() {
             list_tools,
             launch_tool,
             open_project_directory,
+            open_in_terminal,
+            open_project_file,
             choose_project_directory,
         ])
         .run(tauri::generate_context!())
