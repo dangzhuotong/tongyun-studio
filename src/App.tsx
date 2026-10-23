@@ -440,315 +440,273 @@ export default function App() {
   const techStack = current?.result?.techStack ?? [];
   const recentCommits = current?.result?.git?.recentCommits ?? [];
 
-  const getExplorerTitle = (activeTab: ActiveTab) => {
-    switch (activeTab) {
-      case 'agent':
-        return 'Agent 编排与目标';
-      case 'dev':
-        return '服务进程与端口';
-      case 'api':
-        return 'API 用例与测试';
-      case 'database':
-        return '数据库与表结构';
-      case 'git':
-        return '版本分支与暂存';
-      case 'files':
-        return '项目源码与资源';
-      default:
-        return '项目工作区';
-    }
-  };
-
   return (
     <div className="app-shell">
       {/* =====================================================================
-          Column 1: Narrow Activity Rail (52px Icon Bar)
+          Unified Sidebar: Project Collection & Workbench Modules (240px)
+          Collapsible to 52px icon-only rail (⌘B)
           ===================================================================== */}
-      <aside className="activity-rail" aria-label="全局活动导航">
-        <div className="rail-top">
+      <aside
+        className={`unified-sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}
+        aria-label="工作区侧边栏"
+      >
+        <div className="sidebar-header">
           <button
-            className="brand-symbol-btn"
+            type="button"
+            className="brand-button"
             onClick={() => {
-              setTab('overview');
-              setSidebarCollapsed(false);
+              if (sidebarCollapsed) {
+                setSidebarCollapsed(false);
+              } else {
+                setTab('overview');
+              }
             }}
-            title="橦云工作台 · TONGYUN STUDIO"
+            title={sidebarCollapsed ? '展开侧栏 (⌘B)' : '橦云工作台 · 回到概览'}
           >
-            <Box size={20} strokeWidth={1.5} />
+            <div className="brand-symbol">
+              <Box size={18} strokeWidth={1.8} />
+            </div>
+            {!sidebarCollapsed && (
+              <div className="brand-info">
+                <span className="brand-name">橦云工作台</span>
+                <span className="brand-subtitle">TONGYUN STUDIO</span>
+              </div>
+            )}
           </button>
-          <div className="rail-divider" />
 
-          {/* Activity Navigation Buttons */}
-          <nav className="activity-nav" aria-label="工作区模块">
+          <div className="sidebar-header-actions">
+            {!sidebarCollapsed && (
+              <button
+                type="button"
+                className="sidebar-icon-button"
+                onClick={beginAdd}
+                disabled={!isDesktop || loading || !!loadError || busy}
+                aria-label="添加项目"
+                title={isDesktop ? '添加项目 (⌘N)' : '请在桌面版添加项目'}
+              >
+                <Plus size={15} />
+              </button>
+            )}
             <button
-              className={`rail-btn ${tab === 'overview' ? 'active' : ''}`}
-              onClick={() => {
-                if (tab === 'overview') setSidebarCollapsed(prev => !prev);
-                else {
-                  setTab('overview');
-                  setSidebarCollapsed(false);
-                }
-              }}
-              title="概览"
-              aria-label="概览"
-              aria-current={tab === 'overview' ? 'page' : undefined}
+              type="button"
+              className="sidebar-icon-button"
+              onClick={() => setSidebarCollapsed(prev => !prev)}
+              title={sidebarCollapsed ? '展开侧边栏 (⌘B)' : '收起侧边栏 (⌘B)'}
+              aria-label={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
             >
-              <LayoutGrid size={18} />
-              <span className="rail-btn-text">概览</span>
+              {sidebarCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
             </button>
+          </div>
+        </div>
 
-            <button
-              className={`rail-btn ${tab === 'agent' ? 'active' : ''}`}
-              onClick={() => {
-                if (tab === 'agent') setSidebarCollapsed(prev => !prev);
-                else {
-                  setTab('agent');
-                  setSidebarCollapsed(false);
-                }
-              }}
-              title="智能体视界 · Agent 操作监视"
-              aria-label="智能体视界"
-              aria-current={tab === 'agent' ? 'page' : undefined}
-            >
-              <Bot size={18} />
-              <span className="rail-btn-text">智能体</span>
-            </button>
+        {!sidebarCollapsed && (
+          <div className="sidebar-project-section">
+            <div className="sidebar-section-title">
+              <span>项目集合</span>
+              <span className="project-count">{workspace.projects.length}</span>
+            </div>
 
+            <label className="search-field">
+              <Search size={13} />
+              <input
+                ref={searchInputRef}
+                aria-label="搜索项目"
+                placeholder="搜索项目 (⌘K)…"
+                value={filter}
+                onChange={event => setFilter(event.target.value)}
+              />
+            </label>
+
+            <div className="project-list">
+              {loading ? (
+                <p className="sidebar-message">正在读取项目…</p>
+              ) : loadError ? (
+                <p className="sidebar-message">项目读取失败</p>
+              ) : filtered.length ? (
+                filtered.map(item => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`project-row ${project?.id === item.id ? 'selected' : ''}`}
+                    disabled={busy}
+                    onClick={() => {
+                      if (project?.id !== item.id) {
+                        setActionError(null);
+                        void mutate(() => selectProject(item.id));
+                      }
+                    }}
+                    aria-current={project?.id === item.id ? 'true' : undefined}
+                    title={item.path}
+                  >
+                    <Folder size={14} className="project-folder-icon" />
+                    <span className="project-row-text">
+                      <span className="project-name">{item.name}</span>
+                      <span className="project-path">{item.path}</span>
+                    </span>
+                    {project?.id === item.id && <ChevronRight size={12} className="project-active-arrow" />}
+                  </button>
+                ))
+              ) : (
+                <div className="sidebar-empty">
+                  <Folder size={20} strokeWidth={1.3} />
+                  <p>{filter ? '没有匹配的项目' : '你的项目会显示在这里'}</p>
+                  <span>{filter ? '试试其他名称或路径' : '从一个本地目录开始'}</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Workbench Navigation: Dev, API, Database, Git, Files, Overview, Agent */}
+        <div className="sidebar-workbench-section">
+          {!sidebarCollapsed && (
+            <div className="sidebar-section-title">
+              <span>工作台模块</span>
+            </div>
+          )}
+
+          <nav className="workbench-nav" aria-label="工作区模块">
             <button
-              className={`rail-btn ${tab === 'dev' ? 'active' : ''}`}
-              onClick={() => {
-                if (tab === 'dev') setSidebarCollapsed(prev => !prev);
-                else {
-                  setTab('dev');
-                  setSidebarCollapsed(false);
-                }
-              }}
+              type="button"
+              className={`workbench-nav-btn ${tab === 'dev' ? 'active' : ''}`}
+              onClick={() => setTab('dev')}
               title="Tongyun Dev · 运行服务与终端"
               aria-label="运行服务与终端"
               aria-current={tab === 'dev' ? 'page' : undefined}
             >
-              <Terminal size={18} />
-              <span className="rail-btn-text">运行</span>
+              <Terminal size={15} />
+              <span className="workbench-nav-text">运行</span>
             </button>
 
             <button
-              className={`rail-btn ${tab === 'api' ? 'active' : ''}`}
-              onClick={() => {
-                if (tab === 'api') setSidebarCollapsed(prev => !prev);
-                else {
-                  setTab('api');
-                  setSidebarCollapsed(false);
-                }
-              }}
+              type="button"
+              className={`workbench-nav-btn ${tab === 'api' ? 'active' : ''}`}
+              onClick={() => setTab('api')}
               title="Tongyun API · 原生接口工作台"
               aria-label="接口工作台"
               aria-current={tab === 'api' ? 'page' : undefined}
             >
-              <Code2 size={18} />
-              <span className="rail-btn-text">接口</span>
+              <Code2 size={15} />
+              <span className="workbench-nav-text">接口</span>
             </button>
 
             <button
-              className={`rail-btn ${tab === 'database' ? 'active' : ''}`}
-              onClick={() => {
-                if (tab === 'database') setSidebarCollapsed(prev => !prev);
-                else {
-                  setTab('database');
-                  setSidebarCollapsed(false);
-                }
-              }}
+              type="button"
+              className={`workbench-nav-btn ${tab === 'database' ? 'active' : ''}`}
+              onClick={() => setTab('database')}
               title="Tongyun Database · 数据与 SQL"
               aria-label="数据工作台"
               aria-current={tab === 'database' ? 'page' : undefined}
             >
-              <Database size={18} />
-              <span className="rail-btn-text">数据</span>
+              <Database size={15} />
+              <span className="workbench-nav-text">数据</span>
             </button>
 
             <button
-              className={`rail-btn ${tab === 'git' ? 'active' : ''}`}
-              onClick={() => {
-                if (tab === 'git') setSidebarCollapsed(prev => !prev);
-                else {
-                  setTab('git');
-                  setSidebarCollapsed(false);
-                }
-              }}
+              type="button"
+              className={`workbench-nav-btn ${tab === 'git' ? 'active' : ''}`}
+              onClick={() => setTab('git')}
               title="Tongyun Git · 版本工作台"
               aria-label="版本工作台"
               aria-current={tab === 'git' ? 'page' : undefined}
             >
-              <GitBranch size={18} />
-              <span className="rail-btn-text">版本</span>
+              <GitBranch size={15} />
+              <span className="workbench-nav-text">版本</span>
             </button>
 
             <button
-              className={`rail-btn ${tab === 'files' ? 'active' : ''}`}
-              onClick={() => {
-                if (tab === 'files') setSidebarCollapsed(prev => !prev);
-                else {
-                  setTab('files');
-                  setSidebarCollapsed(false);
-                }
-              }}
+              type="button"
+              className={`workbench-nav-btn ${tab === 'files' ? 'active' : ''}`}
+              onClick={() => setTab('files')}
               title="Tongyun Files · 项目文件与源码"
               aria-label="项目文件与源码"
               aria-current={tab === 'files' ? 'page' : undefined}
             >
-              <FolderOpen size={18} />
-              <span className="rail-btn-text">文件</span>
+              <FolderOpen size={15} />
+              <span className="workbench-nav-text">文件</span>
+            </button>
+
+            <button
+              type="button"
+              className={`workbench-nav-btn ${tab === 'overview' ? 'active' : ''}`}
+              onClick={() => setTab('overview')}
+              title="项目概览"
+              aria-label="概览"
+              aria-current={tab === 'overview' ? 'page' : undefined}
+            >
+              <LayoutGrid size={15} />
+              <span className="workbench-nav-text">概览</span>
+            </button>
+
+            <button
+              type="button"
+              className={`workbench-nav-btn ${tab === 'agent' ? 'active' : ''}`}
+              onClick={() => setTab('agent')}
+              title="智能体视界 · Agent 操作监视"
+              aria-label="智能体视界"
+              aria-current={tab === 'agent' ? 'page' : undefined}
+            >
+              <Bot size={15} />
+              <span className="workbench-nav-text">智能体</span>
+              {!sidebarCollapsed && (
+                <span className={`agent-status-tag ${agentSession.connectionStatus === 'connected' ? 'connected' : ''}`}>
+                  {agentSession.connectionStatus === 'connected' ? '已接入' : '离线'}
+                </span>
+              )}
             </button>
           </nav>
         </div>
 
-        <div className="rail-bottom">
-          <button
-            type="button"
-            className="agent-rail-indicator"
-            onClick={() => setShowAgentCockpit(prev => !prev)}
-            title="Agent 监视舱 · 未接入 (⌘J)"
-            aria-label="打开 Agent 监视舱（未接入）"
-          >
-            <Bot size={14} />
-          </button>
-
-          <button
-            className="rail-icon-btn"
-            onClick={() => setDarkMode(prev => !prev)}
-            title={darkMode ? '切换为浅色主题（暖奶茶）' : '切换为深色模式'}
-          >
-            {darkMode ? <Sun size={16} /> : <Moon size={16} />}
-          </button>
-
-          <button
-            className="rail-icon-btn"
-            onClick={() => setSidebarCollapsed(prev => !prev)}
-            title={sidebarCollapsed ? '展开侧边栏 (⌘B)' : '收起侧边栏 (⌘B)'}
-          >
-            {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
-          </button>
-        </div>
-      </aside>
-
-      {/* =====================================================================
-          Column 2: Secondary Contextual Explorer (Collapsible, ~250px)
-          ===================================================================== */}
-      <aside
-        className={`secondary-explorer ${sidebarCollapsed ? 'collapsed' : ''}`}
-        aria-label="项目导航"
-      >
-        <div className="explorer-inner">
-          <div className="brand">
-            <div className="brand-symbol">
-              <Box size={20} strokeWidth={1.5} />
-            </div>
-            <div>
-              <span className="brand-name">橦云工作台</span>
-              <span className="brand-subtitle">TONGYUN STUDIO</span>
-            </div>
-          </div>
-
-          <div className="sidebar-section-title">
-            <span>{getExplorerTitle(tab)}</span>
-            <span className="project-count">{workspace.projects.length}</span>
-            <button
-              className="icon-button"
-              onClick={beginAdd}
-              disabled={!isDesktop || loading || !!loadError || busy}
-              aria-label="添加项目"
-              title={isDesktop ? '添加项目 (⌘N)' : '请在桌面版添加项目'}
-            >
-              <Plus size={16} />
-            </button>
-          </div>
-
-          <label className="search-field">
-            <Search size={14} />
-            <input
-              ref={searchInputRef}
-              aria-label="搜索项目"
-              placeholder="搜索项目 (⌘K)…"
-              value={filter}
-              onChange={event => setFilter(event.target.value)}
-            />
-          </label>
-
-          <div className="project-list">
-            {loading ? (
-              <p className="sidebar-message">正在读取项目…</p>
-            ) : loadError ? (
-              <p className="sidebar-message">项目读取失败</p>
-            ) : filtered.length ? (
-              filtered.map(item => (
+        <div className="sidebar-footer">
+          {!sidebarCollapsed ? (
+            <>
+              <div className="sidebar-footer-info" title={isDesktop ? '本地桌面宿主' : '浏览器演示环境'}>
+                <span className={`status-dot ${isDesktop ? 'available' : ''}`} />
+                <span>{isDesktop ? '桌面宿主' : '演示环境'}</span>
+              </div>
+              <div className="sidebar-footer-actions">
                 <button
-                  key={item.id}
-                  className={`project-row ${project?.id === item.id ? 'selected' : ''}`}
-                  disabled={busy}
-                  onClick={() => {
-                    if (project?.id !== item.id) {
-                      setActionError(null);
-                      void mutate(() => selectProject(item.id));
-                    }
-                  }}
-                  aria-current={project?.id === item.id ? 'true' : undefined}
-                  title={item.path}
+                  type="button"
+                  className="sidebar-footer-btn"
+                  onClick={() => setShowAgentCockpit(prev => !prev)}
+                  title="Agent 监视舱 (⌘J)"
+                  aria-label="Agent 监视舱"
                 >
-                  <Folder size={16} />
-                  <span>
-                    <span className="project-name">{item.name}</span>
-                    <span className="project-path">{item.path}</span>
-                  </span>
-                  {project?.id === item.id && <ChevronRight size={13} />}
+                  <Bot size={14} />
                 </button>
-              ))
-            ) : (
-              <div className="sidebar-empty">
-                <Folder size={22} strokeWidth={1.3} />
-                <p>{filter ? '没有匹配的项目' : '你的项目会显示在这里'}</p>
-                <span>{filter ? '试试其他名称或路径' : '从一个本地目录开始'}</span>
+                <button
+                  type="button"
+                  className="sidebar-footer-btn"
+                  onClick={() => setDarkMode(prev => !prev)}
+                  title={darkMode ? '切换为浅色主题（暖奶茶）' : '切换为深色模式'}
+                  aria-label="切换主题"
+                >
+                  {darkMode ? <Sun size={14} /> : <Moon size={14} />}
+                </button>
               </div>
-            )}
-          </div>
-
-          {/* Contextual quick summary inside Column 2 */}
-          {project && tab !== 'overview' && (
-            <div className="explorer-context-card">
-              <span className="explorer-context-label">当前模块焦点</span>
-              <div className="mono-subtle">{tab.toUpperCase()} · {project.name}</div>
-              <div className="explorer-quick-list">
-                <div className="explorer-quick-item">
-                  <span>Agent 状态</span>
-                  <span className="meta">未接入</span>
-                </div>
-                {tab === 'git' && current?.result?.git?.branch && (
-                  <div className="explorer-quick-item">
-                    <span>当前分支</span>
-                    <span className="mono">{current.result.git.branch}</span>
-                  </div>
-                )}
-                {tab === 'dev' && current?.result?.scripts && (
-                  <div className="explorer-quick-item">
-                    <span>脚本数量</span>
-                    <span>{current.result.scripts.length} 个</span>
-                  </div>
-                )}
-              </div>
+            </>
+          ) : (
+            <div className="sidebar-footer-collapsed">
+              <button
+                type="button"
+                className="sidebar-footer-btn"
+                onClick={() => setShowAgentCockpit(prev => !prev)}
+                title="Agent 监视舱 (⌘J)"
+                aria-label="Agent 监视舱"
+              >
+                <Bot size={14} />
+              </button>
+              <button
+                type="button"
+                className="sidebar-footer-btn"
+                onClick={() => setDarkMode(prev => !prev)}
+                title={darkMode ? '切换为浅色主题' : '切换为深色模式'}
+                aria-label="切换主题"
+              >
+                {darkMode ? <Sun size={14} /> : <Moon size={14} />}
+              </button>
             </div>
           )}
-
-          <div className="sidebar-footer">
-            <div className="sidebar-footer-info">
-              <span className="status-dot available" />
-              <span>本地工作区</span>
-            </div>
-            <button
-              className="theme-toggle-btn"
-              onClick={() => setDarkMode(prev => !prev)}
-              title={darkMode ? '切换为浅色（暖奶茶）' : '切换为深色模式'}
-            >
-              {darkMode ? <Sun size={13} /> : <Moon size={13} />}
-            </button>
-          </div>
         </div>
       </aside>
 
