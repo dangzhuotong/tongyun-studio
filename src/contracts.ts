@@ -1,4 +1,4 @@
-export type ToolId = 'dev' | 'api' | 'database' | 'git';
+export type ToolId = 'dev' | 'api' | 'database' | 'git' | 'files';
 
 export interface Project {
   id: string;
@@ -48,6 +48,43 @@ export interface ProjectInspection {
   techStack: string[];
   scripts: PackageScript[];
   dbArtifacts: DbArtifact[];
+}
+
+export interface FileEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+  sizeBytes: number;
+  modified: string;
+}
+
+export interface GitFileChange {
+  path: string;
+  status: string;
+  staged: boolean;
+}
+
+export interface ExecutionResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+}
+
+export interface HttpResponse {
+  status: number;
+  statusText: string;
+  headers: [string, string][];
+  body: string;
+  latencyMs: number;
+}
+
+export interface SqlQueryResult {
+  columns: string[];
+  rows: (string | number | boolean | null)[][];
+  rowCount: number;
+  durationMs: number;
+  error: string | null;
 }
 
 export interface ToolStatus {

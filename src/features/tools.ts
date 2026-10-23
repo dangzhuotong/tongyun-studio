@@ -1,9 +1,47 @@
 import type { ToolId } from '../contracts';
 import { Terminal, Code2, Database, GitBranch } from '../components/Icons';
+
 export const toolDefinitions = [
-  { id: 'dev', label: '运行', name: 'Tongyun Dev', Icon: Terminal, short: '服务与日志', description: '启动本地服务，查看运行状态与日志。', details: ['项目服务启停', '进程与端口', '运行日志'], hint: '在 Dev 中选择或扫描项目，再启动需要的服务。' },
-  { id: 'api', label: '接口', name: 'Tongyun API', Icon: Code2, short: '请求与响应', description: '组织接口请求，验证请求与响应。', details: ['接口请求文件', '请求环境', '响应与断言'], hint: '在 API 中打开项目的请求文件，并确认请求环境。' },
-  { id: 'database', label: '数据', name: 'Tongyun Database', Icon: Database, short: '连接与查询', description: '查看数据连接，执行查询与变更计划。', details: ['数据库连接', 'SQL 查询', '变更计划'], hint: '在 Database 中选择连接；执行前请确认目标数据库。' },
-  { id: 'git', label: '版本', name: 'Tongyun Git', Icon: GitBranch, short: '改动与提交', description: '检查工作区改动，整理代码版本。', details: ['工作区改动', '分支与历史', '提交与同步'], hint: '在 Git 中选择对应仓库，查看改动与历史。' },
+  {
+    id: 'dev',
+    label: '运行',
+    name: 'Tongyun Dev',
+    Icon: Terminal,
+    short: '服务与控制台',
+    description: '原生执行项目脚本与构建任务，实时查看控制台输出与运行状态。',
+    details: ['项目脚本原生执行', '终端输出与日志', '进程耗时与退出码'],
+    hint: '直接在工作台内启动脚本与执行 shell 命令。',
+  },
+  {
+    id: 'api',
+    label: '接口',
+    name: 'Tongyun API',
+    Icon: Code2,
+    short: '请求与测试',
+    description: '原生发送 HTTP 请求，测试 REST API，实时解析响应头与 JSON 数据体。',
+    details: ['原生 HTTP 客户端', '请求头与请求体编辑', '状态码、时延与 JSON 预览'],
+    hint: '支持直接解析并执行项目内的 .http 接口用例。',
+  },
+  {
+    id: 'database',
+    label: '数据',
+    name: 'Tongyun Database',
+    Icon: Database,
+    short: 'SQL 与模式',
+    description: '原生连接本地 SQLite 数据库，执行 SQL 查询并以表格方式检查数据。',
+    details: ['SQLite 数据库连接', 'SQL 查询与预设', '表格数据呈现与模式查看'],
+    hint: '自动发现项目内的 .db / .sqlite / .sql 模式产物。',
+  },
+  {
+    id: 'git',
+    label: '版本',
+    name: 'Tongyun Git',
+    Icon: GitBranch,
+    short: '差异与提交',
+    description: '检查工作区文件改动，查看代码差异，直接提交与切换分支。',
+    details: ['工作区文件变更检测', '差异对比查看', '原生代码提交与分支切换'],
+    hint: '无需离开工作台即可完成代码提交与分支管理。',
+  },
 ] as const;
+
 export const getTool = (id: ToolId) => toolDefinitions.find(tool => tool.id === id)!;

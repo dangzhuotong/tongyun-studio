@@ -1,11 +1,10 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import type { Project, ProjectInspection, ToolId, ToolStatus, Workspace } from './contracts';
+import type { Project, ProjectInspection, ToolId, Workspace } from './contracts';
 import {
   addProject,
   chooseProjectDirectory,
   inspectProject,
   isDesktop,
-  listTools,
   loadWorkspace,
   openInTerminal,
   openProjectDirectory,
@@ -25,9 +24,11 @@ import {
   GitCommit,
   LayoutGrid,
   LoaderCircle,
+  Moon,
   Plus,
   RefreshCw,
   Search,
+  Sun,
   Terminal,
   Trash2,
 } from './components/Icons';
@@ -35,7 +36,18 @@ import Modal from './components/Modal';
 import { toolDefinitions } from './features/tools';
 import './styles/app.css';
 
-const panels = {
+type ActiveTab = 'overview' | 'files' | ToolId;
+
+const panels: Record<
+  'files' | ToolId,
+  React.LazyExoticComponent<React.ComponentType<{
+    project: Project | null;
+    inspection?: ProjectInspection | null;
+    onRefresh?: () => void;
+    onNotify?: (msg: string) => void;
+  }>>
+> = {
+  files: lazy(() => import('./features/FilesPanel')),
   dev: lazy(() => import('./features/DevPanel')),
   api: lazy(() => import('./features/ApiPanel')),
   database: lazy(() => import('./features/DatabasePanel')),
@@ -53,12 +65,9 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
-  const [tab, setTab] = useState<'overview' | ToolId>('overview');
+  const [tab, setTab] = useState<ActiveTab>('overview');
   const [inspection, setInspection] = useState<InspectionState>(null);
   const [refresh, setRefresh] = useState(0);
-  const [tools, setTools] = useState<ToolStatus[]>([]);
-  const [toolsLoading, setToolsLoading] = useState(isDesktop);
-  const [toolsError, setToolsError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState<Project | null>(null);
   const [path, setPath] = useState('');
@@ -66,6 +75,9 @@ export default function App() {
   const [picking, setPicking] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [copiedPath, setCopiedPath] = useState(false);
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
+  });
 
   const searchInputRef = useRef<HTMLInputElement>(null);
   const toastTimerRef = useRef<number | null>(null);
@@ -78,9 +90,17 @@ export default function App() {
 
   const project = workspace.projects.find(item => item.id === workspace.activeProjectId) ?? null;
   const current = inspection?.id === project?.id ? inspection : null;
-  const toolsRequest = useRef(0);
   const loadRequest = useRef(0);
   const operationLock = useRef(false);
+
+  // Sync theme attribute to root
+  useEffect(() => {
+    if (darkMode) {
+      document.documentElement.setAttribute('data-theme', 'dark');
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+    }
+  }, [darkMode]);
 
   const readWorkspace = useCallback(async () => {
     if (!isDesktop) return;
@@ -97,32 +117,15 @@ export default function App() {
     }
   }, []);
 
-  const readTools = useCallback(async () => {
-    if (!isDesktop) return;
-    const request = ++toolsRequest.current;
-    setToolsLoading(true);
-    setToolsError(null);
-    try {
-      const result = await listTools();
-      if (request === toolsRequest.current) setTools(result);
-    } catch (cause) {
-      if (request === toolsRequest.current) setToolsError(message(cause));
-    } finally {
-      if (request === toolsRequest.current) setToolsLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
     void readWorkspace();
-    void readTools();
     return () => {
       loadRequest.current++;
-      toolsRequest.current++;
     };
-  }, [readWorkspace, readTools]);
+  }, [readWorkspace]);
 
   useEffect(() => {
-    if (!project || !isDesktop) return;
+    if (!project) return;
     let stale = false;
     setInspection({ id: project.id });
     inspectProject(project.id)
@@ -320,9 +323,17 @@ export default function App() {
         </div>
 
         <div className="sidebar-footer">
-          <span className="status-dot available" />
-          <span>本地工作区</span>
-          <span className="meta">v0.1</span>
+          <div className="sidebar-footer-info">
+            <span className="status-dot available" />
+            <span>本地工作区</span>
+          </div>
+          <button
+            className="theme-toggle-btn"
+            onClick={() => setDarkMode(prev => !prev)}
+            title={darkMode ? '切换为浅色（暖奶茶）' : '切换为深色模式'}
+          >
+            {darkMode ? <Sun size={13} /> : <Moon size={13} />}
+          </button>
         </div>
       </aside>
 
@@ -333,13 +344,13 @@ export default function App() {
             <ChevronRight size={13} />
             <span>{project?.name ?? '开始'}</span>
           </div>
-          <span className="topbar-label">一个项目，一处工作空间</span>
+          <span className="topbar-label">本地集成开发者工作台</span>
         </header>
 
         {!isDesktop && (
           <div className="preview-banner">
             <span className="status-dot available" />
-            <span>浏览器预览 · 本机功能与工具检测请在桌面版使用</span>
+            <span>浏览器演示模式 · 本机文件与命令执行已启用模拟器预览</span>
           </div>
         )}
 
@@ -358,7 +369,7 @@ export default function App() {
                 ))}
               </div>
               <p title={project?.path}>
-                {project?.path ?? '集中管理项目，按需打开开发工具。'}
+                {project?.path ?? '集中管理本地项目，运行、接口、数据与版本一站式开发。'}
               </p>
             </div>
           </div>
@@ -416,6 +427,14 @@ export default function App() {
             <LayoutGrid size={15} />
             概览
           </button>
+          <button
+            aria-current={tab === 'files' ? 'page' : undefined}
+            className={tab === 'files' ? 'active' : ''}
+            onClick={() => setTab('files')}
+          >
+            <FolderOpen size={15} />
+            文件
+          </button>
           {toolDefinitions.map(tool => (
             <button
               key={tool.id}
@@ -454,15 +473,12 @@ export default function App() {
               </button>
             </div>
           ) : Panel ? (
-            <Suspense fallback={<div className="loading-state" role="status">正在打开面板…</div>}>
+            <Suspense fallback={<div className="loading-state" role="status">正在打开工作台…</div>}>
               <Panel
                 key={`${tab}:${project?.id ?? 'empty'}`}
                 project={project}
                 inspection={current?.result}
-                status={tools.find(tool => tool.id === tab)}
-                loading={toolsLoading}
-                error={toolsError}
-                onRefresh={() => void readTools()}
+                onRefresh={() => setRefresh(v => v + 1)}
                 onNotify={notify}
               />
             </Suspense>
@@ -616,56 +632,42 @@ export default function App() {
 
               <section className="tools-section">
                 <div className="section-heading">
-                  <h2>开发工具</h2>
-                  <span className="meta">按需打开 · 独立运行</span>
+                  <h2>工作台模块</h2>
+                  <span className="meta">原生内嵌 · 实时工作</span>
                 </div>
                 <div className="tools-grid">
-                  {toolDefinitions.map(tool => {
-                    const installed = tools.find(item => item.id === tool.id);
-                    return (
-                      <button
-                        className="tool-card"
-                        key={tool.id}
-                        onClick={() => setTab(tool.id)}
-                      >
-                        <div className="tool-card-top">
-                          <div className="tool-icon">
-                            <tool.Icon size={20} strokeWidth={1.5} />
-                          </div>
-                          <ArrowUpRight size={15} />
+                  {toolDefinitions.map(tool => (
+                    <button
+                      className="tool-card"
+                      key={tool.id}
+                      onClick={() => setTab(tool.id)}
+                    >
+                      <div className="tool-card-top">
+                        <div className="tool-icon">
+                          <tool.Icon size={20} strokeWidth={1.5} />
                         </div>
-                        <h3>
-                          {tool.label}
-                          <span>{tool.name.replace('Tongyun ', '')}</span>
-                        </h3>
-                        <p>{tool.description}</p>
-                        <div className="tool-card-bottom">
-                          <span>
-                            {!isDesktop
-                              ? '桌面版可用'
-                              : toolsLoading
-                              ? '检测中…'
-                              : toolsError
-                              ? '检测失败'
-                              : installed?.available
-                              ? '已安装'
-                              : '未检测到安装'}
-                          </span>
-                          <span>
-                            查看入口 <ChevronRight size={12} />
-                          </span>
-                        </div>
-                      </button>
-                    );
-                  })}
+                        <ArrowUpRight size={15} />
+                      </div>
+                      <h3>
+                        {tool.label}
+                        <span>{tool.name.replace('Tongyun ', '')}</span>
+                      </h3>
+                      <p>{tool.description}</p>
+                      <div className="tool-card-bottom">
+                        <span className="badge-matcha-soft">原生内嵌</span>
+                        <span>
+                          进入工作台 <ChevronRight size={12} />
+                        </span>
+                      </div>
+                    </button>
+                  ))}
                 </div>
               </section>
 
               <div className="workspace-note">
                 <GitBranch size={15} />
                 <p>
-                  项目保留在原目录，工具保留各自的工作方式。
-                  <span>选择模块不会自动启动服务或连接数据库。</span>
+                  所有操作直接在项目工作区执行，数据留在本机，随时切换。
                 </p>
               </div>
             </>
@@ -675,9 +677,9 @@ export default function App() {
         <footer className="statusbar">
           <span className="inline">
             <span className={`status-dot ${isDesktop ? 'available' : ''}`} />
-            {isDesktop ? '本机桌面' : '浏览器预览'}
+            {isDesktop ? '本机桌面宿主' : '浏览器演示环境'}
           </span>
-          <span>{busy ? '正在保存…' : project ? '本地项目已登记' : '等待添加项目'}</span>
+          <span>{busy ? '正在保存…' : project ? `已激活：${project.name}` : '等待添加项目'}</span>
           <span className="statusbar-end">TONGYUN STUDIO</span>
         </footer>
       </div>
@@ -698,23 +700,19 @@ export default function App() {
                 onChange={event => setPath(event.target.value)}
                 placeholder="/完整路径/项目目录"
                 disabled={busy || picking}
-                autoComplete="off"
+                autoFocus
               />
               <button
                 type="button"
                 className="secondary-button"
+                onClick={() => void pick()}
                 disabled={busy || picking}
-                onClick={pick}
               >
-                <FolderOpen size={15} />
-                {picking ? '选择中…' : '选择目录'}
+                {picking ? <LoaderCircle size={14} className="spin" /> : <FolderOpen size={14} />}
+                浏览…
               </button>
             </div>
-            {formError && (
-              <p role="alert" className="inline-error">
-                {formError}
-              </p>
-            )}
+            {formError && <p className="form-error" role="alert">{formError}</p>}
             <div className="modal-actions">
               <button
                 type="button"
@@ -725,12 +723,12 @@ export default function App() {
                 取消
               </button>
               <button
-                className="primary-button"
                 type="submit"
+                className="primary-button"
                 disabled={busy || picking || !path.trim()}
               >
                 {busy && <LoaderCircle size={14} className="spin" />}
-                {busy ? '正在添加…' : '添加项目'}
+                添加
               </button>
             </div>
           </form>
@@ -738,51 +736,55 @@ export default function App() {
       )}
 
       {removing && (
-        <Modal title="移除项目登记？" onClose={() => setRemoving(null)} busy={busy}>
-          <p className="modal-description">
-            从工作台移除「{removing.name}」的登记。
-            <br />
-            磁盘中的项目文件和 Git 历史都会完整保留。
-          </p>
-          <code className="remove-path">{removing.path}</code>
-          {formError && (
-            <p className="inline-error" role="alert">
-              {formError}
+        <Modal
+          title={`移除项目登记：${removing.name}`}
+          onClose={() => setRemoving(null)}
+          busy={busy}
+        >
+          <div className="confirm-content">
+            <p className="modal-description">
+              确定要将 <strong>{removing.name}</strong> 从橦云工作台中移除吗？
             </p>
-          )}
-          <div className="modal-actions">
-            <button
-              className="secondary-button"
-              disabled={busy}
-              onClick={() => setRemoving(null)}
-            >
-              取消
-            </button>
-            <button
-              className="primary-button"
-              disabled={busy}
-              onClick={() =>
-                void mutate(
-                  () => removeProject(removing.id),
-                  () => {
-                    setRemoving(null);
-                    setTab('overview');
-                    notify('已移除项目登记');
-                  },
-                  true,
-                )
-              }
-            >
-              {busy ? '正在移除…' : '仅移除登记'}
-            </button>
+            <p className="confirm-tip">
+              这只会从工作台项目列表中移除登记，<strong>绝不会</strong>删除或修改磁盘上的任何物理文件。
+            </p>
+            <code className="confirm-path">{removing.path}</code>
+            {formError && <p className="form-error" role="alert">{formError}</p>}
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setRemoving(null)}
+                disabled={busy}
+              >
+                保留
+              </button>
+              <button
+                type="button"
+                className="danger-button"
+                onClick={() => {
+                  void mutate(
+                    () => removeProject(removing.id),
+                    () => {
+                      setRemoving(null);
+                      notify('已移除项目登记');
+                    },
+                    true,
+                  );
+                }}
+                disabled={busy}
+              >
+                {busy && <LoaderCircle size={14} className="spin" />}
+                确认移除
+              </button>
+            </div>
           </div>
         </Modal>
       )}
 
-      {/* Floating Toast Notification */}
       {toast && (
-        <div className="floating-toast" role="status">
-          <span className="status-dot available" />
+        <div className="toast-notification" role="status">
+          <Check size={14} className="accent-color" />
           <span>{toast}</span>
         </div>
       )}
