@@ -87,6 +87,32 @@ describe('App', () => {
     expect(screen.getByText('原生文件浏览')).toBeInTheDocument();
   });
 
+  it('allows switching to agent panel tab and renders agent mission control', async () => {
+    render(<App />);
+
+    const nav = screen.getByRole('navigation', { name: '工作区模块' });
+    const agentTab = within(nav).getByRole('button', { name: /智能体/ });
+    fireEvent.click(agentTab);
+
+    expect(
+      await screen.findByRole('heading', { name: 'Tongyun Agent · 智能体全景视界与调度中枢' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('面向未来的 Agent 优先开发范式：原子工具调用轨迹、目标与计划多步编排、人机协同双向干预。')).toBeInTheDocument();
+  });
+
+  it('allows toggling secondary sidebar and agent cockpit', async () => {
+    render(<App />);
+
+    const sidebarToggle = screen.getByTitle(/收起侧边栏/);
+    fireEvent.click(sidebarToggle);
+    expect(screen.getByTitle(/展开侧边栏/)).toBeInTheDocument();
+
+    const agentCockpitBtn = screen.getByTitle(/切换 Agent 实时操作可视化监视舱/);
+    fireEvent.click(agentCockpitBtn);
+    expect(screen.getByText('Agent 操作监视舱')).toBeInTheDocument();
+    expect(screen.getByText('实时执行轨迹 (倒序流式)')).toBeInTheDocument();
+  });
+
   it('verifies tool definitions completeness', () => {
     expect(toolDefinitions).toHaveLength(4);
     expect(getTool('dev').name).toBe('Tongyun Dev');

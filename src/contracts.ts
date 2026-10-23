@@ -1,5 +1,7 @@
 export type ToolId = 'dev' | 'api' | 'database' | 'git' | 'files';
 
+export type ActiveTab = 'overview' | 'agent' | ToolId;
+
 export interface Project {
   id: string;
   name: string;
@@ -130,4 +132,48 @@ export interface ToolStatus {
 
 export interface LaunchResult {
   message: string;
+}
+
+export type AgentActionKind = 'terminal' | 'edit' | 'git' | 'sql' | 'http' | 'inspect' | 'plan';
+
+export type AgentActionStatus = 'running' | 'done' | 'error' | 'pending';
+
+export interface AgentActionStep {
+  id: string;
+  kind: AgentActionKind;
+  title: string;
+  detail: string;
+  status: AgentActionStatus;
+  target?: string;
+  exitCode?: number;
+  durationMs?: number;
+  timestamp: string;
+  toolPayload?: Record<string, unknown>;
+  outputPreview?: string;
+}
+
+export interface AgentPlanStepItem {
+  id: string;
+  text: string;
+  status: 'done' | 'active' | 'todo';
+}
+
+export interface AgentTaskPlan {
+  id: string;
+  goal: string;
+  status: 'planning' | 'executing' | 'completed' | 'paused';
+  progressPercent: number;
+  steps: AgentPlanStepItem[];
+}
+
+export interface AgentSessionState {
+  agentName: string;
+  model: string;
+  mode: 'autonomous' | 'collaborative' | 'observer';
+  activeGoal: string;
+  plan: AgentTaskPlan;
+  actions: AgentActionStep[];
+  tokensConsumed: number;
+  filesTouched: number;
+  lastHeartbeat: string;
 }
