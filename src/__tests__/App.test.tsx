@@ -30,9 +30,9 @@ describe('App', () => {
     fireEvent.click(devTab);
 
     expect(
-      await screen.findByRole('heading', { name: 'Tongyun Dev · 服务与终端' }),
+      await screen.findByRole('heading', { name: 'Tongyun Dev · 企业级服务与终端' }),
     ).toBeInTheDocument();
-    expect(screen.getByText('原生内嵌控制台')).toBeInTheDocument();
+    expect(screen.getByText('企业级进程控制')).toBeInTheDocument();
   });
 
   it('allows switching to api panel tab', async () => {
@@ -43,9 +43,9 @@ describe('App', () => {
     fireEvent.click(apiTab);
 
     expect(
-      await screen.findByRole('heading', { name: 'Tongyun API · 原生接口工作台' }),
+      await screen.findByRole('heading', { name: 'Tongyun API · 企业级接口工作台' }),
     ).toBeInTheDocument();
-    expect(screen.getByText('原生 HTTP 客户端')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /导入 cURL/ })).toBeInTheDocument();
   });
 
   it('allows switching to database panel tab', async () => {
@@ -56,9 +56,9 @@ describe('App', () => {
     fireEvent.click(dbTab);
 
     expect(
-      await screen.findByRole('heading', { name: 'Tongyun Database · 数据与 SQL' }),
+      await screen.findByRole('heading', { name: 'Tongyun Database · 企业级数据工作台' }),
     ).toBeInTheDocument();
-    expect(screen.getByText('原生 SQLite 引擎')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /导出 CSV/ })).toBeInTheDocument();
   });
 
   it('allows switching to git panel tab', async () => {
@@ -69,9 +69,9 @@ describe('App', () => {
     fireEvent.click(gitTab);
 
     expect(
-      await screen.findByRole('heading', { name: 'Tongyun Git · 版本工作台' }),
+      await screen.findByRole('heading', { name: 'Tongyun Git · 企业级版本工作台' }),
     ).toBeInTheDocument();
-    expect(screen.getByText('原生 Git 工作流')).toBeInTheDocument();
+    expect(screen.getByText('双栏暂存工作流')).toBeInTheDocument();
   });
 
   it('allows switching to files panel tab', async () => {

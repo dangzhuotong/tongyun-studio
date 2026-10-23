@@ -1,8 +1,9 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import type { Project, ProjectInspection, ToolId, Workspace } from './contracts';
+import type { AiProjectContext, Project, ProjectInspection, ToolId, Workspace } from './contracts';
 import {
   addProject,
   chooseProjectDirectory,
+  generateAiProjectContext,
   inspectProject,
   isDesktop,
   loadWorkspace,
@@ -28,11 +29,13 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Sparkles,
   Sun,
   Terminal,
   Trash2,
 } from './components/Icons';
 import Modal from './components/Modal';
+import AiContextModal from './components/AiContextModal';
 import { toolDefinitions } from './features/tools';
 import './styles/app.css';
 
@@ -78,6 +81,9 @@ export default function App() {
   const [darkMode, setDarkMode] = useState<boolean>(() => {
     return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
   });
+  const [aiContext, setAiContext] = useState<AiProjectContext | null>(null);
+  const [showAiModal, setShowAiModal] = useState(false);
+  const [loadingAi, setLoadingAi] = useState(false);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
   const toastTimerRef = useRef<number | null>(null);
@@ -89,6 +95,20 @@ export default function App() {
   }, []);
 
   const project = workspace.projects.find(item => item.id === workspace.activeProjectId) ?? null;
+
+  const openAiContext = async () => {
+    if (!project || loadingAi) return;
+    setLoadingAi(true);
+    try {
+      const ctx = await generateAiProjectContext(project.id);
+      setAiContext(ctx);
+      setShowAiModal(true);
+    } catch (err) {
+      notify(`生成 AI 上下文失败: ${err}`);
+    } finally {
+      setLoadingAi(false);
+    }
+  };
   const current = inspection?.id === project?.id ? inspection : null;
   const loadRequest = useRef(0);
   const operationLock = useRef(false);
@@ -344,7 +364,25 @@ export default function App() {
             <ChevronRight size={13} />
             <span>{project?.name ?? '开始'}</span>
           </div>
-          <span className="topbar-label">本地集成开发者工作台</span>
+
+          <div className="topbar-actions">
+            {project && (
+              <button
+                className="ai-topbar-pill"
+                onClick={() => void openAiContext()}
+                disabled={loadingAi}
+                title="生成并复制当前项目的企业级 AI 上下文与 Prompt"
+              >
+                {loadingAi ? (
+                  <LoaderCircle size={13} className="spin" />
+                ) : (
+                  <Sparkles size={13} className="sparkle-icon" />
+                )}
+                <span>AI 上下文协同</span>
+              </button>
+            )}
+            <span className="topbar-label">本地集成开发者工作台</span>
+          </div>
         </header>
 
         {!isDesktop && (
@@ -780,6 +818,14 @@ export default function App() {
             </div>
           </div>
         </Modal>
+      )}
+
+      {showAiModal && aiContext && (
+        <AiContextModal
+          context={aiContext}
+          onClose={() => setShowAiModal(false)}
+          onNotify={notify}
+        />
       )}
 
       {toast && (

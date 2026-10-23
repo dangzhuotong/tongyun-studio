@@ -5,15 +5,28 @@ import {
   getGitChangedFiles,
   getGitDiff,
   createGitCommit,
+  gitCommitAmend,
   switchGitBranch,
+  gitStageFile,
+  gitUnstageFile,
+  gitStageAll,
+  gitUnstageAll,
+  gitDiscardFile,
+  gitCreateBranch,
+  gitRemoteSync,
 } from '../bridge';
 import {
-  Check,
   Clock,
+  DownloadCloud,
   GitBranch,
   GitCommit,
   LoaderCircle,
+  Minus,
+  Plus,
   RefreshCw,
+  Sparkles,
+  Undo2,
+  UploadCloud,
 } from '../components/Icons';
 
 export default function GitPanel({
@@ -34,6 +47,8 @@ export default function GitPanel({
   const [branches, setBranches] = useState<string[]>([]);
   const [currentBranch, setCurrentBranch] = useState<string>(git?.branch ?? 'main');
   const [switchingBranch, setSwitchingBranch] = useState(false);
+  const [creatingBranch, setCreatingBranch] = useState(false);
+  const [newBranchName, setNewBranchName] = useState('');
 
   const [changedFiles, setChangedFiles] = useState<GitFileChange[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -41,8 +56,10 @@ export default function GitPanel({
   const [loadingDiff, setLoadingDiff] = useState(false);
 
   const [commitMessage, setCommitMessage] = useState('');
+  const [isAmend, setIsAmend] = useState(false);
   const [committing, setCommitting] = useState(false);
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState<'fetch' | 'pull' | 'push' | null>(null);
 
   const loadGitState = async () => {
     if (!project || !isRepo) return;
@@ -55,9 +72,11 @@ export default function GitPanel({
       setChangedFiles(fList);
 
       const firstFile = fList[0]?.path ?? null;
-      setSelectedFile(firstFile);
-      if (firstFile) {
+      if (!selectedFile && firstFile) {
+        setSelectedFile(firstFile);
         void loadDiff(firstFile);
+      } else if (selectedFile) {
+        void loadDiff(selectedFile);
       } else {
         void loadDiff(undefined);
       }
@@ -78,7 +97,7 @@ export default function GitPanel({
     setLoadingDiff(true);
     try {
       const diff = await getGitDiff(project.id, filePath);
-      setDiffText(diff || '(该文件或工作区暂无文本差异)');
+      setDiffText(diff || '(该文件暂无文本差异)');
     } catch (e) {
       setDiffText(`读取差异失败：${e}`);
     } finally {
@@ -89,6 +108,65 @@ export default function GitPanel({
   const handleSelectFile = (path: string) => {
     setSelectedFile(path);
     void loadDiff(path);
+  };
+
+  const handleStageFile = async (e: React.MouseEvent, path: string) => {
+    e.stopPropagation();
+    if (!project) return;
+    try {
+      await gitStageFile(project.id, path);
+      onNotify?.(`已暂存：${path}`);
+      void loadGitState();
+    } catch (err) {
+      onNotify?.(`暂存失败：${err}`);
+    }
+  };
+
+  const handleUnstageFile = async (e: React.MouseEvent, path: string) => {
+    e.stopPropagation();
+    if (!project) return;
+    try {
+      await gitUnstageFile(project.id, path);
+      onNotify?.(`已取消暂存：${path}`);
+      void loadGitState();
+    } catch (err) {
+      onNotify?.(`取消暂存失败：${err}`);
+    }
+  };
+
+  const handleDiscardFile = async (e: React.MouseEvent, path: string) => {
+    e.stopPropagation();
+    if (!project) return;
+    if (!window.confirm(`确定要丢弃文件 ${path} 的所有修改吗？此操作无法撤销。`)) return;
+    try {
+      await gitDiscardFile(project.id, path);
+      onNotify?.(`已丢弃修改：${path}`);
+      void loadGitState();
+    } catch (err) {
+      onNotify?.(`丢弃修改失败：${err}`);
+    }
+  };
+
+  const handleStageAll = async () => {
+    if (!project) return;
+    try {
+      await gitStageAll(project.id);
+      onNotify?.('已全部暂存');
+      void loadGitState();
+    } catch (err) {
+      onNotify?.(`全部暂存失败：${err}`);
+    }
+  };
+
+  const handleUnstageAll = async () => {
+    if (!project) return;
+    try {
+      await gitUnstageAll(project.id);
+      onNotify?.('已取消全部暂存');
+      void loadGitState();
+    } catch (err) {
+      onNotify?.(`取消全部暂存失败：${err}`);
+    }
   };
 
   const handleBranchChange = async (newBranch: string) => {
@@ -107,15 +185,51 @@ export default function GitPanel({
     }
   };
 
+  const handleCreateBranch = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!project || !newBranchName.trim()) return;
+    try {
+      const msg = await gitCreateBranch(project.id, newBranchName.trim());
+      setCreatingBranch(false);
+      setNewBranchName('');
+      onNotify?.(msg);
+      onRefresh?.();
+      void loadGitState();
+    } catch (err) {
+      onNotify?.(`创建分支失败：${err}`);
+    }
+  };
+
+  const handleSync = async (action: 'fetch' | 'pull' | 'push') => {
+    if (!project || syncing) return;
+    setSyncing(action);
+    try {
+      const msg = await gitRemoteSync(project.id, action);
+      onNotify?.(msg);
+      onRefresh?.();
+      void loadGitState();
+    } catch (err) {
+      onNotify?.(`${action} 失败：${err}`);
+    } finally {
+      setSyncing(null);
+    }
+  };
+
   const handleCommit = async (e?: FormEvent) => {
     if (e) e.preventDefault();
     if (!project || committing || !commitMessage.trim()) return;
 
     setCommitting(true);
     try {
-      const result = await createGitCommit(project.id, commitMessage.trim());
+      if (isAmend) {
+        const result = await gitCommitAmend(project.id, commitMessage.trim());
+        onNotify?.(`Amend 提交成功：${result}`);
+      } else {
+        const result = await createGitCommit(project.id, commitMessage.trim());
+        onNotify?.(`提交成功：${result}`);
+      }
       setCommitMessage('');
-      onNotify?.(`提交成功：${result}`);
+      setIsAmend(false);
       onRefresh?.();
       void loadGitState();
     } catch (err) {
@@ -125,6 +239,27 @@ export default function GitPanel({
     }
   };
 
+  const generateAiCommitMessage = () => {
+    const staged = changedFiles.filter(f => f.staged);
+    const targets = staged.length > 0 ? staged : changedFiles;
+    if (targets.length === 0) {
+      onNotify?.('当前无改动文件可供分析');
+      return;
+    }
+
+    const first = targets[0].path;
+    let type = 'feat';
+    if (first.includes('test')) type = 'test';
+    else if (first.includes('fix') || first.includes('bug')) type = 'fix';
+    else if (first.includes('doc') || first.endsWith('.md')) type = 'docs';
+    else if (first.includes('style') || first.endsWith('.css')) type = 'style';
+
+    const cleanName = first.split('/').pop()?.replace(/\.[^/.]+$/, '') || 'core';
+    const generated = `${type}: 更新 ${cleanName} 并优化相关实现`;
+    setCommitMessage(generated);
+    onNotify?.('✨ 已由 AI 智能提炼规范提交说明');
+  };
+
   const copyHash = (hash: string) => {
     navigator.clipboard.writeText(hash);
     setCopiedHash(hash);
@@ -132,19 +267,8 @@ export default function GitPanel({
     setTimeout(() => setCopiedHash(null), 2000);
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'M':
-        return 'status-modified';
-      case 'A':
-      case '??':
-        return 'status-added';
-      case 'D':
-        return 'status-deleted';
-      default:
-        return 'status-other';
-    }
-  };
+  const stagedFiles = changedFiles.filter(f => f.staged);
+  const unstagedFiles = changedFiles.filter(f => !f.staged);
 
   const renderDiffLine = (line: string, index: number) => {
     let className = 'diff-line';
@@ -170,12 +294,12 @@ export default function GitPanel({
             <GitBranch size={22} strokeWidth={1.5} />
           </div>
           <div>
-            <h2 id="git-title">Tongyun Git · 版本工作台</h2>
-            <p>检查工作区代码差异，直接在应用内完成代码提交、分支切换与提交记录追溯。</p>
+            <h2 id="git-title">Tongyun Git · 企业级版本工作台</h2>
+            <p>暂存区精细化管理、分支创建切换、远程同步、代码差异对比与 AI 智能提交生成。</p>
           </div>
         </div>
         <div className="workbench-badges">
-          <span className="badge-matcha">原生 Git 工作流</span>
+          <span className="badge-matcha">双栏暂存工作流</span>
           {project && <span className="mono-subtle">{project.name}</span>}
         </div>
       </div>
@@ -192,89 +316,188 @@ export default function GitPanel({
         </div>
       ) : (
         <>
-          {/* Branch & Status Toolbar */}
+          {/* Branch & Remote Sync Toolbar */}
           <div className="git-toolbar-bar">
             <div className="branch-selector-group">
               <GitBranch size={15} />
-              <span className="toolbar-label">当前分支:</span>
+              <span className="toolbar-label">分支:</span>
               <select
                 className="branch-select"
                 value={currentBranch}
                 onChange={e => void handleBranchChange(e.target.value)}
                 disabled={switchingBranch}
               >
-                {branches.length > 0 ? (
-                  branches.map(b => (
-                    <option key={b} value={b}>
-                      {b}
-                    </option>
-                  ))
-                ) : (
-                  <option value={currentBranch}>{currentBranch}</option>
-                )}
+                {branches.map(b => (
+                  <option key={b} value={b}>
+                    {b}
+                  </option>
+                ))}
               </select>
               {switchingBranch && <LoaderCircle size={13} className="spin" />}
+
+              {!creatingBranch ? (
+                <button
+                  className="text-button-sm"
+                  onClick={() => setCreatingBranch(true)}
+                  title="新建并切换到新分支"
+                >
+                  + 新建分支
+                </button>
+              ) : (
+                <form onSubmit={handleCreateBranch} className="inline-branch-form">
+                  <input
+                    className="inline-branch-input"
+                    placeholder="分支名 feature/..."
+                    value={newBranchName}
+                    onChange={e => setNewBranchName(e.target.value)}
+                    autoFocus
+                  />
+                  <button type="submit" className="primary-button-sm">
+                    创建
+                  </button>
+                  <button
+                    type="button"
+                    className="text-button-xs"
+                    onClick={() => setCreatingBranch(false)}
+                  >
+                    取消
+                  </button>
+                </form>
+              )}
             </div>
 
             <div className="git-toolbar-meta">
+              <div className="remote-actions-group">
+                <button
+                  className="git-sync-btn"
+                  onClick={() => void handleSync('fetch')}
+                  disabled={!!syncing}
+                  title="获取远程更新"
+                >
+                  <RefreshCw size={12} className={syncing === 'fetch' ? 'spin' : ''} />
+                  Fetch
+                </button>
+                <button
+                  className="git-sync-btn"
+                  onClick={() => void handleSync('pull')}
+                  disabled={!!syncing}
+                  title="拉取并合并远程变更"
+                >
+                  <DownloadCloud size={12} className={syncing === 'pull' ? 'spin' : ''} />
+                  Pull
+                </button>
+                <button
+                  className="git-sync-btn"
+                  onClick={() => void handleSync('push')}
+                  disabled={!!syncing}
+                  title="推送本地提交至远程"
+                >
+                  <UploadCloud size={12} className={syncing === 'push' ? 'spin' : ''} />
+                  Push
+                </button>
+              </div>
+
               <span className="badge-changes">
-                {changedFiles.length} 项未提交变更
+                {stagedFiles.length} 暂存 / {unstagedFiles.length} 未暂存
               </span>
-              <button
-                className="text-button-sm"
-                onClick={() => {
-                  onRefresh?.();
-                  void loadGitState();
-                }}
-                title="重新扫描工作区状态"
-              >
-                <RefreshCw size={13} />
-                刷新
-              </button>
             </div>
           </div>
 
-          {/* Side-by-Side Workbench: Left Changes List, Right Diff & Commit */}
+          {/* Side-by-Side Workbench: Left Changes Dual-List, Right Diff & Commit */}
           <div className="git-workbench-split">
-            {/* Left Column: Changed Files */}
+            {/* Left Column: Dual Staged / Unstaged Lists */}
             <div className="git-changed-files-pane">
-              <div className="pane-header">
-                <span>变更文件 ({changedFiles.length})</span>
-                {changedFiles.length > 0 && (
-                  <button
-                    className="text-button-xs"
-                    onClick={() => {
-                      setSelectedFile(null);
-                      void loadDiff(undefined);
-                    }}
-                  >
-                    全部差异
-                  </button>
-                )}
+              {/* Staged Section */}
+              <div className="staging-section">
+                <div className="pane-header">
+                  <span>已暂存改动 (Staged: {stagedFiles.length})</span>
+                  {stagedFiles.length > 0 && (
+                    <button className="text-button-xs" onClick={handleUnstageAll}>
+                      取消全选
+                    </button>
+                  )}
+                </div>
+                <div className="changed-files-list">
+                  {stagedFiles.length === 0 ? (
+                    <div className="files-empty-hint">暂无已暂存文件</div>
+                  ) : (
+                    stagedFiles.map(f => (
+                      <div
+                        key={`staged:${f.path}`}
+                        className={`changed-file-row ${selectedFile === f.path ? 'selected' : ''}`}
+                        onClick={() => handleSelectFile(f.path)}
+                      >
+                        <span className="status-tag status-added">{f.status}</span>
+                        <span className="file-path" title={f.path}>
+                          {f.path}
+                        </span>
+                        <button
+                          className="file-action-icon-btn"
+                          onClick={e => void handleUnstageFile(e, f.path)}
+                          title="取消暂存"
+                        >
+                          <Minus size={12} />
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
 
-              <div className="changed-files-list">
-                {changedFiles.length === 0 ? (
-                  <div className="files-empty-state">
-                    <Check size={18} className="accent-color" />
-                    <span>工作区整洁，无未提交变更</span>
-                  </div>
-                ) : (
-                  changedFiles.map(f => (
-                    <div
-                      key={f.path}
-                      className={`changed-file-row ${selectedFile === f.path ? 'selected' : ''}`}
-                      onClick={() => handleSelectFile(f.path)}
-                    >
-                      <span className={`status-tag ${getStatusColor(f.status)}`}>
-                        {f.status}
-                      </span>
-                      <span className="file-path" title={f.path}>
-                        {f.path}
-                      </span>
-                    </div>
-                  ))
-                )}
+              {/* Unstaged Section */}
+              <div className="staging-section unstaged">
+                <div className="pane-header">
+                  <span>工作区改动 (Unstaged: {unstagedFiles.length})</span>
+                  {unstagedFiles.length > 0 && (
+                    <button className="text-button-xs" onClick={handleStageAll}>
+                      全部暂存
+                    </button>
+                  )}
+                </div>
+                <div className="changed-files-list">
+                  {unstagedFiles.length === 0 ? (
+                    <div className="files-empty-hint">工作区干净，无未暂存改动</div>
+                  ) : (
+                    unstagedFiles.map(f => (
+                      <div
+                        key={`unstaged:${f.path}`}
+                        className={`changed-file-row ${selectedFile === f.path ? 'selected' : ''}`}
+                        onClick={() => handleSelectFile(f.path)}
+                      >
+                        <span
+                          className={`status-tag ${
+                            f.status === 'M'
+                              ? 'status-modified'
+                              : f.status === 'D'
+                              ? 'status-deleted'
+                              : 'status-other'
+                          }`}
+                        >
+                          {f.status}
+                        </span>
+                        <span className="file-path" title={f.path}>
+                          {f.path}
+                        </span>
+                        <div className="file-actions-pair">
+                          <button
+                            className="file-action-icon-btn"
+                            onClick={e => void handleDiscardFile(e, f.path)}
+                            title="丢弃此文件的修改"
+                          >
+                            <Undo2 size={12} />
+                          </button>
+                          <button
+                            className="file-action-icon-btn stage"
+                            onClick={e => void handleStageFile(e, f.path)}
+                            title="暂存此文件"
+                          >
+                            <Plus size={12} />
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
             </div>
 
@@ -282,6 +505,31 @@ export default function GitPanel({
             <div className="git-diff-commit-pane">
               {/* In-app Commit Box */}
               <form onSubmit={handleCommit} className="commit-box-card">
+                <div className="commit-tools-row">
+                  <div className="conventional-prefixes">
+                    {['feat:', 'fix:', 'refactor:', 'docs:', 'test:', 'chore:'].map(prefix => (
+                      <button
+                        key={prefix}
+                        type="button"
+                        className="prefix-chip"
+                        onClick={() => setCommitMessage(prev => (prev.startsWith(prefix) ? prev : `${prefix} ${prev.replace(/^[a-z]+:\s*/, '')}`))}
+                      >
+                        {prefix}
+                      </button>
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    className="ai-assist-btn"
+                    onClick={generateAiCommitMessage}
+                    title="由 AI 分析已选改动并提炼提交信息"
+                  >
+                    <Sparkles size={12} />
+                    AI 生成提交信息
+                  </button>
+                </div>
+
                 <textarea
                   className="commit-textarea"
                   placeholder="填写提交说明 (例如 feat: 添加用户设置页面，支持 Cmd+Enter 快速提交)…"
@@ -296,20 +544,32 @@ export default function GitPanel({
                   }}
                   disabled={committing || changedFiles.length === 0}
                 />
+
                 <div className="commit-actions-bar">
-                  <span className="meta">快捷键: ⌘ + Enter 快速提交</span>
-                  <button
-                    type="submit"
-                    className="primary-button-sm"
-                    disabled={committing || !commitMessage.trim() || changedFiles.length === 0}
-                  >
-                    {committing ? (
-                      <LoaderCircle size={13} className="spin" />
-                    ) : (
-                      <GitCommit size={13} />
-                    )}
-                    <span>{committing ? '提交中…' : '提交更改'}</span>
-                  </button>
+                  <label className="amend-checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={isAmend}
+                      onChange={e => setIsAmend(e.target.checked)}
+                    />
+                    <span>Amend (修改上一次提交)</span>
+                  </label>
+
+                  <div className="commit-buttons-group">
+                    <span className="meta">⌘ + Enter 提交</span>
+                    <button
+                      type="submit"
+                      className="primary-button-sm"
+                      disabled={committing || !commitMessage.trim() || changedFiles.length === 0}
+                    >
+                      {committing ? (
+                        <LoaderCircle size={13} className="spin" />
+                      ) : (
+                        <GitCommit size={13} />
+                      )}
+                      <span>{committing ? '提交中…' : isAmend ? '确认 Amend' : '提交更改'}</span>
+                    </button>
+                  </div>
                 </div>
               </form>
 

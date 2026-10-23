@@ -235,11 +235,55 @@ pub struct FileEntry {
     pub size: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitFileChange {
     pub path: String,
     pub status: String,
+    pub staged: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbTableInfo {
+    pub name: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbColumnInfo {
+    pub cid: i64,
+    pub name: String,
+    pub data_type: String,
+    pub not_null: bool,
+    pub dflt_value: Option<String>,
+    pub pk: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaginatedData {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    pub total_rows: usize,
+    pub page: usize,
+    pub page_size: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListeningPort {
+    pub port: u16,
+    pub process: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiProjectContext {
+    pub project_name: String,
+    pub project_path: String,
+    pub markdown: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -691,16 +735,164 @@ pub fn get_git_changed_files(project: &Project) -> Result<Vec<GitFileChange>> {
     let text = output_string(&output.stdout);
     let mut changes = Vec::new();
     for line in text.lines() {
-        if line.len() >= 3 {
-            let status = line[0..2].trim().to_owned();
+        if line.len() >= 4 {
+            let x = line.chars().next().unwrap_or(' ');
+            let y = line.chars().nth(1).unwrap_or(' ');
             let file_path = line[3..].trim().to_owned();
-            changes.push(GitFileChange {
-                path: file_path,
-                status,
-            });
+
+            if x == '?' && y == '?' {
+                changes.push(GitFileChange {
+                    path: file_path,
+                    status: "??".into(),
+                    staged: false,
+                });
+            } else {
+                if x != ' ' {
+                    changes.push(GitFileChange {
+                        path: file_path.clone(),
+                        status: x.to_string(),
+                        staged: true,
+                    });
+                }
+                if y != ' ' {
+                    changes.push(GitFileChange {
+                        path: file_path,
+                        status: y.to_string(),
+                        staged: false,
+                    });
+                }
+            }
         }
     }
     Ok(changes)
+}
+
+pub fn git_stage_file(project: &Project, file_path: &str) -> Result<String> {
+    let path = Path::new(&project.path);
+    let out = git(path, &["add", "--", file_path])?;
+    if !out.success {
+        return Err(output_string(&out.stderr));
+    }
+    Ok("已暂存".into())
+}
+
+pub fn git_unstage_file(project: &Project, file_path: &str) -> Result<String> {
+    let path = Path::new(&project.path);
+    let out = git(path, &["restore", "--staged", "--", file_path])?;
+    if !out.success {
+        let fb = git(path, &["reset", "HEAD", "--", file_path])?;
+        if !fb.success {
+            return Err(output_string(&fb.stderr));
+        }
+    }
+    Ok("已取消暂存".into())
+}
+
+pub fn git_stage_all(project: &Project) -> Result<String> {
+    let path = Path::new(&project.path);
+    let out = git(path, &["add", "-A"])?;
+    if !out.success {
+        return Err(output_string(&out.stderr));
+    }
+    Ok("已全部暂存".into())
+}
+
+pub fn git_unstage_all(project: &Project) -> Result<String> {
+    let path = Path::new(&project.path);
+    let out = git(path, &["reset", "HEAD"])?;
+    if !out.success {
+        return Err(output_string(&out.stderr));
+    }
+    Ok("已取消全部暂存".into())
+}
+
+pub fn git_discard_file(project: &Project, file_path: &str) -> Result<String> {
+    let path = Path::new(&project.path);
+    let status_out = git(path, &["status", "--porcelain=v1", "--", file_path])?;
+    let status_text = output_string(&status_out.stdout);
+    if status_text.starts_with("??") {
+        let full = path.join(file_path);
+        if full.is_file() {
+            fs::remove_file(full).map_err(|e| e.to_string())?;
+        } else if full.is_dir() {
+            fs::remove_dir_all(full).map_err(|e| e.to_string())?;
+        }
+        return Ok("已删除未跟踪文件".into());
+    }
+    let out = git(path, &["restore", "--", file_path])?;
+    if !out.success {
+        let fb = git(path, &["checkout", "--", file_path])?;
+        if !fb.success {
+            return Err(output_string(&fb.stderr));
+        }
+    }
+    Ok("已丢弃修改".into())
+}
+
+pub fn git_create_branch(project: &Project, branch_name: &str) -> Result<String> {
+    let trimmed = branch_name.trim();
+    if trimmed.is_empty() {
+        return Err("分支名称不能为空".into());
+    }
+    let path = Path::new(&project.path);
+    let out = git(path, &["checkout", "-b", trimmed])?;
+    if !out.success {
+        return Err(output_string(&out.stderr));
+    }
+    Ok(format!("已新建并切换到分支 '{trimmed}'"))
+}
+
+pub fn git_remote_sync(project: &Project, action: &str) -> Result<String> {
+    let path = Path::new(&project.path);
+    match action {
+        "fetch" => {
+            let out = git(path, &["fetch"])?;
+            if !out.success {
+                return Err(output_string(&out.stderr));
+            }
+            Ok("Fetch 成功".into())
+        }
+        "pull" => {
+            let out = git(path, &["pull"])?;
+            if !out.success {
+                return Err(output_string(&out.stderr));
+            }
+            let res = output_string(&out.stdout);
+            Ok(if res.is_empty() { "Pull 完成".into() } else { res })
+        }
+        "push" => {
+            let out = git(path, &["push"])?;
+            if !out.success {
+                return Err(output_string(&out.stderr));
+            }
+            let res = output_string(&out.stderr);
+            Ok(if res.is_empty() { "Push 完成".into() } else { res })
+        }
+        other => Err(format!("未知的远程同步操作: {other}")),
+    }
+}
+
+pub fn git_commit_amend(project: &Project, message: Option<&str>) -> Result<String> {
+    let path = Path::new(&project.path);
+    let mut args = vec!["commit", "--amend"];
+    let msg_str;
+    if let Some(m) = message {
+        if !m.trim().is_empty() {
+            msg_str = m.trim().to_string();
+            args.push("-m");
+            args.push(&msg_str);
+        } else {
+            args.push("--no-edit");
+        }
+    } else {
+        args.push("--no-edit");
+    }
+    let out = git(path, &args)?;
+    if !out.success {
+        return Err(output_string(&out.stderr));
+    }
+    let rev_out = git(path, &["rev-parse", "--short", "HEAD"])?;
+    Ok(output_string(&rev_out.stdout))
 }
 
 pub fn get_git_diff(project: &Project, file_path: Option<&str>) -> Result<String> {
@@ -928,6 +1120,177 @@ pub fn execute_sql_query(project: &Project, db_path: &str, sql: &str) -> Result<
         row_count: 1,
         elapsed_ms,
         error: None,
+    })
+}
+
+pub fn get_db_tables(project: &Project, db_path: &str) -> Result<Vec<DbTableInfo>> {
+    let sql = "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name;";
+    let res = execute_sql_query(project, db_path, sql)?;
+    if let Some(err) = res.error {
+        return Err(err);
+    }
+    let mut tables = Vec::new();
+    for row in res.rows {
+        if row.len() >= 2 {
+            tables.push(DbTableInfo {
+                name: row[0].clone(),
+                kind: row[1].clone(),
+            });
+        }
+    }
+    Ok(tables)
+}
+
+pub fn get_table_columns(project: &Project, db_path: &str, table_name: &str) -> Result<Vec<DbColumnInfo>> {
+    if !table_name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+        return Err("表名包含非法字符".into());
+    }
+    let sql = format!("PRAGMA table_info(\"{table_name}\");");
+    let res = execute_sql_query(project, db_path, &sql)?;
+    if let Some(err) = res.error {
+        return Err(err);
+    }
+    let mut columns = Vec::new();
+    for row in res.rows {
+        if row.len() >= 6 {
+            let cid = row[0].parse::<i64>().unwrap_or(0);
+            let name = row[1].clone();
+            let data_type = row[2].clone();
+            let not_null = row[3] == "1";
+            let dflt_value = if row[4] == "NULL" { None } else { Some(row[4].clone()) };
+            let pk = row[5] == "1";
+            columns.push(DbColumnInfo {
+                cid,
+                name,
+                data_type,
+                not_null,
+                dflt_value,
+                pk,
+            });
+        }
+    }
+    Ok(columns)
+}
+
+pub fn get_table_data(
+    project: &Project,
+    db_path: &str,
+    table_name: &str,
+    page: usize,
+    page_size: usize,
+) -> Result<PaginatedData> {
+    if !table_name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+        return Err("表名包含非法字符".into());
+    }
+    let page = page.max(1);
+    let page_size = page_size.clamp(1, 200);
+    let offset = (page - 1) * page_size;
+
+    let count_sql = format!("SELECT count(*) FROM \"{table_name}\";");
+    let count_res = execute_sql_query(project, db_path, &count_sql)?;
+    let total_rows = count_res
+        .rows
+        .first()
+        .and_then(|r| r.first())
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+
+    let data_sql = format!("SELECT * FROM \"{table_name}\" LIMIT {page_size} OFFSET {offset};");
+    let data_res = execute_sql_query(project, db_path, &data_sql)?;
+    if let Some(err) = data_res.error {
+        return Err(err);
+    }
+
+    Ok(PaginatedData {
+        columns: data_res.columns,
+        rows: data_res.rows,
+        total_rows,
+        page,
+        page_size,
+    })
+}
+
+pub fn detect_listening_ports() -> Vec<ListeningPort> {
+    let mut ports = Vec::new();
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = Command::new("/usr/sbin/lsof")
+            .args(["-iTCP", "-sTCP:LISTEN", "-n", "-P"])
+            .output()
+        {
+            if output.status.success() {
+                let text = String::from_utf8_lossy(&output.stdout);
+                for line in text.lines().skip(1) {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 9 {
+                        let proc_name = parts[0].to_string();
+                        let addr = parts[8];
+                        if let Some(port_str) = addr.split(':').last() {
+                            if let Ok(p) = port_str.parse::<u16>() {
+                                if !ports.iter().any(|item: &ListeningPort| item.port == p) {
+                                    ports.push(ListeningPort {
+                                        port: p,
+                                        process: proc_name,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    ports
+}
+
+pub fn generate_ai_project_context(project: &Project) -> Result<AiProjectContext> {
+    let inspection = inspect_project(project);
+    let mut md = String::new();
+    md.push_str(&format!("# 橦云 AI 上下文报告 · {}\n\n", project.name));
+    md.push_str(&format!("- **物理路径**: `{}`\n", project.path));
+    md.push_str(&format!("- **技术栈运行时**: {}\n", if inspection.tech_stack.is_empty() { "未检测到特定运行时".into() } else { inspection.tech_stack.join(", ") }));
+
+    if inspection.git.is_repository {
+        md.push_str(&format!("- **Git 分支**: `{}` (HEAD: `{}`)\n", inspection.git.branch.as_deref().unwrap_or("未知"), inspection.git.head.as_deref().unwrap_or("空")));
+        md.push_str(&format!("- **工作区未提交项**: {} 项\n", inspection.git.changed_files));
+    } else {
+        md.push_str("- **Git 状态**: 非 Git 仓库\n");
+    }
+
+    let ports = detect_listening_ports();
+    if !ports.is_empty() {
+        let port_strings: Vec<String> = ports.iter().map(|p| format!("http://localhost:{} ({})", p.port, p.process)).collect();
+        md.push_str(&format!("- **本机活跃服务监听**: {}\n", port_strings.join(", ")));
+    }
+
+    if !inspection.scripts.is_empty() {
+        md.push_str("\n## 可用项目启动命令\n");
+        for s in &inspection.scripts {
+            md.push_str(&format!("- `{}`: `{}`\n", s.name, s.command));
+        }
+    }
+
+    if !inspection.db_artifacts.is_empty() {
+        md.push_str("\n## 发现的数据库与模式产物\n");
+        for d in &inspection.db_artifacts {
+            md.push_str(&format!("- `{}` ({})\n", d.path, d.kind));
+        }
+    }
+
+    if let Ok(changes) = get_git_changed_files(project) {
+        if !changes.is_empty() {
+            md.push_str("\n## 当前代码变更清单 (Git Status)\n");
+            for c in changes.iter().take(20) {
+                let badge = if c.staged { "暂存" } else { "工作区" };
+                md.push_str(&format!("- [{}] [{}] `{}`\n", badge, c.status, c.path));
+            }
+        }
+    }
+
+    Ok(AiProjectContext {
+        project_name: project.name.clone(),
+        project_path: project.path.clone(),
+        markdown: md,
     })
 }
 

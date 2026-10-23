@@ -10,6 +10,11 @@ import type {
   ExecutionResult,
   HttpResponse,
   SqlQueryResult,
+  DbTableInfo,
+  DbColumnInfo,
+  PaginatedData,
+  ListeningPort,
+  AiProjectContext,
 } from './contracts';
 
 export const isDesktop = isTauri();
@@ -78,7 +83,7 @@ export const getGitChangedFiles = (id: string) =>
     ? native<GitFileChange[]>('get_git_changed_files', { id })
     : Promise.resolve([
         { path: 'src/features/DevPanel.tsx', status: 'M', staged: false },
-        { path: 'src/features/ApiPanel.tsx', status: 'M', staged: false },
+        { path: 'src/features/ApiPanel.tsx', status: 'M', staged: true },
       ]);
 
 export const getGitDiff = (id: string, filePath?: string) =>
@@ -93,10 +98,40 @@ export const createGitCommit = (id: string, message: string) =>
     ? native<string>('create_git_commit', { id, message })
     : Promise.resolve('[main 1a2b3c4] ' + message);
 
+export const gitCommitAmend = (id: string, message?: string) =>
+  isDesktop
+    ? native<string>('git_commit_amend', { id, message: message ?? null })
+    : Promise.resolve('[main 1a2b3c4] amend');
+
+export const gitStageFile = (id: string, path: string) =>
+  isDesktop ? native<string>('git_stage_file', { id, path }) : Promise.resolve('已暂存');
+
+export const gitUnstageFile = (id: string, path: string) =>
+  isDesktop ? native<string>('git_unstage_file', { id, path }) : Promise.resolve('已取消暂存');
+
+export const gitStageAll = (id: string) =>
+  isDesktop ? native<string>('git_stage_all', { id }) : Promise.resolve('已全部暂存');
+
+export const gitUnstageAll = (id: string) =>
+  isDesktop ? native<string>('git_unstage_all', { id }) : Promise.resolve('已取消全部暂存');
+
+export const gitDiscardFile = (id: string, path: string) =>
+  isDesktop ? native<string>('git_discard_file', { id, path }) : Promise.resolve('已丢弃修改');
+
+export const gitCreateBranch = (id: string, branchName: string) =>
+  isDesktop
+    ? native<string>('git_create_branch', { id, branchName })
+    : Promise.resolve(`已新建并切换到分支 '${branchName}'`);
+
+export const gitRemoteSync = (id: string, action: 'fetch' | 'pull' | 'push') =>
+  isDesktop
+    ? native<string>('git_remote_sync', { id, action })
+    : Promise.resolve(`${action} 同步成功`);
+
 export const getGitBranches = (id: string) =>
   isDesktop
     ? native<string[]>('get_git_branches', { id })
-    : Promise.resolve(['main', 'develop']);
+    : Promise.resolve(['main', 'develop', 'feature/ai-workbench']);
 
 export const switchGitBranch = (id: string, branch: string) =>
   isDesktop
@@ -152,12 +187,70 @@ export const executeSqlQuery = (id: string, dbPath: string, sql: string) =>
         error: null,
       });
 
+export const getDbTables = (id: string, dbPath: string) =>
+  isDesktop
+    ? native<DbTableInfo[]>('get_db_tables', { id, dbPath })
+    : Promise.resolve([
+        { name: 'users', kind: 'table' },
+        { name: 'projects', kind: 'table' },
+        { name: 'tasks', kind: 'table' },
+        { name: 'audit_logs', kind: 'view' },
+      ]);
+
+export const getTableColumns = (id: string, dbPath: string, tableName: string) =>
+  isDesktop
+    ? native<DbColumnInfo[]>('get_table_columns', { id, dbPath, tableName })
+    : Promise.resolve([
+        { cid: 0, name: 'id', dataType: 'INTEGER', notNull: true, dfltValue: null, pk: true },
+        { cid: 1, name: 'name', dataType: 'TEXT', notNull: true, dfltValue: null, pk: false },
+        { cid: 2, name: 'email', dataType: 'TEXT', notNull: false, dfltValue: null, pk: false },
+        { cid: 3, name: 'created_at', dataType: 'DATETIME', notNull: true, dfltValue: 'CURRENT_TIMESTAMP', pk: false },
+      ]);
+
+export const getTableData = (
+  id: string,
+  dbPath: string,
+  tableName: string,
+  page: number,
+  pageSize: number,
+) =>
+  isDesktop
+    ? native<PaginatedData>('get_table_data', { id, dbPath, tableName, page, pageSize })
+    : Promise.resolve({
+        columns: ['id', 'name', 'email', 'created_at'],
+        rows: [
+          ['1', 'Alice', 'alice@tongyun.work', '2026-10-20 10:00:00'],
+          ['2', 'Bob', 'bob@tongyun.work', '2026-10-21 11:30:00'],
+          ['3', 'Charlie', 'charlie@tongyun.work', '2026-10-22 14:15:00'],
+        ],
+        totalRows: 3,
+        page: 1,
+        pageSize: 50,
+      });
+
+export const detectListeningPorts = () =>
+  isDesktop
+    ? native<ListeningPort[]>('detect_listening_ports')
+    : Promise.resolve([
+        { port: 5173, process: 'vite' },
+        { port: 3000, process: 'node' },
+      ]);
+
+export const generateAiProjectContext = (id: string) =>
+  isDesktop
+    ? native<AiProjectContext>('generate_ai_project_context', { id })
+    : Promise.resolve({
+        projectName: '演示项目',
+        projectPath: '/Users/d/code/demo',
+        markdown: '# AI 上下文报告\n- 技术栈: Tauri 2, React 19, Rust\n- 分支: main\n',
+      });
+
 export function listTools(): Promise<ToolStatus[]> {
   return Promise.resolve([
-    { id: 'dev', name: 'Tongyun Dev', available: true, applicationPath: null, detail: '内嵌原生运行控制台' },
-    { id: 'api', name: 'Tongyun API', available: true, applicationPath: null, detail: '内嵌原生接口请求器' },
-    { id: 'database', name: 'Tongyun Database', available: true, applicationPath: null, detail: '内嵌原生数据与 SQL' },
-    { id: 'git', name: 'Tongyun Git', available: true, applicationPath: null, detail: '内嵌原生版本工作流' },
+    { id: 'dev', name: 'Tongyun Dev', available: true, applicationPath: null, detail: '企业级服务与终端' },
+    { id: 'api', name: 'Tongyun API', available: true, applicationPath: null, detail: '企业级接口测试器' },
+    { id: 'database', name: 'Tongyun Database', available: true, applicationPath: null, detail: '企业级数据与模式' },
+    { id: 'git', name: 'Tongyun Git', available: true, applicationPath: null, detail: '企业级版本工作台' },
   ]);
 }
 

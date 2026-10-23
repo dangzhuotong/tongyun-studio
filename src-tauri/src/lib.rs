@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 use studio_core::{
-    ExecutionResult, FileEntry, GitFileChange, HttpResponse, ProjectInspection, SqlQueryResult,
-    Workspace, WorkspaceStore,
+    AiProjectContext, DbColumnInfo, DbTableInfo, ExecutionResult, FileEntry, GitFileChange,
+    HttpResponse, ListeningPort, PaginatedData, ProjectInspection, SqlQueryResult, Workspace,
+    WorkspaceStore,
 };
 use tauri::Manager;
 
@@ -85,6 +86,78 @@ fn create_git_commit(
 }
 
 #[tauri::command]
+fn git_commit_amend(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    message: Option<String>,
+) -> Result<String, String> {
+    let project = state.store.project(&id)?;
+    studio_core::git_commit_amend(&project, message.as_deref())
+}
+
+#[tauri::command]
+fn git_stage_file(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    path: String,
+) -> Result<String, String> {
+    let project = state.store.project(&id)?;
+    studio_core::git_stage_file(&project, &path)
+}
+
+#[tauri::command]
+fn git_unstage_file(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    path: String,
+) -> Result<String, String> {
+    let project = state.store.project(&id)?;
+    studio_core::git_unstage_file(&project, &path)
+}
+
+#[tauri::command]
+fn git_stage_all(state: tauri::State<'_, AppState>, id: String) -> Result<String, String> {
+    let project = state.store.project(&id)?;
+    studio_core::git_stage_all(&project)
+}
+
+#[tauri::command]
+fn git_unstage_all(state: tauri::State<'_, AppState>, id: String) -> Result<String, String> {
+    let project = state.store.project(&id)?;
+    studio_core::git_unstage_all(&project)
+}
+
+#[tauri::command]
+fn git_discard_file(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    path: String,
+) -> Result<String, String> {
+    let project = state.store.project(&id)?;
+    studio_core::git_discard_file(&project, &path)
+}
+
+#[tauri::command]
+fn git_create_branch(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    branch_name: String,
+) -> Result<String, String> {
+    let project = state.store.project(&id)?;
+    studio_core::git_create_branch(&project, &branch_name)
+}
+
+#[tauri::command]
+fn git_remote_sync(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    action: String,
+) -> Result<String, String> {
+    let project = state.store.project(&id)?;
+    studio_core::git_remote_sync(&project, &action)
+}
+
+#[tauri::command]
 fn get_git_branches(
     state: tauri::State<'_, AppState>,
     id: String,
@@ -139,6 +212,54 @@ fn execute_sql_query(
 }
 
 #[tauri::command]
+fn get_db_tables(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    db_path: String,
+) -> Result<Vec<DbTableInfo>, String> {
+    let project = state.store.project(&id)?;
+    studio_core::get_db_tables(&project, &db_path)
+}
+
+#[tauri::command]
+fn get_table_columns(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    db_path: String,
+    table_name: String,
+) -> Result<Vec<DbColumnInfo>, String> {
+    let project = state.store.project(&id)?;
+    studio_core::get_table_columns(&project, &db_path, &table_name)
+}
+
+#[tauri::command]
+fn get_table_data(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    db_path: String,
+    table_name: String,
+    page: usize,
+    page_size: usize,
+) -> Result<PaginatedData, String> {
+    let project = state.store.project(&id)?;
+    studio_core::get_table_data(&project, &db_path, &table_name, page, page_size)
+}
+
+#[tauri::command]
+fn detect_listening_ports() -> Vec<ListeningPort> {
+    studio_core::detect_listening_ports()
+}
+
+#[tauri::command]
+fn generate_ai_project_context(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<AiProjectContext, String> {
+    let project = state.store.project(&id)?;
+    studio_core::generate_ai_project_context(&project)
+}
+
+#[tauri::command]
 fn open_project_directory(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
     let project = state.store.project(&id)?;
     studio_core::open_project_directory(&project)
@@ -187,11 +308,24 @@ pub fn run() {
             get_git_changed_files,
             get_git_diff,
             create_git_commit,
+            git_commit_amend,
+            git_stage_file,
+            git_unstage_file,
+            git_stage_all,
+            git_unstage_all,
+            git_discard_file,
+            git_create_branch,
+            git_remote_sync,
             get_git_branches,
             switch_git_branch,
             execute_project_script,
             send_http_request,
             execute_sql_query,
+            get_db_tables,
+            get_table_columns,
+            get_table_data,
+            detect_listening_ports,
+            generate_ai_project_context,
             open_project_directory,
             open_in_terminal,
             open_project_file,

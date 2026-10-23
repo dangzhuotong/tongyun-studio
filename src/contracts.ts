@@ -87,6 +87,39 @@ export interface SqlQueryResult {
   error: string | null;
 }
 
+export interface DbTableInfo {
+  name: string;
+  kind: string;
+}
+
+export interface DbColumnInfo {
+  cid: number;
+  name: string;
+  dataType: string;
+  notNull: boolean;
+  dfltValue: string | null;
+  pk: boolean;
+}
+
+export interface PaginatedData {
+  columns: string[];
+  rows: string[][];
+  totalRows: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface ListeningPort {
+  port: number;
+  process: string;
+}
+
+export interface AiProjectContext {
+  projectName: string;
+  projectPath: string;
+  markdown: string;
+}
+
 export interface ToolStatus {
   id: ToolId;
   name: string;
