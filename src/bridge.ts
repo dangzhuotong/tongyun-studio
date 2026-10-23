@@ -263,81 +263,27 @@ export const openProjectFile = (id: string, relativePath: string) =>
   native<void>('open_project_file', { id, relativePath });
 export const chooseProjectDirectory = () => native<string | null>('choose_project_directory');
 
-export function getInitialAgentSession(projectName: string = 'tongyun-studio'): import('./contracts').AgentSessionState {
+export const startProjectService = (id: string, command: string) =>
+  native<import('./contracts').ManagedService>('start_project_service', { id, command });
+export const listProjectServices = (id: string) =>
+  native<import('./contracts').ManagedService[]>('list_project_services', { id });
+export const stopProjectService = (id: string, serviceId: string) =>
+  native<import('./contracts').ManagedService>('stop_project_service', { id, serviceId });
+export const restartProjectService = (id: string, serviceId: string) =>
+  native<import('./contracts').ManagedService>('restart_project_service', { id, serviceId });
+
+export function getInitialAgentSession(projectId?: string | null): import('./contracts').AgentSessionState {
   return {
-    agentName: 'AGY-Copilot',
-    model: 'Claude 3.7 Sonnet / Antigravity Agent',
-    mode: 'collaborative',
-    activeGoal: `为 ${projectName} 构建企业级三栏可视化工作台并提供 Agent 全生命周期行为监视`,
-    tokensConsumed: 48920,
-    filesTouched: 14,
-    lastHeartbeat: new Date().toLocaleTimeString(),
-    plan: {
-      id: 'plan-001',
-      goal: '三栏架构重构 & Agent 行为可视化落地',
-      status: 'executing',
-      progressPercent: 75,
-      steps: [
-        { id: 'step-1', text: '分析项目工作区与上下文依赖结构', status: 'done' },
-        { id: 'step-2', text: '重构工作台为三栏弹性伸缩布局 (Rail + Explorer + Main + Cockpit)', status: 'done' },
-        { id: 'step-3', text: '实现二级上下文侧栏 (Explorer) 一键合并/收起 (⌘B)', status: 'done' },
-        { id: 'step-4', text: '构建 Agent 操作实时监视舱 (Live Cockpit)，可视化命令与工具流', status: 'active' },
-        { id: 'step-5', text: '实现操作事件一键在工作台聚焦定位 (Focus in Workbench)', status: 'todo' },
-      ],
-    },
-    actions: [
-      {
-        id: 'act-1',
-        kind: 'terminal',
-        title: '执行构建验证',
-        detail: 'cargo test -p studio-core --offline',
-        status: 'done',
-        exitCode: 0,
-        durationMs: 820,
-        timestamp: '14:55:02',
-        outputPreview: 'test result: ok. 5 passed; 0 failed; finished in 1.12s',
-      },
-      {
-        id: 'act-2',
-        kind: 'git',
-        title: 'Git 状态检索与自动暂存',
-        detail: 'git status & stage modified enterprise components',
-        status: 'done',
-        durationMs: 140,
-        timestamp: '14:55:40',
-        target: 'src/features/GitPanel.tsx',
-        outputPreview: '13 files changed, 3586 insertions(+), 665 deletions(-)',
-      },
-      {
-        id: 'act-3',
-        kind: 'edit',
-        title: '重构工作区三栏架构',
-        detail: '引入 Activity Rail 与可收起二级导航 Pane',
-        status: 'done',
-        durationMs: 310,
-        timestamp: '14:56:15',
-        target: 'src/App.tsx',
-      },
-      {
-        id: 'act-4',
-        kind: 'inspect',
-        title: '端口感知与守护进程健康检查',
-        detail: 'detect_listening_ports(:5173, :3000)',
-        status: 'done',
-        durationMs: 85,
-        timestamp: '14:57:08',
-        outputPreview: 'Listening: :5173 (vite), :3000 (daemon)',
-      },
-      {
-        id: 'act-5',
-        kind: 'plan',
-        title: '实时渲染 Agent 操作流与人机干预界面',
-        detail: '渲染步骤时间轴与操作回溯组件',
-        status: 'running',
-        durationMs: 450,
-        timestamp: '14:58:30',
-        target: 'src/components/AgentCockpit.tsx',
-      },
-    ],
+    projectId: projectId ?? null,
+    connectionStatus: 'not_connected',
+    agentName: null,
+    model: null,
+    mode: null,
+    activeGoal: null,
+    plan: null,
+    actions: [],
+    tokensConsumed: null,
+    filesTouched: null,
+    lastHeartbeat: null,
   };
 }

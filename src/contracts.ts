@@ -134,6 +134,19 @@ export interface LaunchResult {
   message: string;
 }
 
+export interface ManagedService {
+  id: string;
+  projectId: string;
+  command: string;
+  pid: number | null;
+  status: 'running' | 'stopped' | 'exited' | 'failed';
+  startedAt: string;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  outputTruncated: boolean;
+}
+
 export type AgentActionKind = 'terminal' | 'edit' | 'git' | 'sql' | 'http' | 'inspect' | 'plan';
 
 export type AgentActionStatus = 'running' | 'done' | 'error' | 'pending';
@@ -162,18 +175,20 @@ export interface AgentTaskPlan {
   id: string;
   goal: string;
   status: 'planning' | 'executing' | 'completed' | 'paused';
-  progressPercent: number;
+  progressPercent: number | null;
   steps: AgentPlanStepItem[];
 }
 
 export interface AgentSessionState {
-  agentName: string;
-  model: string;
-  mode: 'autonomous' | 'collaborative' | 'observer';
-  activeGoal: string;
-  plan: AgentTaskPlan;
+  projectId: string | null;
+  connectionStatus: 'not_connected' | 'connected';
+  agentName: string | null;
+  model: string | null;
+  mode: 'autonomous' | 'collaborative' | 'observer' | null;
+  activeGoal: string | null;
+  plan: AgentTaskPlan | null;
   actions: AgentActionStep[];
-  tokensConsumed: number;
-  filesTouched: number;
-  lastHeartbeat: string;
+  tokensConsumed: number | null;
+  filesTouched: number | null;
+  lastHeartbeat: string | null;
 }

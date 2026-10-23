@@ -11,6 +11,9 @@ use std::{
 
 pub type Result<T> = std::result::Result<T, String>;
 
+pub mod processes;
+pub use processes::{ManagedService, ServiceManager};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
@@ -311,7 +314,7 @@ pub struct SqlQueryResult {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<String>>,
     pub row_count: usize,
-    pub elapsed_ms: u64,
+    pub duration_ms: u64,
     pub error: Option<String>,
 }
 
@@ -922,10 +925,7 @@ pub fn create_git_commit(project: &Project, message: &str) -> Result<String> {
         return Err("提交消息不能为空".into());
     }
     let path = Path::new(&project.path);
-    let add_out = git(path, &["add", "-A"])?;
-    if !add_out.success {
-        return Err(format!("git add 失败：{}", output_string(&add_out.stderr)));
-    }
+    // Preserve the index exactly as selected by the user, including partial staging.
     let commit_out = git(path, &["commit", "-m", message.trim()])?;
     if !commit_out.success {
         return Err(format!("git commit 失败：{}", output_string(&commit_out.stderr)));
@@ -1049,78 +1049,156 @@ pub fn send_http_request(
     })
 }
 
+const SQL_MAX_ROWS: usize = 1_000;
+const SQL_MAX_RESULT_BYTES: usize = 4 * 1024 * 1024;
+const SQL_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Read-only policy is enforced by SQLite itself, never by guessing an SQL prefix.
+/// A fresh, non-URI connection also prevents user SQL from persisting connection state.
+fn query_sqlite_readonly(target: &Path, sql: &str) -> Result<(Vec<String>, Vec<Vec<String>>)> {
+    use rusqlite::{
+        hooks::{AuthAction, AuthContext, Authorization},
+        limits::Limit,
+        types::ValueRef,
+        Batch, Connection, OpenFlags,
+    };
+    if sql.len() > 64 * 1024 {
+        return Err("SQL 超过 64 KiB，请缩小查询".into());
+    }
+    let started = Instant::now();
+    let connection = Connection::open_with_flags(
+        target,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| format!("无法只读打开数据库：{e}"))?;
+    connection
+        .busy_timeout(Duration::from_millis(250))
+        .map_err(|e| e.to_string())?;
+    connection
+        .pragma_update(None, "query_only", true)
+        .map_err(|e| e.to_string())?;
+    connection
+        .pragma_update(None, "trusted_schema", false)
+        .map_err(|e| e.to_string())?;
+    connection.set_limit(Limit::SQLITE_LIMIT_LENGTH, 1024 * 1024);
+    connection.set_limit(Limit::SQLITE_LIMIT_SQL_LENGTH, 64 * 1024);
+    connection.set_limit(Limit::SQLITE_LIMIT_COLUMN, 512);
+    connection.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0);
+    connection.progress_handler(500, Some(move || started.elapsed() >= SQL_TIMEOUT));
+    connection.authorizer(Some(|context: AuthContext<'_>| match context.action {
+        AuthAction::Read { .. } | AuthAction::Select | AuthAction::Recursive => {
+            Authorization::Allow
+        }
+        AuthAction::Function { function_name }
+            if ![
+                "load_extension",
+                "readfile",
+                "writefile",
+                "eval",
+                "fts3_tokenizer",
+            ]
+            .iter()
+            .any(|name| function_name.eq_ignore_ascii_case(name)) =>
+        {
+            Authorization::Allow
+        }
+        // This is the only pragma needed by the table inspector. Its argument is a
+        // table name, not a setting; all connection/file-mutating pragmas are denied.
+        AuthAction::Pragma { pragma_name, .. }
+            if pragma_name.eq_ignore_ascii_case("table_info") =>
+        {
+            Authorization::Allow
+        }
+        _ => Authorization::Deny,
+    }));
+
+    // Batch uses SQLite's parser, so comments, quoted semicolons and CTEs cannot
+    // bypass the single-statement rule. Prepare all input before stepping any row.
+    let mut batch = Batch::new(&connection, sql);
+    let mut statement = batch
+        .next()
+        .map_err(|e| e.to_string())?
+        .ok_or("请输入一条只读 SQL 查询")?;
+    if batch.next().map_err(|e| e.to_string())?.is_some() {
+        return Err("每次仅允许一条只读 SQL 查询".into());
+    }
+    if !statement.readonly() || statement.column_count() == 0 {
+        return Err("仅允许返回数据的只读查询".into());
+    }
+    let columns: Vec<String> = statement
+        .column_names()
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let mut result_bytes: usize = columns.iter().map(String::len).sum();
+    let mut rows = Vec::new();
+    let mut cursor = statement.query([]).map_err(|e| e.to_string())?;
+    while let Some(row) = cursor.next().map_err(|e| {
+        if started.elapsed() >= SQL_TIMEOUT {
+            "查询超过 2 秒，请缩小查询范围".into()
+        } else {
+            e.to_string()
+        }
+    })? {
+        if started.elapsed() >= SQL_TIMEOUT {
+            return Err("查询超过 2 秒，请缩小查询范围".into());
+        }
+        if rows.len() == SQL_MAX_ROWS {
+            return Err("查询超过 1000 行，请使用 LIMIT 或分页".into());
+        }
+        let mut values = Vec::with_capacity(columns.len());
+        for i in 0..columns.len() {
+            let value = match row.get_ref(i).map_err(|e| e.to_string())? {
+                ValueRef::Null => "NULL".to_owned(),
+                ValueRef::Integer(v) => v.to_string(),
+                ValueRef::Real(v) => v.to_string(),
+                ValueRef::Text(v) => String::from_utf8_lossy(v).into_owned(),
+                ValueRef::Blob(v) => {
+                    use std::fmt::Write;
+                    let mut encoded = String::with_capacity(v.len() * 2 + 3);
+                    encoded.push_str("X'");
+                    for byte in v {
+                        write!(encoded, "{byte:02X}").expect("writing to String");
+                    }
+                    encoded.push('\'');
+                    encoded
+                }
+            };
+            result_bytes += value.len();
+            if result_bytes > SQL_MAX_RESULT_BYTES {
+                return Err("查询结果超过 4 MiB，请缩小查询范围".into());
+            }
+            values.push(value);
+        }
+        rows.push(values);
+    }
+    Ok((columns, rows))
+}
+
 pub fn execute_sql_query(project: &Project, db_path: &str, sql: &str) -> Result<SqlQueryResult> {
     let start = Instant::now();
     let target = safe_project_path(project, Some(db_path))?;
-    let mut cmd = Command::new("/usr/bin/sqlite3");
-    cmd.arg(target.to_string_lossy().as_ref())
-        .arg("-header")
-        .arg("-json")
-        .arg(sql);
-
-    let output = run_bounded(&mut cmd, Duration::from_secs(10))?;
-    let elapsed_ms = start.elapsed().as_millis() as u64;
-
-    if !output.success {
-        return Ok(SqlQueryResult {
-            columns: vec![],
-            rows: vec![],
-            row_count: 0,
-            elapsed_ms,
-            error: Some(output_string(&output.stderr)),
-        });
+    if !target.is_file() {
+        return Err("请选择已存在的 SQLite 数据库文件".into());
     }
-
-    let stdout_str = output_string(&output.stdout);
-    if stdout_str.is_empty() {
-        return Ok(SqlQueryResult {
-            columns: vec![],
-            rows: vec![],
-            row_count: 0,
-            elapsed_ms,
+    let outcome = query_sqlite_readonly(&target, sql);
+    let duration_ms = start.elapsed().as_millis() as u64;
+    match outcome {
+        Ok((columns, rows)) => Ok(SqlQueryResult {
+            row_count: rows.len(),
+            columns,
+            rows,
+            duration_ms,
             error: None,
-        });
+        }),
+        Err(error) => Ok(SqlQueryResult {
+            columns: vec![],
+            rows: vec![],
+            row_count: 0,
+            duration_ms,
+            error: Some(format!("只读查询失败：{error}")),
+        }),
     }
-
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout_str) {
-        if let Some(arr) = val.as_array() {
-            let mut columns = Vec::new();
-            let mut rows = Vec::new();
-            if let Some(first) = arr.first().and_then(|item| item.as_object()) {
-                columns = first.keys().cloned().collect();
-            }
-            for item in arr {
-                if let Some(obj) = item.as_object() {
-                    let row: Vec<String> = columns
-                        .iter()
-                        .map(|col| match obj.get(col) {
-                            Some(serde_json::Value::Null) => "NULL".into(),
-                            Some(serde_json::Value::String(s)) => s.clone(),
-                            Some(other) => other.to_string(),
-                            None => "".into(),
-                        })
-                        .collect();
-                    rows.push(row);
-                }
-            }
-            let row_count = rows.len();
-            return Ok(SqlQueryResult {
-                columns,
-                rows,
-                row_count,
-                elapsed_ms,
-                error: None,
-            });
-        }
-    }
-
-    Ok(SqlQueryResult {
-        columns: vec!["结果".into()],
-        rows: vec![vec![stdout_str]],
-        row_count: 1,
-        elapsed_ms,
-        error: None,
-    })
 }
 
 pub fn get_db_tables(project: &Project, db_path: &str) -> Result<Vec<DbTableInfo>> {
@@ -1188,6 +1266,7 @@ pub fn get_table_data(
 
     let count_sql = format!("SELECT count(*) FROM \"{table_name}\";");
     let count_res = execute_sql_query(project, db_path, &count_sql)?;
+    if let Some(err) = count_res.error { return Err(err); }
     let total_rows = count_res
         .rows
         .first()

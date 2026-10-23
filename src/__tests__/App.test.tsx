@@ -87,7 +87,7 @@ describe('App', () => {
     expect(screen.getByText('原生文件浏览')).toBeInTheDocument();
   });
 
-  it('allows switching to agent panel tab and renders agent mission control', async () => {
+  it('shows the disconnected Agent state instead of a fabricated mission', async () => {
     render(<App />);
 
     const nav = screen.getByRole('navigation', { name: '工作区模块' });
@@ -95,9 +95,11 @@ describe('App', () => {
     fireEvent.click(agentTab);
 
     expect(
-      await screen.findByRole('heading', { name: 'Tongyun Agent · 智能体全景视界与调度中枢' }),
+      await screen.findByRole('heading', { name: 'Tongyun Agent · 执行记录与计划' }),
     ).toBeInTheDocument();
-    expect(screen.getByText('面向未来的 Agent 优先开发范式：原子工具调用轨迹、目标与计划多步编排、人机协同双向干预。')).toBeInTheDocument();
+    expect(screen.getByText('Agent 未接入')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '导出审计轨迹' })).toBeDisabled();
+    expect(screen.queryByText('Agent 在线协同')).not.toBeInTheDocument();
   });
 
   it('allows toggling secondary sidebar and agent cockpit', async () => {
@@ -107,10 +109,13 @@ describe('App', () => {
     fireEvent.click(sidebarToggle);
     expect(screen.getByTitle(/展开侧边栏/)).toBeInTheDocument();
 
-    const agentCockpitBtn = screen.getByTitle(/切换 Agent 实时操作可视化监视舱/);
+    const agentCockpitBtn = screen.getByTitle(/切换 Agent 监视舱/);
     fireEvent.click(agentCockpitBtn);
     expect(screen.getByText('Agent 操作监视舱')).toBeInTheDocument();
-    expect(screen.getByText('实时执行轨迹 (倒序流式)')).toBeInTheDocument();
+    expect(screen.getByText('暂无真实执行记录')).toBeInTheDocument();
+    expect(screen.getByText('模型：未知')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '发送 Agent 指令' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '暂停调度' })).toBeDisabled();
   });
 
   it('verifies tool definitions completeness', () => {

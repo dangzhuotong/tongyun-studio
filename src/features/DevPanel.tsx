@@ -1,534 +1,107 @@
-import { useState, useRef, useEffect, type FormEvent } from 'react';
-import type { Project, ProjectInspection, ListeningPort } from '../contracts';
-import { executeProjectScript, detectListeningPorts } from '../bridge';
-import {
-  Activity,
-  Check,
-  Copy,
-  Cpu,
-  Globe,
-  LoaderCircle,
-  Play,
-  RotateCw,
-  Sparkles,
-  Square,
-  Terminal,
-  Trash2,
-} from '../components/Icons';
+import { useState, useRef, useEffect, useCallback, type FormEvent } from 'react';
+import type { Project, ProjectInspection, ManagedService } from '../contracts';
+import { isDesktop, startProjectService, listProjectServices, stopProjectService, restartProjectService } from '../bridge';
+import { Activity, Check, Copy, Cpu, LoaderCircle, Play, RotateCw, Square, Terminal } from '../components/Icons';
 
-interface LogEntry {
-  id: string;
-  command: string;
-  exitCode: number;
-  durationMs: number;
-  stdout: string;
-  stderr: string;
-  timestamp: string;
-}
+const statusLabel: Record<ManagedService['status'], string> = { running: '进程运行中', stopped: '已停止', exited: '已完成', failed: '执行失败' };
 
-interface RunningService {
-  name: string;
-  command: string;
-  startTime: string;
-  elapsedSecs: number;
-}
-
-export default function DevPanel({
-  project,
-  inspection,
-  onNotify,
-}: {
+export default function DevPanel({ project, inspection, onNotify }: {
   project: Project | null;
   inspection?: ProjectInspection | null;
   onRefresh?: () => void;
   onNotify?: (msg: string) => void;
 }) {
-  const [running, setRunning] = useState(false);
-  const [activeCommand, setActiveCommand] = useState<string | null>(null);
+  const [services, setServices] = useState<ManagedService[]>([]);
   const [customCommand, setCustomCommand] = useState('');
-  const [outputLogs, setOutputLogs] = useState<LogEntry[]>([]);
-  const [copiedLogId, setCopiedLogId] = useState<string | null>(null);
-
-  // Background services
-  const [activeServices, setActiveServices] = useState<RunningService[]>([]);
-  const [activePorts, setActivePorts] = useState<ListeningPort[]>([]);
-  const [aiDiagnostic, setAiDiagnostic] = useState<string | null>(null);
-
-  const terminalRef = useRef<HTMLDivElement>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [hints, setHints] = useState(false);
+  const projectId = project?.id;
+  const currentProject = useRef(projectId);
+  currentProject.current = projectId;
+  const requestSequence = useRef(0);
+  const mutations = useRef(new Set<string>());
+  const mounted = useRef(true);
   const stack = inspection?.techStack ?? [];
   const scripts = inspection?.scripts ?? [];
 
-  // Poll listening ports periodically
-  useEffect(() => {
-    let cancel = false;
-    const fetchPorts = async () => {
-      try {
-        const ports = await detectListeningPorts();
-        if (!cancel) setActivePorts(ports);
-      } catch {
-        // ignore in demo
-      }
-    };
-    void fetchPorts();
-    const timer = setInterval(() => void fetchPorts(), 5000);
-    return () => {
-      cancel = true;
-      clearInterval(timer);
-    };
+  const readServices = useCallback(async (id: string) => {
+    if (!isDesktop || mutations.current.has(id)) return;
+    const request = ++requestSequence.current;
+    try {
+      const result = await listProjectServices(id);
+      if (mounted.current && currentProject.current === id && request === requestSequence.current) { setServices(result); setError(null); }
+    } catch (cause) {
+      if (mounted.current && currentProject.current === id && request === requestSequence.current) setError(String(cause));
+    } finally {
+      if (mounted.current && currentProject.current === id && request === requestSequence.current) setLoading(false);
+    }
   }, []);
 
-  // Timer for active services
   useEffect(() => {
-    if (activeServices.length === 0) return;
-    const timer = setInterval(() => {
-      setActiveServices(prev =>
-        prev.map(s => ({ ...s, elapsedSecs: s.elapsedSecs + 1 })),
-      );
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [activeServices.length]);
+    mounted.current = true;
+    requestSequence.current++;
+    setServices([]); setError(null); setBusy(null); setCustomCommand(''); setCopied(null); setHints(false);
+    if (!projectId || !isDesktop) { setLoading(false); return; }
+    setLoading(true);
+    void readServices(projectId);
+    const timer = setInterval(() => void readServices(projectId), 1500);
+    return () => { clearInterval(timer); requestSequence.current++; };
+  }, [projectId, readServices]);
+  useEffect(() => () => { mounted.current = false; requestSequence.current++; }, []);
 
-  const runCommand = async (cmd: string, asDaemon = false, serviceName?: string) => {
-    if (!project || running) return;
-    const trimmed = cmd.trim();
-    if (!trimmed) return;
-
-    setRunning(true);
-    setActiveCommand(trimmed);
-    setAiDiagnostic(null);
-
-    if (asDaemon && serviceName) {
-      setActiveServices(prev => {
-        if (prev.some(s => s.name === serviceName)) return prev;
-        return [
-          ...prev,
-          {
-            name: serviceName,
-            command: trimmed,
-            startTime: new Date().toLocaleTimeString(),
-            elapsedSecs: 0,
-          },
-        ];
-      });
-      onNotify?.(`已启动常驻服务「${serviceName}」`);
-    }
-
+  async function mutate(label: string, action: (id: string) => Promise<ManagedService>) {
+    if (!projectId || !isDesktop || mutations.current.has(projectId)) return;
+    const id = projectId;
+    mutations.current.add(id); requestSequence.current++;
+    setBusy(label); setError(null);
     try {
-      const result = await executeProjectScript(project.id, trimmed);
-      const newLog: LogEntry = {
-        id: Math.random().toString(36).slice(2, 9),
-        command: trimmed,
-        exitCode: result.exitCode,
-        durationMs: result.durationMs,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        timestamp: new Date().toLocaleTimeString(),
-      };
-      setOutputLogs(prev => [newLog, ...prev]);
-
-      if (result.exitCode === 0) {
-        onNotify?.(`命令「${trimmed}」执行成功 (${result.durationMs}ms)`);
-      } else {
-        onNotify?.(`命令「${trimmed}」执行退出 (退出码 ${result.exitCode})`);
+      const result = await action(id);
+      if (mounted.current && currentProject.current === id) {
+        setServices(previous => [result, ...previous.filter(item => item.id !== result.id)]);
+        onNotify?.(`${result.command}：${statusLabel[result.status]}`);
       }
-    } catch (e) {
-      const errorLog: LogEntry = {
-        id: Math.random().toString(36).slice(2, 9),
-        command: trimmed,
-        exitCode: 1,
-        durationMs: 0,
-        stdout: '',
-        stderr: String(e),
-        timestamp: new Date().toLocaleTimeString(),
-      };
-      setOutputLogs(prev => [errorLog, ...prev]);
-      onNotify?.(`执行出错：${e}`);
+    } catch (cause) {
+      if (mounted.current && currentProject.current === id) setError(String(cause));
     } finally {
-      setRunning(false);
-      setActiveCommand(null);
+      mutations.current.delete(id);
+      if (mounted.current && currentProject.current === id) { setBusy(null); setLoading(false); }
     }
-  };
+  }
+  function run(command: string) { if (command.trim()) void mutate(`start:${command}`, id => startProjectService(id, command.trim())); }
+  function submit(event: FormEvent) { event.preventDefault(); run(customCommand); }
+  async function copy(service: ManagedService) {
+    const id = projectId;
+    try {
+      await navigator.clipboard.writeText(`$ ${service.command}\n${service.stdout}\n${service.stderr}`);
+      if (mounted.current && currentProject.current === id) { setCopied(service.id); onNotify?.('已复制命令输出'); }
+    } catch (cause) { if (mounted.current && currentProject.current === id) setError(`复制失败：${String(cause)}`); }
+  }
+  const running = services.filter(service => service.status === 'running').length;
 
-  const stopService = (name: string) => {
-    setActiveServices(prev => prev.filter(s => s.name !== name));
-    onNotify?.(`已停止常驻服务「${name}」`);
-  };
-
-  const restartService = (service: RunningService) => {
-    stopService(service.name);
-    setTimeout(() => {
-      void runCommand(service.command, true, service.name);
-    }, 500);
-  };
-
-  const handleCustomSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    void runCommand(customCommand);
-  };
-
-  const copyLog = (id: string, text: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedLogId(id);
-    onNotify?.('已复制终端输出日志');
-    setTimeout(() => setCopiedLogId(null), 2000);
-  };
-
-  const clearLogs = () => {
-    setOutputLogs([]);
-    setAiDiagnostic(null);
-    onNotify?.('已清空终端控制台');
-  };
-
-  const diagnoseErrorWithAi = (log: LogEntry) => {
-    const errorText = log.stderr || log.stdout;
-    const diagnostic = `【AI 故障快速诊断】
-命令: ${log.command} (退出码: ${log.exitCode})
-主要现象: 命令在执行时发生异常退出。
-核心堆栈:
-${errorText.slice(0, 500)}
-
-排查建议:
-1. 检查环境变量或依赖包是否完整安装 (可尝试运行 npm install 或 cargo build)
-2. 检查是否有端口已被占用冲突 (当前监听端口见上方网络指示)
-3. 查看配置文件是否有语法错误或缺少字段`;
-    setAiDiagnostic(diagnostic);
-    onNotify?.('已生成 AI 故障诊断建议');
-  };
-
-  const formatElapsed = (secs: number) => {
-    const m = Math.floor(secs / 60);
-    const s = secs % 60;
-    return `${m}分${s < 10 ? '0' : ''}${s}秒`;
-  };
-
-  return (
-    <div className="feature-panel-layout" aria-labelledby="dev-title">
-      <div className="workbench-header">
-        <div className="workbench-title-group">
-          <div className="large-tool-icon">
-            <Terminal size={22} strokeWidth={1.5} />
-          </div>
-          <div>
-            <h2 id="dev-title">Tongyun Dev · 企业级服务与终端</h2>
-            <p>常驻后台守护、端口健康侦测、多服务进程管理与 AI 终端日志故障诊断。</p>
-          </div>
-        </div>
-        <div className="workbench-badges">
-          <span className="badge-matcha">企业级进程控制</span>
-          {project && <span className="mono-subtle">{project.name}</span>}
-        </div>
-      </div>
-
-      {!project ? (
-        <div className="panel-empty-placeholder">
-          <Terminal size={32} strokeWidth={1.2} />
-          <p>请先在左侧选择或添加一个项目，以运行项目脚本与服务。</p>
-        </div>
-      ) : (
-        <>
-          {/* Active Ports & Services Bar */}
-          <div className="dev-metrics-bar">
-            <div className="metrics-ports-group">
-              <Globe size={15} className="accent-color" />
-              <span className="toolbar-label">本地服务端口感知:</span>
-              {activePorts.length === 0 ? (
-                <span className="meta">暂未检测到本地活跃 HTTP 服务</span>
-              ) : (
-                activePorts.map(p => (
-                  <a
-                    key={p.port}
-                    href={`http://localhost:${p.port}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="port-link-pill"
-                    title={`在浏览器中打开 http://localhost:${p.port}`}
-                  >
-                    <span className="status-dot available" />
-                    <span>:{p.port} ({p.process})</span>
-                  </a>
-                ))
-              )}
-            </div>
-
-            {stack.length > 0 && (
-              <div className="tech-badge-list">
-                <span className="tech-badge-label">
-                  <Cpu size={13} /> 运行时:
-                </span>
-                {stack.map(tech => (
-                  <span key={tech} className="tech-badge">
-                    {tech}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Active Daemons / Services Section */}
-          {activeServices.length > 0 && (
-            <section className="active-services-section">
-              <div className="section-heading">
-                <div className="subcard-title">
-                  <Activity size={15} className="accent-color" />
-                  <h3>常驻服务中 ({activeServices.length})</h3>
-                </div>
-              </div>
-              <div className="services-grid">
-                {activeServices.map(srv => (
-                  <div key={srv.name} className="service-card">
-                    <div className="service-header">
-                      <div className="service-title-info">
-                        <span className="service-dot-pulse" />
-                        <span className="service-name">{srv.name}</span>
-                        <code className="service-cmd">{srv.command}</code>
-                      </div>
-                      <div className="service-actions">
-                        <button
-                          className="service-btn"
-                          onClick={() => restartService(srv)}
-                          title="重启此服务"
-                        >
-                          <RotateCw size={13} />
-                          重启
-                        </button>
-                        <button
-                          className="service-btn stop"
-                          onClick={() => stopService(srv.name)}
-                          title="停止此服务"
-                        >
-                          <Square size={13} />
-                          停止
-                        </button>
-                      </div>
-                    </div>
-                    <div className="service-footer">
-                      <span className="meta">已运行: {formatElapsed(srv.elapsedSecs)}</span>
-                      <span className="meta">启动时间: {srv.startTime}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {/* Quick scripts row */}
-          <section className="panel-subcard">
-            <div className="section-heading">
-              <div className="subcard-title">
-                <Play size={15} className="title-icon" />
-                <h3>项目命令与常驻服务</h3>
-              </div>
-              <span className="meta">{scripts.length ? `${scripts.length} 个可用脚本` : '无 package 脚本'}</span>
-            </div>
-
-            {scripts.length > 0 ? (
-              <div className="script-grid">
-                {scripts.map(s => {
-                  const isDaemonRunning = activeServices.some(srv => srv.name === s.name);
-                  const isDevScript = s.name.includes('dev') || s.name.includes('start') || s.name.includes('watch') || s.name.includes('serve');
-                  return (
-                    <div key={s.name} className="script-run-card">
-                      <div className="script-run-info">
-                        <div className="script-title-row">
-                          <span className="script-run-name">{s.name}</span>
-                          {isDaemonRunning && <span className="mini-running-tag">运行中</span>}
-                        </div>
-                        <code className="script-run-cmd" title={s.command}>
-                          {s.command}
-                        </code>
-                      </div>
-                      <div className="script-actions-pair">
-                        <button
-                          className="primary-button-sm"
-                          onClick={() => void runCommand(s.command)}
-                          disabled={running}
-                          title={`单次执行 ${s.command}`}
-                        >
-                          {running && activeCommand === s.command ? (
-                            <LoaderCircle size={13} className="spin" />
-                          ) : (
-                            <Play size={13} />
-                          )}
-                          <span>运行</span>
-                        </button>
-
-                        {isDevScript && (
-                          <button
-                            className="secondary-button-sm"
-                            onClick={() => {
-                              if (isDaemonRunning) {
-                                stopService(s.name);
-                              } else {
-                                void runCommand(s.command, true, s.name);
-                              }
-                            }}
-                            disabled={running && activeCommand === s.command}
-                            title={isDaemonRunning ? '停止常驻服务' : '以常驻服务启动'}
-                          >
-                            {isDaemonRunning ? <Square size={12} /> : <Activity size={12} />}
-                            <span>{isDaemonRunning ? '停止' : '常驻'}</span>
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <p className="subcard-empty">
-                未在项目根目录找到标准 package 脚本。你可以使用下方的命令框执行任意 shell 命令。
-              </p>
-            )}
-
-            {/* Custom command runner */}
-            <form onSubmit={handleCustomSubmit} className="command-input-row">
-              <span className="prompt-symbol">$</span>
-              <input
-                className="command-input"
-                placeholder="输入任意要执行的项目命令，如 npm test, cargo check, git status, ls -la…"
-                value={customCommand}
-                onChange={e => setCustomCommand(e.target.value)}
-                disabled={running}
-              />
-              <button
-                type="submit"
-                className="secondary-button"
-                disabled={running || !customCommand.trim()}
-              >
-                {running && activeCommand === customCommand.trim() ? (
-                  <LoaderCircle size={13} className="spin" />
-                ) : (
-                  <Play size={13} />
-                )}
-                执行
-              </button>
-            </form>
-          </section>
-
-          {/* AI Diagnostic Banner if generated */}
-          {aiDiagnostic && (
-            <section className="ai-diagnostic-banner">
-              <div className="ai-diag-header">
-                <div className="subcard-title">
-                  <Sparkles size={16} className="accent-color" />
-                  <h4>AI 智能故障诊断建议</h4>
-                </div>
-                <button className="text-button-sm" onClick={() => setAiDiagnostic(null)}>
-                  收起
-                </button>
-              </div>
-              <pre className="ai-diag-content">{aiDiagnostic}</pre>
-            </section>
-          )}
-
-          {/* Built-in Terminal Console Output */}
-          <section className="terminal-console-card">
-            <div className="terminal-console-header">
-              <div className="terminal-title">
-                <div className="terminal-dots">
-                  <span className="dot red" />
-                  <span className="dot yellow" />
-                  <span className="dot green" />
-                </div>
-                <span>控制台输出</span>
-                {running && (
-                  <span className="running-tag">
-                    <LoaderCircle size={12} className="spin" />
-                    正在执行: {activeCommand}
-                  </span>
-                )}
-              </div>
-              <div className="terminal-actions">
-                {outputLogs.length > 0 && (
-                  <>
-                    <button
-                      className="terminal-btn"
-                      onClick={() =>
-                        copyLog(
-                          'all',
-                          outputLogs
-                            .map(l => `$ ${l.command}\n${l.stdout}${l.stderr}`)
-                            .join('\n\n'),
-                        )
-                      }
-                      title="复制全部控制台输出"
-                    >
-                      {copiedLogId === 'all' ? <Check size={12} /> : <Copy size={12} />}
-                      复制全部
-                    </button>
-                    <button
-                      className="terminal-btn"
-                      onClick={clearLogs}
-                      title="清空控制台输出"
-                    >
-                      <Trash2 size={12} />
-                      清空
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-
-            <div className="terminal-body" ref={terminalRef}>
-              {outputLogs.length === 0 ? (
-                <div className="terminal-empty">
-                  <span className="terminal-prompt-hint">$ 准备就绪。点击上方「运行」或「常驻」启动服务与任务。</span>
-                </div>
-              ) : (
-                outputLogs.map(log => (
-                  <div key={log.id} className="terminal-log-entry">
-                    <div className="terminal-log-header">
-                      <span className="terminal-cmd-title">$ {log.command}</span>
-                      <div className="terminal-cmd-meta">
-                        <span
-                          className={`exit-badge ${
-                            log.exitCode === 0 ? 'exit-success' : 'exit-failure'
-                          }`}
-                        >
-                          退出码 {log.exitCode}
-                        </span>
-                        <span className="terminal-duration">{log.durationMs}ms</span>
-                        <span className="terminal-time">{log.timestamp}</span>
-
-                        {log.exitCode !== 0 && (
-                          <button
-                            className="ai-assist-tag-btn"
-                            onClick={() => diagnoseErrorWithAi(log)}
-                            title="由 AI 分析此错误原因"
-                          >
-                            <Sparkles size={11} />
-                            AI 诊断
-                          </button>
-                        )}
-
-                        <button
-                          className="terminal-mini-btn"
-                          onClick={() =>
-                            copyLog(log.id, `${log.stdout}\n${log.stderr}`)
-                          }
-                          title="复制此命令输出"
-                        >
-                          {copiedLogId === log.id ? (
-                            <Check size={11} />
-                          ) : (
-                            <Copy size={11} />
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                    {log.stdout && (
-                      <pre className="terminal-stdout">{log.stdout}</pre>
-                    )}
-                    {log.stderr && (
-                      <pre className="terminal-stderr">{log.stderr}</pre>
-                    )}
-                  </div>
-                ))
-              )}
-            </div>
-          </section>
-        </>
-      )}
-    </div>
-  );
+  return <div className="feature-panel-layout" aria-labelledby="dev-title">
+    <div className="workbench-header"><div className="workbench-title-group"><div className="large-tool-icon"><Terminal size={22} strokeWidth={1.5}/></div><div><h2 id="dev-title">Tongyun Dev · 企业级服务与终端</h2><p>运行项目命令，查看真实进程状态与输出。切换项目和页签不会停止服务。</p></div></div><div className="workbench-badges"><span className="badge">企业级进程控制</span>{project && <span className="mono-subtle">{project.name}</span>}</div></div>
+    {!isDesktop && <p className="inline-error" role="status">浏览器预览无法启动或管理本机进程，请在桌面版使用。</p>}
+    {!project ? <div className="panel-empty-placeholder"><Terminal size={32} strokeWidth={1.2}/><p>请先在左侧选择或添加一个项目，以运行项目脚本与服务。</p></div> : <>
+      <p className="meta">正常退出工作台会停止这里启动的全部进程组。仅支持 macOS / Unix；请以前台模式运行命令，不要使用自行脱离进程组的守护模式。</p>
+      {error && <div className="error-banner" role="alert"><span>{error}</span><button className="text-button" disabled={!isDesktop || !!busy} onClick={() => void readServices(project.id)}>重新读取状态</button></div>}
+      <div className="dev-metrics-bar"><div className="metrics-ports-group"><Activity size={15}/><span className="toolbar-label">当前项目托管进程：</span><span>{loading ? '读取中…' : `${running} 个运行中`}</span><span className="meta">进程存活不代表服务已就绪</span></div>{stack.length > 0 && <div className="tech-badge-list"><span className="tech-badge-label"><Cpu size={13}/>运行时：</span>{stack.map(tech => <span key={tech} className="tech-badge">{tech}</span>)}</div>}</div>
+      <section className="panel-subcard"><div className="section-heading"><div className="subcard-title"><Play size={15}/><h3>项目命令</h3></div><span className="meta">{scripts.length ? `${scripts.length} 个脚本` : '无 package 脚本'}</span></div>
+        {scripts.length ? <div className="script-grid">{scripts.map(script => {
+          const active = services.find(service => service.command === script.command && service.status === 'running');
+          return <div key={script.name} className="script-run-card"><div className="script-run-info"><div className="script-title-row"><span className="script-run-name">{script.name}</span>{active && <span className="mini-running-tag">进程运行中</span>}</div><code className="script-run-cmd" title={script.command}>{script.command}</code></div><button className="secondary-button-sm" disabled={!isDesktop || !!busy || loading || !!active} onClick={() => run(script.command)}>{busy === `start:${script.command}` ? <LoaderCircle size={13} className="spin"/> : <Play size={13}/>}<span>{active ? '已启动' : '运行'}</span></button></div>;
+        })}</div> : <p className="subcard-empty">项目根目录没有可用的 package 脚本。可在下方输入项目命令。</p>}
+        <form onSubmit={submit} className="command-input-row"><span className="prompt-symbol">$</span><input className="command-input" aria-label="项目命令" placeholder="输入项目命令，如 npm run dev 或 npm test" value={customCommand} onChange={event => setCustomCommand(event.target.value)} disabled={!isDesktop || !!busy}/><button type="submit" className="secondary-button" disabled={!isDesktop || !!busy || !customCommand.trim()}>{busy?.startsWith('start:') ? <LoaderCircle size={13} className="spin"/> : <Play size={13}/>}运行</button></form>
+      </section>
+      <section className="active-services-section"><div className="section-heading"><div className="subcard-title"><Activity size={15}/><h3>进程与执行记录</h3></div><button className="text-button" disabled={!isDesktop || !!busy} onClick={() => void readServices(project.id)}><RotateCw size={13}/>刷新</button></div>
+        {loading ? <p role="status">正在读取托管进程…</p> : services.length === 0 ? <p className="subcard-empty">这个项目还没有执行记录。运行后可在这里查看状态、停止、重启和读取日志。</p> : <div className="services-grid">{services.map(service => <div key={service.id} className="service-card"><div className="service-header"><div className="service-title-info"><span className={`status-dot ${service.status === 'running' ? 'available' : ''}`}/><span className="service-name">{statusLabel[service.status]}</span><code className="service-cmd">{service.command}</code></div><div className="service-actions"><button className="service-btn" disabled={!isDesktop || !!busy} onClick={() => void mutate(`restart:${service.id}`, id => restartProjectService(id, service.id))}><RotateCw size={13}/>{busy === `restart:${service.id}` ? '重启中…' : '重启'}</button><button className="service-btn stop" disabled={!isDesktop || !!busy || service.status !== 'running'} onClick={() => void mutate(`stop:${service.id}`, id => stopProjectService(id, service.id))}><Square size={13}/>{busy === `stop:${service.id}` ? '停止中…' : '停止'}</button></div></div><div className="service-footer"><span className="meta">{service.pid ? `进程组 ${service.pid}` : `退出码 ${service.exitCode ?? '无（信号终止）'}`}</span><span className="meta">启动于 {new Date(service.startedAt).toLocaleString()}</span></div></div>)}</div>}
+      </section>
+      <section className="terminal-console-card"><div className="terminal-console-header"><div className="terminal-title"><Terminal size={14}/><span>命令输出</span></div><button className="terminal-btn" onClick={() => setHints(value => !value)}>{hints ? '收起排查提示' : '本地排查提示'}</button></div>
+        {hints && <div className="ai-diagnostic-banner"><p>以下是固定排查提示，没有调用 AI，也未自动诊断你的项目。</p><ol><li>根据真实退出码和错误日志定位失败步骤。</li><li>核对命令、工作目录、依赖与环境变量。</li><li>仅在日志提示端口冲突时核对端口占用。</li></ol></div>}
+        <div className="terminal-body">{services.length === 0 ? <div className="terminal-empty"><span className="terminal-prompt-hint">执行命令后，标准输出与错误输出会显示在这里。</span></div> : services.map(service => <div key={service.id} className="terminal-log-entry"><div className="terminal-log-header"><span className="terminal-cmd-title">$ {service.command}</span><div className="terminal-cmd-meta"><span className={`exit-badge ${service.status === 'failed' ? 'exit-failure' : ''}`}>{statusLabel[service.status]}{service.exitCode != null ? ` · ${service.exitCode}` : ''}</span><button className="terminal-mini-btn" aria-label={`复制 ${service.command} 输出`} onClick={() => void copy(service)}>{copied === service.id ? <Check size={12}/> : <Copy size={12}/>}</button></div></div>{service.outputTruncated && <p className="meta">输出较多，仅保留每个输出流最后 64 KiB。</p>}{service.stdout && <pre className="terminal-stdout">{service.stdout}</pre>}{service.stderr && <pre className="terminal-stderr">{service.stderr}</pre>}{!service.stdout && !service.stderr && <p className="meta">暂无输出</p>}</div>)}</div>
+      </section>
+    </>}
+  </div>;
 }

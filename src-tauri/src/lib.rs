@@ -1,13 +1,14 @@
 use std::path::PathBuf;
 use studio_core::{
     AiProjectContext, DbColumnInfo, DbTableInfo, ExecutionResult, FileEntry, GitFileChange,
-    HttpResponse, ListeningPort, PaginatedData, ProjectInspection, SqlQueryResult, Workspace,
-    WorkspaceStore,
+    HttpResponse, ListeningPort, ManagedService, PaginatedData, ProjectInspection, ServiceManager,
+    SqlQueryResult, Workspace, WorkspaceStore,
 };
 use tauri::Manager;
 
 pub struct AppState {
     pub store: WorkspaceStore,
+    pub services: ServiceManager,
 }
 
 #[tauri::command]
@@ -287,6 +288,42 @@ async fn choose_project_directory() -> Option<String> {
     folder.map(|f| f.path().to_string_lossy().to_string())
 }
 
+#[tauri::command]
+fn start_project_service(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    command: String,
+) -> Result<ManagedService, String> {
+    let project = state.store.project(&id)?;
+    state.services.start(&project, &command)
+}
+
+#[tauri::command]
+fn list_project_services(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<Vec<ManagedService>, String> {
+    state.services.list(&id)
+}
+
+#[tauri::command]
+fn stop_project_service(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    service_id: String,
+) -> Result<ManagedService, String> {
+    state.services.stop(&id, &service_id)
+}
+
+#[tauri::command]
+fn restart_project_service(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    service_id: String,
+) -> Result<ManagedService, String> {
+    state.services.restart(&id, &service_id)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -294,6 +331,7 @@ pub fn run() {
             let workspace_path = config_dir.join("workspace.json");
             app.manage(AppState {
                 store: WorkspaceStore::new(workspace_path),
+                services: ServiceManager::new(),
             });
             Ok(())
         })
@@ -330,6 +368,10 @@ pub fn run() {
             open_in_terminal,
             open_project_file,
             choose_project_directory,
+            start_project_service,
+            list_project_services,
+            stop_project_service,
+            restart_project_service,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,5 +1,5 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import type { ActiveTab, AgentActionStep, AgentSessionState, AiProjectContext, Project, ProjectInspection, ToolId, Workspace } from './contracts';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import type { ActiveTab, AiProjectContext, Project, ProjectInspection, ToolId, Workspace } from './contracts';
 import {
   addProject,
   chooseProjectDirectory,
@@ -92,8 +92,9 @@ export default function App() {
 
   const project = workspace.projects.find(item => item.id === workspace.activeProjectId) ?? null;
 
-  const [agentSession, setAgentSession] = useState<AgentSessionState>(() =>
-    getInitialAgentSession(project?.name ?? 'tongyun-studio'),
+  const agentSession = useMemo(
+    () => getInitialAgentSession(project?.id ?? null),
+    [project?.id],
   );
 
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -117,45 +118,6 @@ export default function App() {
     } finally {
       setLoadingAi(false);
     }
-  };
-
-  const handleAgentPrompt = (userPrompt: string) => {
-    const newAction: AgentActionStep = {
-      id: `act-${Date.now()}`,
-      kind: 'plan',
-      title: '响应人机协同干预',
-      detail: userPrompt,
-      status: 'running',
-      timestamp: new Date().toLocaleTimeString(),
-      durationMs: 160,
-      target: 'Agent 目标调度队列',
-    };
-    setAgentSession(prev => ({
-      ...prev,
-      actions: [...prev.actions, newAction],
-      plan: {
-        ...prev.plan,
-        steps: [
-          ...prev.plan.steps,
-          { id: `step-${Date.now()}`, text: `人工补充: ${userPrompt}`, status: 'active' },
-        ],
-      },
-    }));
-    notify('已向 Agent 投递补充指示');
-  };
-
-  const handleToggleAgentPause = () => {
-    setAgentSession(prev => {
-      const nextStatus = prev.plan.status === 'paused' ? 'executing' : 'paused';
-      notify(nextStatus === 'paused' ? '已暂停 Agent 调度' : '已恢复 Agent 调度');
-      return {
-        ...prev,
-        plan: {
-          ...prev.plan,
-          status: nextStatus,
-        },
-      };
-    });
   };
 
   const current = inspection?.id === project?.id ? inspection : null;
@@ -484,13 +446,15 @@ export default function App() {
         </div>
 
         <div className="rail-bottom">
-          <div
+          <button
+            type="button"
             className="agent-rail-indicator"
             onClick={() => setShowAgentCockpit(prev => !prev)}
-            title="Agent 实时监视舱 (⌘J)"
+            title="Agent 监视舱 · 未接入 (⌘J)"
+            aria-label="打开 Agent 监视舱（未接入）"
           >
-            <span className="agent-pulse-dot" />
-          </div>
+            <Bot size={14} />
+          </button>
 
           <button
             className="rail-icon-btn"
@@ -598,7 +562,7 @@ export default function App() {
               <div className="explorer-quick-list">
                 <div className="explorer-quick-item">
                   <span>Agent 状态</span>
-                  <span className="accent-color">● 在线就绪</span>
+                  <span className="meta">未接入</span>
                 </div>
                 {tab === 'git' && current?.result?.git?.branch && (
                   <div className="explorer-quick-item">
@@ -681,11 +645,11 @@ export default function App() {
             <button
               className={`agent-topbar-pill ${showAgentCockpit ? 'active' : ''}`}
               onClick={() => setShowAgentCockpit(prev => !prev)}
-              title="切换 Agent 实时操作可视化监视舱 (⌘J)"
+              title="切换 Agent 监视舱 · 未接入 (⌘J)"
             >
               <Bot size={13} />
               <span>Agent 监视舱</span>
-              <span className="agent-pill-dot" />
+              <span className="meta">未接入</span>
             </button>
 
             <span className="topbar-label">本地集成开发者工作台</span>
@@ -834,8 +798,6 @@ export default function App() {
                 inspection={current?.result}
                 session={agentSession}
                 onNavigate={(t: ActiveTab) => setTab(t)}
-                onDispatchPrompt={handleAgentPrompt}
-                onTogglePause={handleToggleAgentPause}
                 onRefresh={() => setRefresh(v => v + 1)}
                 onNotify={notify}
               />
@@ -1047,11 +1009,10 @@ export default function App() {
           ===================================================================== */}
       {showAgentCockpit && (
         <AgentCockpit
+          project={project}
           session={agentSession}
           onClose={() => setShowAgentCockpit(false)}
           onNavigate={(targetTab: ActiveTab) => setTab(targetTab)}
-          onDispatchPrompt={handleAgentPrompt}
-          onTogglePause={handleToggleAgentPause}
           onNotify={notify}
         />
       )}
