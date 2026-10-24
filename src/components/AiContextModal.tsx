@@ -39,7 +39,7 @@ export default function AiContextModal({
             </div>
             <div>
               <h2 id="ai-modal-title">AI 上下文报告与 Agent 协同</h2>
-              <span className="meta">企业级项目全景画像 · 专为大模型与 AI Agent 注入结构化现场</span>
+              <span className="meta">项目全景画像 · 专为大模型与 AI Agent 注入结构化现场</span>
             </div>
           </div>
           <button className="icon-button" onClick={onClose} aria-label="关闭">

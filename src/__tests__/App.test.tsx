@@ -30,9 +30,9 @@ describe('App', () => {
     fireEvent.click(devTab);
 
     expect(
-      await screen.findByRole('heading', { name: 'Tongyun Dev · 企业级服务与终端' }),
+      await screen.findByRole('heading', { name: 'Tongyun Dev · 服务与终端' }),
     ).toBeInTheDocument();
-    expect(screen.getByText('企业级进程控制')).toBeInTheDocument();
+    expect(screen.getByText('本地进程控制')).toBeInTheDocument();
   });
 
   it('allows switching to api panel tab', async () => {
@@ -43,7 +43,7 @@ describe('App', () => {
     fireEvent.click(apiTab);
 
     expect(
-      await screen.findByRole('heading', { name: 'Tongyun API · 企业级接口工作台' }),
+      await screen.findByRole('heading', { name: 'Tongyun API · 接口工作台' }),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /导入 cURL/ })).toBeInTheDocument();
   });
@@ -56,7 +56,7 @@ describe('App', () => {
     fireEvent.click(dbTab);
 
     expect(
-      await screen.findByRole('heading', { name: 'Tongyun Database · 企业级数据工作台' }),
+      await screen.findByRole('heading', { name: 'Tongyun Database · 数据工作台' }),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /导出 CSV/ })).toBeInTheDocument();
   });
@@ -69,7 +69,7 @@ describe('App', () => {
     fireEvent.click(gitTab);
 
     expect(
-      await screen.findByRole('heading', { name: 'Tongyun Git · 企业级版本工作台' }),
+      await screen.findByRole('heading', { name: 'Tongyun Git · 版本工作台' }),
     ).toBeInTheDocument();
     expect(screen.getByText('双栏暂存工作流')).toBeInTheDocument();
   });

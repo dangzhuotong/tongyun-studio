@@ -25,8 +25,9 @@ Tongyun Studio
 
 ### 1. 运行 · Tongyun Dev
 - 自动识别项目根目录技术栈与 package 脚本（`npm`, `cargo` 等）
-- 一键执行快捷脚本与自定义 shell 命令
-- 原生内嵌终端控制台：支持标准输出/标准错误分色显示、退出码、执行耗时与日志复制
+- 一键执行快捷脚本与自定义 shell 命令，按项目托管 Unix 进程组
+- 停止、重启核验实际进程；切换页签保留记录，正常退出清理进程组；不支持主动脱离进程组的命令
+- 原生内嵌输出面板：支持标准输出/标准错误、退出码与日志复制；每流保留最后 64 KiB
 
 ### 2. 接口 · Tongyun API
 - 自动发现项目内的 `.http` / `.rest` 接口测试用例文件，支持载入与预览
@@ -36,7 +37,7 @@ Tongyun Studio
 
 ### 3. 数据 · Tongyun Database
 - 自动发现项目内的 SQLite 数据库文件（`.db`, `.sqlite`）及模式产物（`.sql`, Prisma/Drizzle 等）
-- 原生执行 SQLite SQL 查询与 DDL 语句
+- 只读 SQLite 查询；写入、DDL、ATTACH 和多语句均拒绝
 - 数据表网格呈现：表头、字段值、空值处理、耗时与行数统计
 - 预设快捷查询：列出所有表、查看表结构
 
@@ -45,6 +46,7 @@ Tongyun Studio
 - 原生 Unified Diff 查看器：行级别语法高亮（绿色添加、红色删除）
 - 内嵌提交输入框：支持 `⌘ + Enter` 快捷提交
 - 分支实时下拉切换与近期提交记录时间线
+- 仅提交已暂存内容，保留工作区未暂存改动和部分暂存选择
 
 ### 5. 文件 · Tongyun Files
 - 层次化目录树导航与上级返回
@@ -56,7 +58,7 @@ Tongyun Studio
 ## 本地开发与构建
 
 ### 前置要求
-- Node.js >= 18
+- Node.js 20.19+ 或 22.12+
 - Rust 2021 (Cargo)
 
 ### 常用命令
@@ -67,7 +69,7 @@ npm install
 # 运行前端测试与类型检查
 npm run check
 
-# 启动网页端开发服务器 (含模拟器运行预览)
+# 启动网页端开发服务器 (仅界面预览，本机操作需桌面版)
 npm run dev
 
 # 运行 Rust 核心单元测试
@@ -79,3 +81,9 @@ cargo check -p tongyun-studio
 # 构建生产桌面版应用
 npm run tauri build
 ```
+
+## Agent 与集成边界
+
+Agent 面板可读取项目里的 `.tongyun/agent-session.json`（备用 `.agent/session.json`），展示经格式校验的文件快照。不会生成示例执行、心跳或模型用量，也不宣称文件记录代表工人在线。没有消息消费与回执协议时，投递和暂停按钮保持不可用。
+
+当前尚未接入共享数据库记忆、跨机器 worker 调度和四个独立工具的完整后端协议。开发命令、Git 和数据库测试使用隔离夹具；最新证据见 [验收记录](docs/testing/acceptance-tests.md)。

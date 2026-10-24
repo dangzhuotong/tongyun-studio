@@ -217,7 +217,7 @@ export default function GitPanel({
 
   const handleCommit = async (e?: FormEvent) => {
     if (e) e.preventDefault();
-    if (!project || committing || !commitMessage.trim()) return;
+    if (!project || committing || !commitMessage.trim() || (!isAmend && !changedFiles.some(file => file.staged))) return;
 
     setCommitting(true);
     try {
@@ -239,11 +239,11 @@ export default function GitPanel({
     }
   };
 
-  const generateAiCommitMessage = () => {
+  const generateCommitDraft = () => {
     const staged = changedFiles.filter(f => f.staged);
-    const targets = staged.length > 0 ? staged : changedFiles;
+    const targets = staged;
     if (targets.length === 0) {
-      onNotify?.('当前无改动文件可供分析');
+      onNotify?.('请先暂存需要提交的文件');
       return;
     }
 
@@ -257,7 +257,7 @@ export default function GitPanel({
     const cleanName = first.split('/').pop()?.replace(/\.[^/.]+$/, '') || 'core';
     const generated = `${type}: 更新 ${cleanName} 并优化相关实现`;
     setCommitMessage(generated);
-    onNotify?.('✨ 已由 AI 智能提炼规范提交说明');
+    onNotify?.('已按暂存文件名生成本地规则草稿，请核对内容');
   };
 
   const copyHash = (hash: string) => {
@@ -294,8 +294,8 @@ export default function GitPanel({
             <GitBranch size={22} strokeWidth={1.5} />
           </div>
           <div>
-            <h2 id="git-title">Tongyun Git · 企业级版本工作台</h2>
-            <p>暂存区精细化管理、分支创建切换、远程同步、代码差异对比与 AI 智能提交生成。</p>
+            <h2 id="git-title">Tongyun Git · 版本工作台</h2>
+            <p>暂存区精细化管理、分支创建切换、远程同步、代码差异对比与 本地规则提交草稿。</p>
           </div>
         </div>
         <div className="workbench-badges">
@@ -522,11 +522,11 @@ export default function GitPanel({
                   <button
                     type="button"
                     className="ai-assist-btn"
-                    onClick={generateAiCommitMessage}
-                    title="由 AI 分析已选改动并提炼提交信息"
+                    onClick={generateCommitDraft}
+                    title="按已暂存文件名生成草稿，不调用 AI"
                   >
                     <Sparkles size={12} />
-                    AI 生成提交信息
+                    生成提交草稿
                   </button>
                 </div>
 
@@ -542,7 +542,7 @@ export default function GitPanel({
                       void handleCommit();
                     }
                   }}
-                  disabled={committing || changedFiles.length === 0}
+                  disabled={committing}
                 />
 
                 <div className="commit-actions-bar">
@@ -556,18 +556,18 @@ export default function GitPanel({
                   </label>
 
                   <div className="commit-buttons-group">
-                    <span className="meta">⌘ + Enter 提交</span>
+                    <span className="meta">仅提交暂存区 · ⌘ + Enter</span>
                     <button
                       type="submit"
                       className="primary-button-sm"
-                      disabled={committing || !commitMessage.trim() || changedFiles.length === 0}
+                      disabled={committing || !commitMessage.trim() || (!isAmend && stagedFiles.length === 0)}
                     >
                       {committing ? (
                         <LoaderCircle size={13} className="spin" />
                       ) : (
                         <GitCommit size={13} />
                       )}
-                      <span>{committing ? '提交中…' : isAmend ? '确认 Amend' : '提交更改'}</span>
+                      <span>{committing ? '提交中…' : isAmend ? '确认 Amend' : '提交已暂存'}</span>
                     </button>
                   </div>
                 </div>

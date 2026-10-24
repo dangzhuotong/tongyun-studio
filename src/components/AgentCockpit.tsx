@@ -14,7 +14,7 @@ interface AgentCockpitProps {
   onTogglePause?: () => Promise<void> | void;
 }
 
-const unavailableReason = '尚未接入 Agent 调度与审计服务，无法投递指令、暂停执行或导出审计记录。';
+const unavailableReason = '尚未接入 Agent 调度与审计服务，无法投递指令或暂停执行。读取文件后可导出本地快照。';
 
 export default function AgentCockpit({
   project,
@@ -74,7 +74,7 @@ export default function AgentCockpit({
               <span className="hud-name">{observed?.agentName ?? '未接入 Agent'}</span>
               <span className="hud-model">模型：{observed?.model ?? '未知'}</span>
             </div>
-            <span className="hud-mode-pill">{observed ? '已连接' : '未接入'}</span>
+            <span className="hud-mode-pill">{observed ? '文件快照' : '未接入'}</span>
           </div>
           <p className="mono-subtle">当前项目：{project?.name ?? '未选择项目'}</p>
           <div className="hud-stats-row">
@@ -127,6 +127,7 @@ export default function AgentCockpit({
       </div>
 
       <div className="cockpit-footer">
+        {observed && <p id="cockpit-unavailable" className="mono-subtle">{unavailableReason}</p>}
         {observed ? (
           <>
             <form
@@ -144,13 +145,15 @@ export default function AgentCockpit({
                   className="cockpit-input"
                   aria-label="Agent 补充指令"
                   placeholder="向当前 Agent 投递补充指令..."
-                  value={instruction}
+                  disabled={!onSendInstruction}
+                      aria-describedby="cockpit-unavailable"
+                      value={instruction}
                   onChange={e => setInstruction(e.target.value)}
                 />
                 <button
                   type="submit"
                   className="primary-button-sm"
-                  disabled={!instruction.trim()}
+                  disabled={!onSendInstruction || !instruction.trim()}
                   title="发送 Agent 指令"
                   aria-label="发送 Agent 指令"
                 >
@@ -162,14 +165,16 @@ export default function AgentCockpit({
               <button
                 type="button"
                 className="secondary-button-xs"
-                onClick={() => void onTogglePause?.()}
+                disabled={!onTogglePause}
+                      aria-describedby="cockpit-unavailable"
+                      onClick={() => void onTogglePause?.()}
                 title="暂停调度"
                 aria-label="暂停调度"
               >
                 <Square size={11} />
                 <span>暂停调度</span>
               </button>
-              <span className="footer-meta-tag">已连接会话</span>
+              <span className="footer-meta-tag">本地文件快照</span>
             </div>
           </>
         ) : (

@@ -403,6 +403,24 @@ pub fn run() {
             write_project_file,
             append_project_file,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                if let Err(error) = app.state::<AppState>().services.shutdown() {
+                    api.prevent_exit();
+                    rfd::MessageDialog::new()
+                        .set_title("服务尚未停止")
+                        .set_description(format!("工作台保持打开，请重试停止服务后退出。\n{error}"))
+                        .set_level(rfd::MessageLevel::Error)
+                        .show();
+                }
+            } else if let tauri::RunEvent::Exit = event {
+                // macOS native Quit can deliver Exit without ExitRequested. Tauri
+                // exits the process directly, so AppState::drop is not a fallback.
+                if let Err(error) = app.state::<AppState>().services.shutdown() {
+                    eprintln!("工作台退出时未能清理全部托管进程：{error}");
+                }
+            }
+        });
 }

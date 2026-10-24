@@ -276,7 +276,7 @@ export default function ApiPanel({
             <Code2 size={22} strokeWidth={1.5} />
           </div>
           <div>
-            <h2 id="api-title">Tongyun API · 企业级接口工作台</h2>
+            <h2 id="api-title">Tongyun API · 接口工作台</h2>
             <p>Query Params 解析、环境变量（{`{{baseUrl}}`}）、Auth 认证、cURL 导入导出与历史快照。</p>
           </div>
         </div>

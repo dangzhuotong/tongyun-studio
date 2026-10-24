@@ -13,7 +13,7 @@ interface AgentPanelProps {
   onTogglePause?: () => Promise<void> | void;
 }
 
-const unavailableReason = '尚未接入 Agent 调度与审计服务，无法投递指令、暂停执行或导出审计记录。';
+const unavailableReason = '尚未接入 Agent 调度与审计服务，无法投递指令或暂停执行。读取文件后可导出本地快照。';
 
 export default function AgentPanel({
   project,
@@ -37,11 +37,11 @@ export default function AgentPanel({
           <div className="large-tool-icon"><Bot size={22} strokeWidth={1.5} /></div>
           <div>
             <h2 id="agent-panel-title">Tongyun Agent · 执行记录与计划</h2>
-            <p>Agent 服务尚未接入。当前没有可核验的工人、模型、用量或执行进度。</p>
+            <p>展示项目内的 Agent 记录文件；文件快照不代表工人在线，未接入调度控制。</p>
           </div>
         </div>
         <div className="workbench-badges">
-          <span className="mini-badge">{observed ? '已连接执行记录来源' : 'Agent 未接入'}</span>
+          <span className="mini-badge">{observed ? '已读取本地快照' : 'Agent 未接入'}</span>
           {observed ? (
             <button
               className="secondary-button-sm"
@@ -148,13 +148,15 @@ export default function AgentPanel({
                       className="agent-prompt-input"
                       aria-label="Agent 补充指令"
                       placeholder="向当前 Agent 投递补充指令..."
+                      disabled={!onSendInstruction}
+                      aria-describedby="agent-unavailable"
                       value={instruction}
                       onChange={e => setInstruction(e.target.value)}
                     />
                     <button
                       type="submit"
                       className="primary-button"
-                      disabled={!instruction.trim()}
+                      disabled={!onSendInstruction || !instruction.trim()}
                       title="投递指令"
                     >
                       <Send size={13} />
@@ -163,6 +165,8 @@ export default function AgentPanel({
                     <button
                       type="button"
                       className="secondary-button"
+                      disabled={!onTogglePause}
+                      aria-describedby="agent-unavailable"
                       onClick={() => void onTogglePause?.()}
                       title="暂停"
                     >

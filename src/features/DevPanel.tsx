@@ -41,8 +41,8 @@ export default function DevPanel({ project, inspection, onNotify }: {
     const request = ++requestSequence.current;
     try {
       const [result, ports] = await Promise.all([
-        listProjectServices(id).catch(() => [] as ManagedService[]),
-        detectListeningPorts().catch(() => [] as ListeningPort[]),
+        listProjectServices(id),
+        detectListeningPorts(),
       ]);
       if (mounted.current && currentProject.current === id && request === requestSequence.current) {
         setServices(result);
@@ -59,7 +59,7 @@ export default function DevPanel({ project, inspection, onNotify }: {
   useEffect(() => {
     mounted.current = true;
     requestSequence.current++;
-    setServices([]); setError(null); setBusy(null); setCustomCommand(''); setCopied(null); setHints(false);
+    setServices([]); setListeningPorts([]); setError(null); setBusy(null); setCustomCommand(''); setCopied(null); setHints(false);
     if (!projectId || !isDesktop) { setLoading(false); return; }
     setLoading(true);
     void readServices(projectId);
@@ -97,8 +97,15 @@ export default function DevPanel({ project, inspection, onNotify }: {
   }
   const running = services.filter(service => service.status === 'running').length;
 
+  const devPorts = listeningPorts.filter(p => {
+    if (p.port < 80 || p.port >= 32768) return false;
+    const name = p.process.toLowerCase();
+    const isExcluded = ['rapport', 'controlce', 'launchd', 'wechat', 'doubao', 'feishu', 'slack', 'clash', 'antigrav', 'agy', 'electron'].some(k => name.includes(k));
+    return !isExcluded;
+  });
+
   return <div className="feature-panel-layout" aria-labelledby="dev-title">
-    <div className="workbench-header"><div className="workbench-title-group"><div className="large-tool-icon"><Terminal size={22} strokeWidth={1.5}/></div><div><h2 id="dev-title">Tongyun Dev · 企业级服务与终端</h2><p>运行项目命令，查看真实进程状态与输出。切换项目和页签不会停止服务。</p></div></div><div className="workbench-badges"><span className="badge">企业级进程控制</span>{project && <span className="mono-subtle">{project.name}</span>}</div></div>
+    <div className="workbench-header"><div className="workbench-title-group"><div className="large-tool-icon"><Terminal size={22} strokeWidth={1.5}/></div><div><h2 id="dev-title">Tongyun Dev · 服务与终端</h2><p>运行项目命令，查看真实进程状态与输出。切换项目和页签不会停止服务。</p></div></div><div className="workbench-badges"><span className="badge">本地进程控制</span>{project && <span className="mono-subtle">{project.name}</span>}</div></div>
     {!isDesktop && <p className="inline-error" role="status">浏览器预览无法启动或管理本机进程，请在桌面版使用。</p>}
     {!project ? <div className="panel-empty-placeholder"><Terminal size={32} strokeWidth={1.2}/><p>请先在左侧选择或添加一个项目，以运行项目脚本与服务。</p></div> : <>
       <p className="meta">正常退出工作台会停止这里启动的全部进程组。仅支持 macOS / Unix；请以前台模式运行命令，不要使用自行脱离进程组的守护模式。</p>
@@ -110,17 +117,17 @@ export default function DevPanel({ project, inspection, onNotify }: {
           <span>{loading ? '读取中…' : `${running} 个运行中`}</span>
           <span className="meta">进程存活不代表服务已就绪</span>
         </div>
-        {listeningPorts.length > 0 && (
+        {devPorts.length > 0 && (
           <div className="listening-ports-group">
-            <span className="toolbar-label">活跃监听端口：</span>
+            <span className="toolbar-label">本机开发端口（不限当前项目）：</span>
             <div className="port-chips-list">
-              {listeningPorts.map(p => (
+              {devPorts.slice(0, 8).map(p => (
                 <button
                   key={p.port}
                   type="button"
                   className="port-chip-btn"
                   title={`在浏览器中打开 http://localhost:${p.port} (${p.process})`}
-                  onClick={() => void openUrl(`http://localhost:${p.port}`)}
+                  onClick={() => void openUrl(`http://localhost:${p.port}`).catch(cause => setError(String(cause)))}
                 >
                   <span className="port-dot active" />
                   <span className="mono-subtle">:{p.port}</span>

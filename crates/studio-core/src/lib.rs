@@ -730,41 +730,21 @@ pub fn read_project_file_content(project: &Project, relative_path: &str) -> Resu
 }
 
 pub fn get_git_changed_files(project: &Project) -> Result<Vec<GitFileChange>> {
-    let path = Path::new(&project.path);
-    let output = git(path, &["status", "--porcelain=v1"])?;
-    if !output.success {
-        return Err(output_string(&output.stderr));
-    }
-    let text = output_string(&output.stdout);
+    let output = git(Path::new(&project.path), &["status", "--porcelain=v1", "-z"])?;
+    if !output.success { return Err(output_string(&output.stderr)); }
+    // Status columns include significant leading spaces; -z also keeps paths literal.
+    let mut records = output.stdout.split(|byte| *byte == 0);
     let mut changes = Vec::new();
-    for line in text.lines() {
-        if line.len() >= 4 {
-            let x = line.chars().next().unwrap_or(' ');
-            let y = line.chars().nth(1).unwrap_or(' ');
-            let file_path = line[3..].trim().to_owned();
-
-            if x == '?' && y == '?' {
-                changes.push(GitFileChange {
-                    path: file_path,
-                    status: "??".into(),
-                    staged: false,
-                });
-            } else {
-                if x != ' ' {
-                    changes.push(GitFileChange {
-                        path: file_path.clone(),
-                        status: x.to_string(),
-                        staged: true,
-                    });
-                }
-                if y != ' ' {
-                    changes.push(GitFileChange {
-                        path: file_path,
-                        status: y.to_string(),
-                        staged: false,
-                    });
-                }
-            }
+    while let Some(record) = records.next() {
+        if record.len() < 4 { continue; }
+        let (x, y) = (record[0], record[1]);
+        let path = String::from_utf8(record[3..].to_vec()).map_err(|_| "Git 文件名不是有效 UTF-8")?;
+        if x == b'R' || x == b'C' || y == b'R' || y == b'C' { records.next(); }
+        if x == b'?' && y == b'?' {
+            changes.push(GitFileChange { path, status: "??".into(), staged: false });
+        } else {
+            if x != b' ' { changes.push(GitFileChange { path: path.clone(), status: (x as char).to_string(), staged: true }); }
+            if y != b' ' { changes.push(GitFileChange { path, status: (y as char).to_string(), staged: false }); }
         }
     }
     Ok(changes)
@@ -1289,6 +1269,42 @@ pub fn get_table_data(
     })
 }
 
+fn is_dev_port(port: u16, proc_name: &str) -> bool {
+    if port < 80 || port >= 32768 {
+        return false;
+    }
+
+    if !proc_name.is_ascii() {
+        return false;
+    }
+
+    let lower = proc_name.to_lowercase();
+
+    const EXCLUSIONS: &[&str] = &[
+        "rapport", "controlce", "controlcenter", "launchd", "identityservices",
+        "sharingd", "remoted", "wifi", "bluetooth", "mdns", "airplay", "cupsd",
+        "wechat", "doubao", "feishu", "dingtalk", "slack", "telegram", "clash",
+        "v2ray", "surge", "sing-box", "antigrav", "agy", "language_", "sandbox",
+        "editor_", "electron",
+    ];
+
+    for excl in EXCLUSIONS {
+        if lower.contains(excl) {
+            return false;
+        }
+    }
+
+    const DEV_SERVERS: &[&str] = &[
+        "node", "vite", "next", "nuxt", "astro", "deno", "bun",
+        "python", "uvicorn", "gunicorn", "flask", "django",
+        "cargo", "rust", "go", "ruby", "rails", "puma", "php",
+        "caddy", "nginx", "docker", "postgres", "mysqld", "redis",
+        "java",
+    ];
+
+    DEV_SERVERS.iter().any(|s| lower.contains(s))
+}
+
 pub fn detect_listening_ports() -> Vec<ListeningPort> {
     let mut ports = Vec::new();
     #[cfg(target_os = "macos")]
@@ -1306,7 +1322,7 @@ pub fn detect_listening_ports() -> Vec<ListeningPort> {
                         let addr = parts[8];
                         if let Some(port_str) = addr.split(':').last() {
                             if let Ok(p) = port_str.parse::<u16>() {
-                                if !ports.iter().any(|item: &ListeningPort| item.port == p) {
+                                if is_dev_port(p, &proc_name) && !ports.iter().any(|item: &ListeningPort| item.port == p) {
                                     ports.push(ListeningPort {
                                         port: p,
                                         process: proc_name,
@@ -1459,55 +1475,50 @@ pub fn open_url(url: &str) -> Result<()> {
     }
 }
 
-pub fn write_project_file(project: &Project, relative_path: &str, content: &str) -> Result<()> {
-    let root = fs::canonicalize(&project.path)
-        .map_err(|e| format!("无法访问项目根目录：{e}"))?;
-    let trimmed = relative_path.trim_start_matches('/');
-    if trimmed.is_empty() || trimmed.contains("..") {
-        return Err("非法相对路径".into());
-    }
-    let target = root.join(trimmed);
-    if let Some(parent) = target.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent).map_err(|e| format!("无法创建父目录：{e}"))?;
+// Traverse relative to open directory descriptors, rejecting symlinks before creating
+// any directory or opening the target. This also prevents parent-swap traversal races.
+#[cfg(unix)]
+fn open_project_output(project: &Project, relative_path: &str, append: bool) -> Result<fs::File> {
+    use std::{ffi::CString, os::{fd::{AsRawFd, FromRawFd, OwnedFd}, unix::fs::MetadataExt}, path::Component};
+    let relative = Path::new(relative_path);
+    let parts = relative.components().map(|component| match component {
+        Component::Normal(name) => CString::new(name.as_encoded_bytes()).map_err(|_| "路径包含无效字符".to_string()),
+        _ => Err("必须使用项目内的相对路径".into()),
+    }).collect::<Result<Vec<_>>>()?;
+    if parts.is_empty() { return Err("相对路径不能为空".into()); }
+    let root = fs::File::open(&project.path).map_err(|e| format!("无法打开项目目录：{e}"))?;
+    let mut directory: OwnedFd = root.into();
+    for part in &parts[..parts.len() - 1] {
+        let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+        let mut fd = unsafe { libc::openat(directory.as_raw_fd(), part.as_ptr(), flags) };
+        if fd < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT) {
+            let created = unsafe { libc::mkdirat(directory.as_raw_fd(), part.as_ptr(), 0o700) };
+            if created < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
+                return Err(format!("无法创建项目目录：{}", std::io::Error::last_os_error()));
+            }
+            fd = unsafe { libc::openat(directory.as_raw_fd(), part.as_ptr(), flags) };
         }
-        let canonical_parent = fs::canonicalize(parent)
-            .map_err(|e| format!("路径解析失败：{e}"))?;
-        if !canonical_parent.starts_with(&root) {
-            return Err("非法越界写入".into());
-        }
+        if fd < 0 { return Err(format!("拒绝不可访问或链接目录：{}", std::io::Error::last_os_error())); }
+        directory = unsafe { OwnedFd::from_raw_fd(fd) };
     }
-    fs::write(&target, content).map_err(|e| format!("写入文件失败：{e}"))?;
-    Ok(())
+    let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK | if append { libc::O_APPEND } else { 0 };
+    let fd = unsafe { libc::openat(directory.as_raw_fd(), parts.last().unwrap().as_ptr(), flags, 0o600) };
+    if fd < 0 { return Err(format!("无法安全打开项目文件：{}", std::io::Error::last_os_error())); }
+    let file = unsafe { fs::File::from_raw_fd(fd) };
+    let metadata = file.metadata().map_err(|e| e.to_string())?;
+    if !metadata.is_file() || metadata.nlink() != 1 { return Err("拒绝写入非普通文件或硬链接".into()); }
+    if !append { file.set_len(0).map_err(|e| e.to_string())?; }
+    Ok(file)
 }
-
+#[cfg(not(unix))]
+fn open_project_output(_project: &Project, _relative_path: &str, _append: bool) -> Result<fs::File> {
+    Err("当前平台尚未实现安全项目文件写入".into())
+}
+pub fn write_project_file(project: &Project, relative_path: &str, content: &str) -> Result<()> {
+    open_project_output(project, relative_path, false)?.write_all(content.as_bytes()).map_err(|e| format!("写入文件失败：{e}"))
+}
 pub fn append_project_file(project: &Project, relative_path: &str, content: &str) -> Result<()> {
-    let root = fs::canonicalize(&project.path)
-        .map_err(|e| format!("无法访问项目根目录：{e}"))?;
-    let trimmed = relative_path.trim_start_matches('/');
-    if trimmed.is_empty() || trimmed.contains("..") {
-        return Err("非法相对路径".into());
-    }
-    let target = root.join(trimmed);
-    if let Some(parent) = target.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent).map_err(|e| format!("无法创建父目录：{e}"))?;
-        }
-        let canonical_parent = fs::canonicalize(parent)
-            .map_err(|e| format!("路径解析失败：{e}"))?;
-        if !canonical_parent.starts_with(&root) {
-            return Err("非法越界写入".into());
-        }
-    }
-    use std::io::Write;
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&target)
-        .map_err(|e| format!("打开文件失败：{e}"))?;
-    file.write_all(content.as_bytes())
-        .map_err(|e| format!("追加写入失败：{e}"))?;
-    Ok(())
+    open_project_output(project, relative_path, true)?.write_all(content.as_bytes()).map_err(|e| format!("追加写入失败：{e}"))
 }
 
 #[cfg(test)]

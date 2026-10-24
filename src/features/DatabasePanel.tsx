@@ -61,7 +61,7 @@ export default function DatabasePanel({
   const [sqlQuery, setSqlQuery] = useState("SELECT name, type FROM sqlite_master WHERE type IN ('table','view') ORDER BY name;");
   const [runningSql, setRunningSql] = useState(false);
   const [queryResult, setQueryResult] = useState<SqlQueryResult | null>(null);
-  const [safetyWarning, setSafetyWarning] = useState<string | null>(null);
+  const [tableError, setTableError] = useState<string | null>(null);
 
   // Schema file preview
   const [selectedSchemaFile, setSelectedSchemaFile] = useState<string | null>(null);
@@ -71,6 +71,7 @@ export default function DatabasePanel({
     if (!project) return;
     const target = path ?? dbPath;
     setLoadingTables(true);
+    setTableError(null);
     try {
       const list = await getDbTables(project.id, target);
       setTables(list);
@@ -78,9 +79,10 @@ export default function DatabasePanel({
         setSelectedTable(list[0].name);
         void loadTableData(list[0].name, 1, pageSize, target);
       }
-    } catch {
-      // might not be an existing sqlite yet
+    } catch (error) {
+      setTableError(String(error));
       setTables([]);
+      setPaginatedData(null);
     } finally {
       setLoadingTables(false);
     }
@@ -140,14 +142,6 @@ export default function DatabasePanel({
     if (!project || runningSql) return;
     const trimmed = sqlQuery.trim();
     if (!trimmed) return;
-
-    // Safety checks for dangerous mutations without WHERE
-    const upper = trimmed.toUpperCase();
-    if ((upper.startsWith('DELETE') || upper.startsWith('UPDATE')) && !upper.includes('WHERE')) {
-      setSafetyWarning('⚠️ 危险操作警示：该 SQL 为无 WHERE 条件的全表更新/删除，可能造成全量数据丢失。');
-    } else {
-      setSafetyWarning(null);
-    }
 
     setRunningSql(true);
     setQueryResult(null);
@@ -230,8 +224,8 @@ export default function DatabasePanel({
             <Database size={22} strokeWidth={1.5} />
           </div>
           <div>
-            <h2 id="db-title">Tongyun Database · 企业级数据工作台</h2>
-            <p>库表对象树、可视化分页数据网格、SQL 安全审阅、数据导出（CSV/JSON）与模式追溯。</p>
+            <h2 id="db-title">Tongyun Database · 数据工作台</h2>
+            <p>库表对象树、可视化分页数据网格、SQLite 只读查询、数据导出（CSV/JSON）与模式追溯。</p>
           </div>
         </div>
         <div className="workbench-badges">
@@ -278,7 +272,7 @@ export default function DatabasePanel({
               </div>
               <div className="tree-list-content">
                 {tables.length === 0 ? (
-                  <div className="tree-empty-hint">未扫描到数据表（或数据库为空）</div>
+                  <div className="tree-empty-hint" role={tableError ? 'alert' : undefined}>{tableError || '数据库中没有数据表'}</div>
                 ) : (
                   tables.map(t => (
                     <div key={t.name} className="tree-table-item">
@@ -452,10 +446,10 @@ export default function DatabasePanel({
             {/* View 2: SQL Console */}
             {activeView === 'sql' && (
               <section className="sql-workbench-card">
-                {safetyWarning && (
+                {(
                   <div className="safety-warning-banner">
                     <ShieldAlert size={16} />
-                    <span>{safetyWarning}</span>
+                    <span>只读查询：禁止写入、建表和附加数据库。单次最多 1000 行、4 MiB，执行限时 2 秒。</span>
                   </div>
                 )}
 
@@ -465,7 +459,7 @@ export default function DatabasePanel({
                     rows={4}
                     value={sqlQuery}
                     onChange={e => setSqlQuery(e.target.value)}
-                    placeholder="输入 SELECT / INSERT / UPDATE / PRAGMA 等标准 SQL 语句…"
+                    placeholder="输入单条 SELECT 或只读表结构查询…"
                   />
                   <div className="sql-editor-footer">
                     <div className="sql-presets">
@@ -490,7 +484,7 @@ export default function DatabasePanel({
                       disabled={runningSql || !sqlQuery.trim()}
                     >
                       {runningSql ? <LoaderCircle size={14} className="spin" /> : <Play size={14} />}
-                      执行查询
+                      只读查询
                     </button>
                   </div>
                 </div>

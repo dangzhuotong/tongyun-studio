@@ -1,44 +1,17 @@
-# 架构设计
+# 架构与当前边界
 
-状态：现行（Tauri 2 + studio-core + React 19）
+React 19 / TypeScript 按项目切换 Files、Dev、API、Database、Git、Agent 面板。`src/bridge.ts` 调用 Tauri 命令，`src-tauri` 负责桌面适配，`crates/studio-core` 实现本地操作。浏览器仅预览空工作区，本机操作返回桌面版要求，不生成模拟成功数据。
 
-## 原则
+## 当前实现
 
-1. **分层清晰与宿主解耦**：Rust 核心领域逻辑（`studio-core`）独立于 Tauri 桌面桥接层（`src-tauri`），纯 Rust 单元测试脱离 UI 独立快速执行。
-2. **读写安全与边界受控**：工作台仅做只读探测（Git 状态、文件统计）与应用登记持久化，绝不隐式修改用户项目代码，绝不跨越项目边界执行 shell 字符串拼接（一律参数数组）。
-3. **前端强类型契约**：前端 `src/contracts.ts` 与 Rust 数据结构（`Workspace`, `Project`, `GitSummary`, `ToolStatus` 等）通过 camelCase JSON 契约精确对齐。
+- `WorkspaceStore` 在应用配置目录保存项目登记，不复制项目代码；移除只删除登记。
+- `ServiceManager` 按项目和服务 ID 托管 Unix 进程组，支持真实状态、停止、重启和有界输出。切换面板不会清空后台记录；正常退出同时覆盖 `ExitRequested` 和 macOS 原生 `Exit`；在可取消的退出请求中，清理失败会阻止退出并提示。它不负责跨应用重启恢复，不允许把进程存活等同于服务就绪。主动脱离进程组的命令不受托管，应以前台模式启动。
+- Git 使用本机 Git。普通提交和 amend 均保持已有 index，只提交用户已暂存内容；状态解析采用 NUL 分隔，保留状态列和原始文件名。
+- SQLite 使用 `rusqlite`，只读打开现有项目内数据库；`query_only`、authorizer 和单语句解析共同限制读查询。限额为 1000 行、4 MiB 总结果、1 MiB 单值、64 KiB SQL、2 秒执行。SQL 写入和 DDL 尚未接入变更审批，不开放。
+- HTTP 与文件浏览使用本地核心接口。用户显式输入的开发命令允许 shell 语法；其他外部程序采用参数数组。
+- 项目文件写入通过目录描述符逐层访问，拒绝路径跳转、符号链接和硬链接目标；不在项目外提前创建目录。仅 Unix 实现。
+- Agent 面板读取 `.tongyun/agent-session.json`，其次读取 `.agent/session.json`，校验字段和项目绑定。它是本地快照展示，没有接入 worker 注册表、数据库记忆、消息确认或调度控制。未知模型/心跳/用量显示未知；源文件缺失或无效时清空状态。投递、暂停保持不可用；可导出明确标注来源的本地快照。
 
-## 系统架构
+## 集成限制
 
-```
-┌────────────────────────────────────────────────────────┐
-│                   React 19 + TypeScript (src/)         │
-│  - App.tsx (主界面布局、项目导航、概览状态网格)           │
-│  - bridge.ts (Tauri 2 invoke 适配器与降级)             │
-│  - features/ (Dev / Api / Database / Git 工具面板)      │
-│  - styles/app.css (DESIGN.md 严格对齐令牌体系)          │
-└───────────────────────────┬────────────────────────────┘
-                            │ IPC (Tauri Commands)
-┌───────────────────────────▼────────────────────────────┐
-│                  src-tauri (桌面命令适配层)              │
-│  - tauri.conf.json (窗口尺寸、权限控制与能力配置)         │
-│  - lib.rs (Tauri invoke handler 与异步原生文件选择)      │
-└───────────────────────────┬────────────────────────────┘
-                            │ 直接引用
-┌───────────────────────────▼────────────────────────────┐
-│                crates/studio-core (核心领域库)          │
-│  - WorkspaceStore (原子写入、版本隔离与持久化)          │
-│  - inspect_project (只读 git 探测、.http 文件扫描)      │
-│  - list_tools / launch_tool (本地工具探测与系统拉起)    │
-└────────────────────────────────────────────────────────┘
-```
-
-## 当前上下文一览
-
-| 上下文 | 目录 | 职责 | 对外接口 |
-| --- | --- | --- | --- |
-| 工作区持久化 | `crates/studio-core` | 本地项目记录管理、原子存取、版本隔离 | `WorkspaceStore::{load, add, select, remove, project}` |
-| 项目只读探测 | `crates/studio-core` | Git 分支/HEAD/改动文件、.http 文件统计 | `inspect_project(&Project)` |
-| 工具集成探测 | `crates/studio-core` | Dev / API / Database / Git 检测与调用 open 拉起 | `list_tools()`, `launch_tool(ToolId)`, `open_project_directory(&Project)` |
-| 桌面通信桥接 | `src-tauri` | 暴露 Tauri 2 命令、目录异步对话框 | `tauri::command` handlers |
-| 交互视图层 | `src/` | 桌面与浏览器预览、工作区视图渲染、键盘无障碍支持 | React 组件与 `bridge.ts` |
+当前面板是在 Studio 中实现的本地能力，尚未复用四个独立产品的完整后端协议。模块名称不表示已经接通独立应用、统一数据库、Agent 调度或跨机器记忆。后续协议和任务规划需要单独确定，不能把界面入口作为已接入证据。
