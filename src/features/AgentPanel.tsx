@@ -96,13 +96,29 @@ export default function AgentPanel({
                 {plan && <div className="agent-plan-step-items">{plan.steps.map(step => <div key={step.id} className={`agent-step-row ${step.status}`}><div className="step-body"><span className="step-text">{step.text}</span><span className="step-tag">{step.status}</span></div></div>)}</div>}
               </div>
               <div className="subpanel-card">
-                <div className="subpanel-header"><Zap size={14} /><span className="subpanel-title">工作台入口</span></div>
-                <p className="meta">以下入口供手动使用，尚未绑定 Agent。</p>
+                <div className="subpanel-header"><Zap size={14} /><span className="subpanel-title">工作台联动矩阵</span></div>
+                <p className="meta">{observed ? '当前 Agent 已绑定以下 4 个工作台，点击进入对应开发现场查看详情：' : '供开发现场使用，接入 Agent 后将自动汇总对应工具操作。'}</p>
                 <div className="tool-matrix-grid">
-                  <button className="matrix-tile" onClick={() => onNavigate('dev')}><Terminal size={14} /><span>Dev 进程终端</span></button>
-                  <button className="matrix-tile" onClick={() => onNavigate('git')}><GitBranch size={14} /><span>Git 版本控制</span></button>
-                  <button className="matrix-tile" onClick={() => onNavigate('api')}><Code2 size={14} /><span>API 接口调试</span></button>
-                  <button className="matrix-tile" onClick={() => onNavigate('database')}><Database size={14} /><span>Database SQLite</span></button>
+                  <button className="matrix-tile" onClick={() => onNavigate('dev')}>
+                    <Terminal size={14} />
+                    <span>Dev 进程终端</span>
+                    {observed && <span className="mini-badge-accent">{observed.actions.filter(a => a.kind === 'terminal').length} 项调用</span>}
+                  </button>
+                  <button className="matrix-tile" onClick={() => onNavigate('git')}>
+                    <GitBranch size={14} />
+                    <span>Git 版本控制</span>
+                    {observed && <span className="mini-badge-accent">{observed.actions.filter(a => a.kind === 'git' || a.kind === 'edit').length} 项交付</span>}
+                  </button>
+                  <button className="matrix-tile" onClick={() => onNavigate('api')}>
+                    <Code2 size={14} />
+                    <span>API 接口调试</span>
+                    {observed && <span className="mini-badge-accent">{observed.actions.filter(a => a.kind === 'http').length} 项探针</span>}
+                  </button>
+                  <button className="matrix-tile" onClick={() => onNavigate('database')}>
+                    <Database size={14} />
+                    <span>Database 数据</span>
+                    {observed && <span className="mini-badge-accent">{observed.actions.filter(a => a.kind === 'sql').length} 项查询</span>}
+                  </button>
                 </div>
               </div>
             </div>

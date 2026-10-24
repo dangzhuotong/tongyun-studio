@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from 'react';
-import type { Project, ProjectInspection, HttpResponse } from '../contracts';
+import type { Project, ProjectInspection, HttpResponse, AgentSessionState } from '../contracts';
 import { sendHttpRequest, readProjectFileContent } from '../bridge';
 import {
+  Bot,
   Check,
   Code2,
   Copy,
@@ -34,10 +35,12 @@ interface RequestHistoryItem {
 export default function ApiPanel({
   project,
   inspection,
+  session,
   onNotify,
 }: {
   project: Project | null;
   inspection?: ProjectInspection | null;
+  session?: AgentSessionState | null;
   onRefresh?: () => void;
   onNotify?: (msg: string) => void;
 }) {
@@ -80,6 +83,8 @@ export default function ApiPanel({
 
   const [curlImportText, setCurlImportText] = useState('');
   const [showCurlModal, setShowCurlModal] = useState(false);
+
+  const agentHttpActions = (session?.actions ?? []).filter(a => a.kind === 'http');
 
   const httpPaths = inspection?.httpFilePaths ?? [];
 
@@ -325,6 +330,42 @@ export default function ApiPanel({
                       )}
                       <span>{p}</span>
                     </button>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* Agent Automated API Verifications */}
+            {agentHttpActions.length > 0 && (
+              <section className="panel-subcard agent-subcard">
+                <div className="section-heading">
+                  <div className="subcard-title">
+                    <Bot size={15} className="accent-color" />
+                    <h3>Agent 接口测试验证流</h3>
+                    <span className="mini-badge-accent">{session?.agentName ?? 'Agent'}</span>
+                  </div>
+                  <span className="meta">{agentHttpActions.length} 项接口探针</span>
+                </div>
+                <div className="agent-action-mini-list">
+                  {agentHttpActions.slice(-4).reverse().map(act => (
+                    <div
+                      key={act.id}
+                      className="agent-action-mini-item clickable"
+                      onClick={() => {
+                        if (act.detail && act.detail.startsWith('http')) {
+                          setUrl(act.detail);
+                        }
+                      }}
+                      title="点击将此接口载入上方调试栏"
+                    >
+                      <div className="action-mini-header">
+                        <span className={`status-dot ${act.status === 'done' ? 'available' : 'error'}`} />
+                        <span className="mini-badge">HTTP</span>
+                        <code className="action-mini-cmd">{act.title}</code>
+                        <span className="mono-subtle">{act.timestamp}</span>
+                      </div>
+                      <div className="action-mini-detail mono-subtle">{act.detail}</div>
+                    </div>
                   ))}
                 </div>
               </section>

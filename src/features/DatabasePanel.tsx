@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { Project, ProjectInspection, SqlQueryResult, DbTableInfo, DbColumnInfo, PaginatedData } from '../contracts';
+import type { Project, ProjectInspection, SqlQueryResult, DbTableInfo, DbColumnInfo, PaginatedData, AgentSessionState } from '../contracts';
 import {
   executeSqlQuery,
   getDbTables,
@@ -10,6 +10,7 @@ import {
   isDesktop,
 } from '../bridge';
 import {
+  Bot,
   ChevronDown,
   ChevronRight,
   Database,
@@ -27,10 +28,12 @@ import {
 export default function DatabasePanel({
   project,
   inspection,
+  session,
   onNotify,
 }: {
   project: Project | null;
   inspection?: ProjectInspection | null;
+  session?: AgentSessionState | null;
   onRefresh?: () => void;
   onNotify?: (msg: string) => void;
 }) {
@@ -66,6 +69,8 @@ export default function DatabasePanel({
   // Schema file preview
   const [selectedSchemaFile, setSelectedSchemaFile] = useState<string | null>(null);
   const [schemaContent, setSchemaContent] = useState<string | null>(null);
+
+  const agentSqlActions = (session?.actions ?? []).filter(a => a.kind === 'sql');
 
   const loadTables = async (path?: string) => {
     if (!project) return;
@@ -246,7 +251,44 @@ export default function DatabasePanel({
           <p>请先在左侧选择或添加一个项目，以浏览数据库结构与执行 SQL 查询。</p>
         </div>
       ) : (
-        <div className="db-workbench-split">
+        <>
+          {agentSqlActions.length > 0 && (
+            <div className="panel-subcard agent-subcard" style={{ marginBottom: 12 }}>
+              <div className="section-heading">
+                <div className="subcard-title">
+                  <Bot size={15} className="accent-color" />
+                  <h3>Agent SQL 探查与校验审计</h3>
+                  <span className="mini-badge-accent">{session?.agentName ?? 'Agent'}</span>
+                </div>
+                <span className="meta">{agentSqlActions.length} 项数据操作</span>
+              </div>
+              <div className="agent-action-mini-list">
+                {agentSqlActions.slice(-4).reverse().map(act => (
+                  <div
+                    key={act.id}
+                    className="agent-action-mini-item clickable"
+                    onClick={() => {
+                      if (act.detail) {
+                        setSqlQuery(act.detail);
+                        setActiveView('sql');
+                      }
+                    }}
+                    title="点击将此 SQL 载入查询控制台"
+                  >
+                    <div className="action-mini-header">
+                      <span className={`status-dot ${act.status === 'done' ? 'available' : 'error'}`} />
+                      <span className="mini-badge">SQL</span>
+                      <code className="action-mini-cmd">{act.title}</code>
+                      <span className="mono-subtle">{act.timestamp}</span>
+                    </div>
+                    <div className="action-mini-detail mono-subtle">{act.detail}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="db-workbench-split">
           {/* Left Column: Schema & Table Tree Explorer */}
           <aside className="db-sidebar-pane">
             <div className="db-target-header">
@@ -547,6 +589,7 @@ export default function DatabasePanel({
             )}
           </div>
         </div>
+        </>
       )}
     </div>
   );

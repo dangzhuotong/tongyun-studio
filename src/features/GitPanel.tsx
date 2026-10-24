@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import type { Project, ProjectInspection, GitFileChange } from '../contracts';
+import type { Project, ProjectInspection, GitFileChange, AgentSessionState } from '../contracts';
 import {
   getGitBranches,
   getGitChangedFiles,
@@ -16,6 +16,7 @@ import {
   gitRemoteSync,
 } from '../bridge';
 import {
+  Bot,
   Clock,
   DownloadCloud,
   GitBranch,
@@ -32,11 +33,13 @@ import {
 export default function GitPanel({
   project,
   inspection,
+  session,
   onRefresh,
   onNotify,
 }: {
   project: Project | null;
   inspection?: ProjectInspection | null;
+  session?: AgentSessionState | null;
   onRefresh?: () => void;
   onNotify?: (msg: string) => void;
 }) {
@@ -60,6 +63,8 @@ export default function GitPanel({
   const [committing, setCommitting] = useState(false);
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
   const [syncing, setSyncing] = useState<'fetch' | 'pull' | 'push' | null>(null);
+
+  const agentGitActions = (session?.actions ?? []).filter(a => a.kind === 'git' || a.kind === 'edit');
 
   const loadGitState = async () => {
     if (!project || !isRepo) return;
@@ -403,6 +408,32 @@ export default function GitPanel({
             </div>
           </div>
 
+          {agentGitActions.length > 0 && (
+            <div className="panel-subcard agent-subcard" style={{ marginBottom: 12 }}>
+              <div className="section-heading">
+                <div className="subcard-title">
+                  <Bot size={15} className="accent-color" />
+                  <h3>Agent 代码变动与交付流</h3>
+                  <span className="mini-badge-accent">{session?.agentName ?? 'Agent'}</span>
+                </div>
+                <span className="meta">{agentGitActions.length} 项变动交付</span>
+              </div>
+              <div className="agent-action-mini-list">
+                {agentGitActions.slice(-3).reverse().map(act => (
+                  <div key={act.id} className="agent-action-mini-item">
+                    <div className="action-mini-header">
+                      <span className={`status-dot ${act.status === 'done' ? 'available' : 'active-pulse'}`} />
+                      <span className="mini-badge">{act.kind}</span>
+                      <code className="action-mini-cmd">{act.title}</code>
+                      <span className="mono-subtle">{act.timestamp}</span>
+                    </div>
+                    <div className="action-mini-detail mono-subtle">{act.detail}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Side-by-Side Workbench: Left Changes Dual-List, Right Diff & Commit */}
           <div className="git-workbench-split">
             {/* Left Column: Dual Staged / Unstaged Lists */}
@@ -528,6 +559,18 @@ export default function GitPanel({
                     <Sparkles size={12} />
                     生成提交草稿
                   </button>
+
+                  {session?.activeGoal && (
+                    <button
+                      type="button"
+                      className="ai-assist-btn"
+                      onClick={() => setCommitMessage(`feat: ${session.activeGoal}`)}
+                      title={`直接使用 Agent 目标: ${session.activeGoal}`}
+                    >
+                      <Bot size={12} />
+                      填入 Agent 目标
+                    </button>
+                  )}
                 </div>
 
                 <textarea

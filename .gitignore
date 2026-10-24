@@ -13,3 +13,4 @@ build/
 .local/
 coverage/
 *.log
+.tongyun/

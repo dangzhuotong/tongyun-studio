@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, type FormEvent } from 'react';
-import type { Project, ProjectInspection, ManagedService, ListeningPort } from '../contracts';
+import type { Project, ProjectInspection, ManagedService, ListeningPort, AgentSessionState } from '../contracts';
 import {
   isDesktop,
   startProjectService,
@@ -9,13 +9,19 @@ import {
   detectListeningPorts,
   openUrl,
 } from '../bridge';
-import { Activity, Check, Copy, Cpu, LoaderCircle, Play, RotateCw, Square, Terminal } from '../components/Icons';
+import { Activity, Bot, Check, Copy, Cpu, LoaderCircle, Play, RotateCw, Square, Terminal } from '../components/Icons';
 
 const statusLabel: Record<ManagedService['status'], string> = { running: '进程运行中', stopped: '已停止', exited: '已完成', failed: '执行失败' };
 
-export default function DevPanel({ project, inspection, onNotify }: {
+export default function DevPanel({
+  project,
+  inspection,
+  session,
+  onNotify,
+}: {
   project: Project | null;
   inspection?: ProjectInspection | null;
+  session?: AgentSessionState | null;
   onRefresh?: () => void;
   onNotify?: (msg: string) => void;
 }) {
@@ -104,6 +110,8 @@ export default function DevPanel({ project, inspection, onNotify }: {
     return !isExcluded;
   });
 
+  const agentTerminalActions = (session?.actions ?? []).filter(a => a.kind === 'terminal');
+
   return <div className="feature-panel-layout" aria-labelledby="dev-title">
     <div className="workbench-header"><div className="workbench-title-group"><div className="large-tool-icon"><Terminal size={22} strokeWidth={1.5}/></div><div><h2 id="dev-title">Tongyun Dev · 服务与终端</h2><p>运行项目命令，查看真实进程状态与输出。切换项目和页签不会停止服务。</p></div></div><div className="workbench-badges"><span className="badge">本地进程控制</span>{project && <span className="mono-subtle">{project.name}</span>}</div></div>
     {!isDesktop && <p className="inline-error" role="status">浏览器预览无法启动或管理本机进程，请在桌面版使用。</p>}
@@ -144,6 +152,30 @@ export default function DevPanel({ project, inspection, onNotify }: {
           </div>
         )}
       </div>
+      {agentTerminalActions.length > 0 && (
+        <section className="panel-subcard agent-subcard">
+          <div className="section-heading">
+            <div className="subcard-title">
+              <Bot size={15} className="accent-color" />
+              <h3>Agent 终端执行现场</h3>
+              <span className="mini-badge-accent">{session?.agentName ?? 'Agent'}</span>
+            </div>
+            <span className="meta">{agentTerminalActions.length} 项自动化执行记录</span>
+          </div>
+          <div className="agent-action-mini-list">
+            {agentTerminalActions.slice(-4).reverse().map(act => (
+              <div key={act.id} className="agent-action-mini-item">
+                <div className="action-mini-header">
+                  <span className={`status-dot ${act.status === 'done' ? 'available' : act.status === 'running' ? 'active-pulse' : 'error'}`} />
+                  <code className="action-mini-cmd">{act.title}</code>
+                  <span className="mono-subtle">{act.timestamp}</span>
+                </div>
+                <div className="action-mini-detail mono-subtle">{act.detail}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
       <section className="panel-subcard"><div className="section-heading"><div className="subcard-title"><Play size={15}/><h3>项目命令</h3></div><span className="meta">{scripts.length ? `${scripts.length} 个脚本` : '无 package 脚本'}</span></div>
         {scripts.length ? <div className="script-grid">{scripts.map(script => {
           const active = services.find(service => service.command === script.command && service.status === 'running');

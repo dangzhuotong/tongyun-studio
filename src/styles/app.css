@@ -4962,3 +4962,75 @@ body, html {
 .agent-prompt-input:focus {
   border-color: var(--accent);
 }
+
+/* =========================================================================
+   Agent Action Live Streams inside Dev, Git, API & Database Workbenches
+   ========================================================================= */
+
+.agent-subcard {
+  border-left: 3px solid var(--accent) !important;
+  background: var(--card) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.mini-badge-accent {
+  background: var(--accent-tint);
+  color: var(--accent);
+  padding: 1px 7px;
+  border-radius: var(--ty-radius-pill);
+  font-size: 10px;
+  font-weight: 500;
+  border: 1px solid rgba(164, 196, 140, 0.3);
+}
+
+.agent-action-mini-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.agent-action-mini-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: var(--ty-radius-sm);
+  background: var(--sunken);
+  border: 1px solid var(--border-subtle);
+  transition: all 0.12s ease;
+}
+
+.agent-action-mini-item:hover {
+  background: var(--card-hover);
+  border-color: var(--border-strong);
+}
+
+.agent-action-mini-item.clickable {
+  cursor: pointer;
+}
+
+.action-mini-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.action-mini-cmd {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  font-size: 11.5px;
+  font-weight: 500;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.action-mini-detail {
+  font-size: 11px;
+  color: var(--text-meta);
+  line-height: 1.3;
+}
+
