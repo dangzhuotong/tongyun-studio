@@ -1,6 +1,11 @@
 import { useState, type FormEvent } from 'react';
 import type { Project, ProjectInspection, HttpResponse, AgentSessionState } from '../contracts';
-import { sendHttpRequest, readProjectFileContent } from '../bridge';
+import {
+  sendHttpRequest,
+  readProjectFileContent,
+  writeProjectFile,
+  appendProjectFile,
+} from '../bridge';
 import {
   Bot,
   Check,
@@ -11,6 +16,7 @@ import {
   Key,
   LoaderCircle,
   Send,
+  Terminal,
   Trash2,
 } from '../components/Icons';
 
@@ -30,13 +36,54 @@ interface RequestHistoryItem {
   status: number;
   latencyMs: number;
   timestamp: string;
+  curl?: string;
 }
+
+const COMMON_HEADERS = [
+  'Accept',
+  'Accept-Encoding',
+  'Accept-Language',
+  'Authorization',
+  'Cache-Control',
+  'Content-Type',
+  'Cookie',
+  'If-None-Match',
+  'Origin',
+  'Referer',
+  'User-Agent',
+  'X-API-Key',
+  'X-Requested-With',
+];
+
+const COMMON_HEADER_VALUES: Record<string, string[]> = {
+  'content-type': [
+    'application/json',
+    'application/x-www-form-urlencoded',
+    'multipart/form-data',
+    'text/plain',
+    'text/html',
+    'application/octet-stream',
+  ],
+  accept: [
+    'application/json',
+    'application/json, text/plain, */*',
+    '*/*',
+    'text/html',
+  ],
+  'cache-control': [
+    'no-cache',
+    'no-store',
+    'max-age=0',
+    'public, max-age=3600',
+  ],
+};
 
 export default function ApiPanel({
   project,
   inspection,
   session,
   onNotify,
+  onRefresh,
 }: {
   project: Project | null;
   inspection?: ProjectInspection | null;
@@ -75,6 +122,14 @@ export default function ApiPanel({
   const [response, setResponse] = useState<HttpResponse | null>(null);
   const [responseTab, setResponseTab] = useState<'body' | 'headers'>('body');
   const [copiedBody, setCopiedBody] = useState(false);
+  const [copiedCurl, setCopiedCurl] = useState(false);
+
+  // Save as .http modal state
+  const [showSaveHttpModal, setShowSaveHttpModal] = useState(false);
+  const [saveHttpTitle, setSaveHttpTitle] = useState('');
+  const [saveHttpFilePath, setSaveHttpFilePath] = useState('requests.http');
+  const [saveHttpMode, setSaveHttpMode] = useState<'append' | 'overwrite'>('append');
+  const [savingHttp, setSavingHttp] = useState(false);
 
   // History & .http files
   const [history, setHistory] = useState<RequestHistoryItem[]>([]);
@@ -164,6 +219,7 @@ export default function ApiPanel({
       const res = await sendHttpRequest(method, targetUrl, activeHeaders, reqBody);
       setResponse(res);
 
+      const recordedCurl = generateCurl(method, targetUrl, headers, authType, bearerToken, basicUser, basicPass, reqBody);
       setHistory(prev => [
         {
           id: Math.random().toString(36).slice(2, 9),
@@ -172,6 +228,7 @@ export default function ApiPanel({
           status: res.status,
           latencyMs: res.latencyMs,
           timestamp: new Date().toLocaleTimeString(),
+          curl: recordedCurl,
         },
         ...prev.slice(0, 19),
       ]);
@@ -197,14 +254,64 @@ export default function ApiPanel({
     setLoadingHttpFile(true);
     try {
       const content = await readProjectFileContent(project.id, relPath);
-      const lines = content.split('\n').map(l => l.trim()).filter(Boolean);
-      for (const line of lines) {
-        const match = line.match(/^(GET|POST|PUT|DELETE|PATCH|HEAD)\s+(https?:\/\/\S+)/i);
-        if (match) {
-          setMethod(match[1].toUpperCase() as HttpMethod);
-          setUrl(match[2]);
+      const lines = content.split('\n');
+      let foundRequest = false;
+      let inBody = false;
+      const parsedHeaders: ParamRow[] = [];
+      const bodyLines: string[] = [];
+
+      for (let i = 0; i < lines.length; i++) {
+        const rawLine = lines[i];
+        const trimmed = rawLine.trim();
+
+        if (!foundRequest) {
+          if (trimmed.startsWith('#') || !trimmed) continue;
+          const match = trimmed.match(/^(GET|POST|PUT|DELETE|PATCH|HEAD)\s+(\S+)/i);
+          if (match) {
+            setMethod(match[1].toUpperCase() as HttpMethod);
+            setUrl(match[2]);
+            foundRequest = true;
+          }
+          continue;
+        }
+
+        // Once request line is found
+        if (trimmed.startsWith('###')) {
+          // Reached next request block
           break;
         }
+
+        if (!inBody) {
+          if (!trimmed) {
+            inBody = true;
+            continue;
+          }
+          const colonIdx = trimmed.indexOf(':');
+          if (colonIdx > 0) {
+            const k = trimmed.slice(0, colonIdx).trim();
+            const v = trimmed.slice(colonIdx + 1).trim();
+            if (k.toLowerCase() === 'authorization' && v.toLowerCase().startsWith('bearer ')) {
+              setAuthType('bearer');
+              setBearerToken(v.slice(7).trim());
+            } else {
+              parsedHeaders.push({
+                id: `load_h_${parsedHeaders.length}`,
+                key: k,
+                value: v,
+                enabled: true,
+              });
+            }
+          }
+        } else {
+          bodyLines.push(rawLine);
+        }
+      }
+
+      if (parsedHeaders.length > 0) {
+        setHeaders(parsedHeaders);
+      }
+      if (bodyLines.length > 0) {
+        setBody(bodyLines.join('\n').trim());
       }
       onNotify?.(`已载入用例：${relPath}`);
     } catch (e) {
@@ -252,15 +359,49 @@ export default function ApiPanel({
     onNotify?.('✨ 已成功从 cURL 解析导入请求');
   };
 
+  const generateCurl = (
+    customMethod?: HttpMethod,
+    customUrl?: string,
+    customHeaders?: ParamRow[],
+    customAuthType?: 'none' | 'bearer' | 'basic',
+    customBearer?: string,
+    customUser?: string,
+    customPass?: string,
+    customBody?: string,
+  ) => {
+    const m = customMethod ?? method;
+    const targetUrl = customUrl ?? buildTargetUrl();
+    let curl = `curl -X ${m} "${targetUrl}"`;
+
+    const activeHeaders = (customHeaders ?? headers)
+      .filter(h => h.enabled && h.key.trim())
+      .map(h => [h.key.trim(), interpolate(h.value.trim())]);
+
+    for (const [k, v] of activeHeaders) {
+      curl += ` \\\n  -H "${k}: ${v}"`;
+    }
+
+    const auth = customAuthType ?? authType;
+    const bToken = customBearer ?? bearerToken;
+    const uName = customUser ?? basicUser;
+    const uPass = customPass ?? basicPass;
+
+    if (auth === 'bearer' && bToken.trim()) {
+      curl += ` \\\n  -H "Authorization: Bearer ${interpolate(bToken.trim())}"`;
+    } else if (auth === 'basic' && (uName || uPass)) {
+      const creds = btoa(`${uName}:${uPass}`);
+      curl += ` \\\n  -H "Authorization: Basic ${creds}"`;
+    }
+
+    const reqBody = customBody !== undefined ? customBody : body;
+    if (m !== 'GET' && m !== 'HEAD' && reqBody.trim()) {
+      curl += ` \\\n  --data '${interpolate(reqBody)}'`;
+    }
+    return curl;
+  };
+
   const exportAsCurl = () => {
-    const targetUrl = buildTargetUrl();
-    let curl = `curl -X ${method} "${targetUrl}"`;
-    for (const h of headers.filter(h => h.enabled && h.key.trim())) {
-      curl += ` \\\n  -H "${h.key.trim()}: ${interpolate(h.value.trim())}"`;
-    }
-    if (method !== 'GET' && method !== 'HEAD' && body.trim()) {
-      curl += ` \\\n  --data '${interpolate(body)}'`;
-    }
+    const curl = generateCurl();
     navigator.clipboard.writeText(curl);
     onNotify?.('已复制 cURL 完整命令');
   };
@@ -271,6 +412,73 @@ export default function ApiPanel({
     setCopiedBody(true);
     onNotify?.('已复制响应数据');
     setTimeout(() => setCopiedBody(false), 2000);
+  };
+
+  const quickAddHeader = (key: string, value: string) => {
+    setHeaders(prev => {
+      const existingIndex = prev.findIndex(h => h.key.trim().toLowerCase() === key.toLowerCase());
+      if (existingIndex >= 0) {
+        const copy = [...prev];
+        copy[existingIndex] = { ...copy[existingIndex], value, enabled: true };
+        return copy;
+      }
+      return [
+        ...prev,
+        { id: Math.random().toString(36).slice(2, 9), key, value, enabled: true },
+      ];
+    });
+    onNotify?.(`已应用 Header: ${key}`);
+  };
+
+  const generateHttpSnippet = (title?: string) => {
+    const targetUrl = buildTargetUrl();
+    const lines: string[] = [];
+    const summary = title?.trim() || `${method} ${targetUrl}`;
+    lines.push(`### ${summary}`);
+    lines.push(`${method} ${targetUrl}`);
+
+    for (const h of headers.filter(h => h.enabled && h.key.trim())) {
+      lines.push(`${h.key.trim()}: ${interpolate(h.value.trim())}`);
+    }
+    if (authType === 'bearer' && bearerToken.trim()) {
+      lines.push(`Authorization: Bearer ${interpolate(bearerToken.trim())}`);
+    } else if (authType === 'basic' && (basicUser || basicPass)) {
+      const creds = btoa(`${basicUser}:${basicPass}`);
+      lines.push(`Authorization: Basic ${creds}`);
+    }
+
+    if (method !== 'GET' && method !== 'HEAD' && body.trim()) {
+      lines.push('');
+      lines.push(interpolate(body));
+    }
+    return lines.join('\n');
+  };
+
+  const handleSaveHttp = async () => {
+    if (!project) return;
+    const targetPath = saveHttpFilePath.trim() || 'requests.http';
+    const snippet = generateHttpSnippet(saveHttpTitle);
+    setSavingHttp(true);
+    try {
+      if (saveHttpMode === 'append') {
+        await appendProjectFile(project.id, targetPath, '\n\n' + snippet);
+      } else {
+        await writeProjectFile(project.id, targetPath, snippet);
+      }
+      setShowSaveHttpModal(false);
+      onNotify?.(`✨ 已保存到项目用例文件：${targetPath}`);
+      onRefresh?.();
+    } catch (err) {
+      onNotify?.(`保存文件失败：${err}`);
+    } finally {
+      setSavingHttp(false);
+    }
+  };
+
+  const copyHttpSnippet = () => {
+    const snippet = generateHttpSnippet(saveHttpTitle);
+    navigator.clipboard.writeText(snippet);
+    onNotify?.('已复制 .http 格式代码片段');
   };
 
   return (
@@ -294,7 +502,12 @@ export default function ApiPanel({
             导入 cURL
           </button>
           <button className="secondary-button-sm" onClick={exportAsCurl}>
+            <Copy size={12} />
             复制 cURL
+          </button>
+          <button className="secondary-button-sm" onClick={() => setShowSaveHttpModal(true)}>
+            <FileCode size={12} />
+            保存为 .http
           </button>
         </div>
       </div>
@@ -490,6 +703,48 @@ export default function ApiPanel({
 
                 {activeTab === 'headers' && (
                   <div className="key-val-editor">
+                    <div className="header-presets-bar">
+                      <span className="preset-label">快捷预设:</span>
+                      <button
+                        type="button"
+                        className="preset-chip"
+                        onClick={() => {
+                          quickAddHeader('Content-Type', 'application/json');
+                          quickAddHeader('Accept', 'application/json');
+                        }}
+                      >
+                        + JSON
+                      </button>
+                      <button
+                        type="button"
+                        className="preset-chip"
+                        onClick={() => quickAddHeader('Content-Type', 'application/x-www-form-urlencoded')}
+                      >
+                        + Form
+                      </button>
+                      <button
+                        type="button"
+                        className="preset-chip"
+                        onClick={() => quickAddHeader('Cache-Control', 'no-cache')}
+                      >
+                        + No-Cache
+                      </button>
+                      <button
+                        type="button"
+                        className="preset-chip"
+                        onClick={() => quickAddHeader('Accept', '*/*')}
+                      >
+                        + Accept: */*
+                      </button>
+                      <button
+                        type="button"
+                        className="preset-chip"
+                        onClick={() => quickAddHeader('User-Agent', 'Tongyun-Studio/1.0')}
+                      >
+                        + User-Agent
+                      </button>
+                    </div>
+
                     <div className="key-val-table">
                       <div className="table-row-head">
                         <span />
@@ -505,11 +760,13 @@ export default function ApiPanel({
                             onChange={e => updateRow('headers', h.id, 'enabled', e.target.checked)}
                           />
                           <input
+                            list="common-header-keys"
                             placeholder="Header-Key"
                             value={h.key}
                             onChange={e => updateRow('headers', h.id, 'key', e.target.value)}
                           />
                           <input
+                            list={`values-for-${h.key.trim().toLowerCase()}`}
                             placeholder="Header-Value"
                             value={h.value}
                             onChange={e => updateRow('headers', h.id, 'value', e.target.value)}
@@ -531,6 +788,19 @@ export default function ApiPanel({
                     >
                       + 添加请求头
                     </button>
+
+                    <datalist id="common-header-keys">
+                      {COMMON_HEADERS.map(name => (
+                        <option key={name} value={name} />
+                      ))}
+                    </datalist>
+                    {Object.entries(COMMON_HEADER_VALUES).map(([keyName, vals]) => (
+                      <datalist key={keyName} id={`values-for-${keyName}`}>
+                        {vals.map(v => (
+                          <option key={v} value={v} />
+                        ))}
+                      </datalist>
+                    ))}
                   </div>
                 )}
 
@@ -651,6 +921,20 @@ export default function ApiPanel({
                     </button>
                     <button
                       className="terminal-btn"
+                      onClick={() => {
+                        const curl = generateCurl();
+                        navigator.clipboard.writeText(curl);
+                        setCopiedCurl(true);
+                        onNotify?.('已复制 cURL 完整命令');
+                        setTimeout(() => setCopiedCurl(false), 2000);
+                      }}
+                      title="复制此请求的 cURL 命令"
+                    >
+                      {copiedCurl ? <Check size={12} /> : <Terminal size={12} />}
+                      复制 cURL
+                    </button>
+                    <button
+                      className="terminal-btn"
                       onClick={copyResponseBody}
                       title="复制响应内容"
                     >
@@ -729,6 +1013,19 @@ export default function ApiPanel({
                       </span>
                       <span className="history-status">{item.status}</span>
                       <span className="history-time">{item.latencyMs}ms</span>
+                      <button
+                        type="button"
+                        className="history-copy-btn"
+                        onClick={e => {
+                          e.stopPropagation();
+                          const curl = item.curl ?? generateCurl(item.method, item.url);
+                          navigator.clipboard.writeText(curl);
+                          onNotify?.('已复制历史请求 cURL');
+                        }}
+                        title="复制此历史请求的 cURL"
+                      >
+                        <Copy size={11} />
+                      </button>
                     </div>
                     <span className="history-url">{item.url}</span>
                   </div>
@@ -736,6 +1033,118 @@ export default function ApiPanel({
               )}
             </div>
           </aside>
+        </div>
+      )}
+
+      {/* Save as .http Modal */}
+      {showSaveHttpModal && (
+        <div className="modal-overlay" onClick={() => setShowSaveHttpModal(false)}>
+          <div className="modal-dialog" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>保存请求为 .http 用例文件</h2>
+            </div>
+            <div className="modal-body">
+              <div className="modal-form-group">
+                <label>用例名称 / 描述:</label>
+                <input
+                  className="modal-input"
+                  placeholder="例如：查询健康检查接口 或 用户登录"
+                  value={saveHttpTitle}
+                  onChange={e => setSaveHttpTitle(e.target.value)}
+                />
+              </div>
+
+              <div className="modal-form-group">
+                <label>保存目标文件 (项目内相对路径):</label>
+                <input
+                  list="project-http-files"
+                  className="modal-input"
+                  placeholder="requests.http"
+                  value={saveHttpFilePath}
+                  onChange={e => setSaveHttpFilePath(e.target.value)}
+                />
+                <datalist id="project-http-files">
+                  {httpPaths.map(p => (
+                    <option key={p} value={p} />
+                  ))}
+                  <option value="requests.http" />
+                  <option value="api.http" />
+                </datalist>
+                {httpPaths.length > 0 && (
+                  <div className="file-pill-hint">
+                    <span className="preset-label">项目已有用例文件:</span>
+                    {httpPaths.map(p => (
+                      <button
+                        key={p}
+                        type="button"
+                        className="preset-chip"
+                        onClick={() => setSaveHttpFilePath(p)}
+                      >
+                        {p}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="modal-form-group">
+                <label>写入模式:</label>
+                <div className="modal-radio-group">
+                  <label>
+                    <input
+                      type="radio"
+                      name="saveHttpMode"
+                      value="append"
+                      checked={saveHttpMode === 'append'}
+                      onChange={() => setSaveHttpMode('append')}
+                    />
+                    追加到文件尾部 (推荐)
+                  </label>
+                  <label>
+                    <input
+                      type="radio"
+                      name="saveHttpMode"
+                      value="overwrite"
+                      checked={saveHttpMode === 'overwrite'}
+                      onChange={() => setSaveHttpMode('overwrite')}
+                    />
+                    覆盖已有文件
+                  </label>
+                </div>
+              </div>
+
+              <div className="modal-form-group">
+                <label>生成的 .http 格式代码预览:</label>
+                <pre className="http-preview-box">{generateHttpSnippet(saveHttpTitle)}</pre>
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setShowSaveHttpModal(false)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={copyHttpSnippet}
+              >
+                <Copy size={13} />
+                复制片段
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={savingHttp || !saveHttpFilePath.trim()}
+                onClick={() => void handleSaveHttp()}
+              >
+                {savingHttp ? <LoaderCircle size={14} className="spin" /> : <FileCode size={14} />}
+                <span>{savingHttp ? '保存中…' : '保存到项目'}</span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
