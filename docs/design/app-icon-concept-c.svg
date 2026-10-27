@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- 暖奶茶底座垂直渐变 -->
+    <linearGradient id="milkTeaBgC" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#F5E8D6"/>
+      <stop offset="50%" stop-color="#EEDAC0"/>
+      <stop offset="100%" stop-color="#E2C7A3"/>
+    </linearGradient>
+
+    <!-- 柔和微阴影 -->
+    <filter id="softShadowC" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#84715E" flood-opacity="0.22"/>
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#84715E" flood-opacity="0.12"/>
+    </filter>
+
+    <!-- 芽绿渐变 -->
+    <linearGradient id="sproutGradC" x1="0" y1="1" x2="0.8" y2="0">
+      <stop offset="0%" stop-color="#3D6847"/>
+      <stop offset="50%" stop-color="#558C64"/>
+      <stop offset="100%" stop-color="#9AD083"/>
+    </linearGradient>
+
+    <!-- 云朵投影 -->
+    <filter id="cloudShadowC" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#9E8770" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+
+  <!-- 1. macOS 标准应用圆角底座 Squircle -->
+  <rect x="100" y="100" width="824" height="824" rx="200" fill="url(#milkTeaBgC)" stroke="#D8BE9B" stroke-width="2.5"/>
+  <rect x="103" y="103" width="818" height="818" rx="197" fill="none" stroke="rgba(255,255,255,0.6)" stroke-width="3"/>
+
+  <!-- 2. 底托：经典橦云白云 -->
+  <g id="cloud" filter="url(#cloudShadowC)" fill="#FCF4E1">
+    <rect x="260" y="626" width="504" height="136" rx="68"/>
+    <circle cx="355" cy="626" r="92"/>
+    <circle cx="468" cy="600" r="128"/>
+    <circle cx="582" cy="612" r="108"/>
+    <circle cx="652" cy="630" r="70"/>
+    <circle cx="704" cy="644" r="62"/>
+  </g>
+
+  <!-- 3. 工台台架与云芽主体 (Minimalist Workbench & Sprout) -->
+  <g id="workbench-symbol" filter="url(#softShadowC)">
+    <!-- 工台主梁台面 (Studio Desk Platform) -->
+    <rect x="254" y="440" width="516" height="48" rx="24" fill="#4D7C5D"/>
+    <!-- 台面高光微线 -->
+    <line x1="284" y1="452" x2="740" y2="452" stroke="rgba(255,255,255,0.4)" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- 工台左右支架立柱 (Studio Desk Legs) -->
+    <rect x="312" y="476" width="36" height="150" rx="18" fill="#3D6847"/>
+    <rect x="676" y="476" width="36" height="150" rx="18" fill="#3D6847"/>
+
+    <!-- 台面上的设备与状态指示 (Terminal Prompt + Peach Dot) -->
+    <!-- 极简控制台块 -->
+    <rect x="372" y="414" width="84" height="34" rx="10" fill="#23272F"/>
+    <path d="M 388 424 L 398 431 L 388 438" fill="none" stroke="#9AD083" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="406" y="425" width="8" height="12" rx="2" fill="#9AD083"/>
+
+    <!-- 蜜桃红运行徽标 -->
+    <circle cx="650" cy="428" r="14" fill="#C2593F"/>
+    <circle cx="650" cy="428" r="7" fill="#FCF4E1"/>
+
+    <!-- 工台中央勃发而出的「云芽」主视觉 (Sprout Ascending from Desk) -->
+    <path d="M 512 440
+             C 490 380 436 330 436 260
+             C 436 190 512 170 512 170
+             C 512 170 588 190 588 260
+             C 588 330 534 380 512 440 Z"
+          fill="url(#sproutGradC)"/>
+
+    <!-- 侧叶舒展 -->
+    <path d="M 512 340
+             C 545 315 620 310 650 336
+             C 656 342 654 354 644 358
+             C 605 372 550 365 512 355 Z"
+          fill="#A4C48C"/>
+
+    <!-- 芽主脉线 (云乳白) -->
+    <path d="M 512 205 L 512 410" stroke="#FCF4E1" stroke-width="7" stroke-linecap="round"/>
+    <circle cx="512" cy="180" r="10" fill="#FFFDF9"/>
+  </g>
+</svg>

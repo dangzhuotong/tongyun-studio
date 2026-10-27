@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- 暗夜黑曜石暖黑渐变 (取自 DESIGN.md #1A1714 / #221F1B) -->
+    <linearGradient id="darkBgGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#26221D"/>
+      <stop offset="40%" stop-color="#1C1916"/>
+      <stop offset="100%" stop-color="#12100E"/>
+    </linearGradient>
+
+    <!-- 暗夜发光阴影 -->
+    <filter id="darkGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="16" stdDeviation="28" flood-color="#000000" flood-opacity="0.6"/>
+      <feDropShadow dx="0" dy="0" stdDeviation="14" flood-color="#A4C48C" flood-opacity="0.12"/>
+    </filter>
+
+    <!-- 芽绿荧光渐变 -->
+    <linearGradient id="darkSproutGrad" x1="0" y1="1" x2="0.6" y2="0">
+      <stop offset="0%" stop-color="#4D7C5D"/>
+      <stop offset="60%" stop-color="#76B58A"/>
+      <stop offset="100%" stop-color="#B2DF9C"/>
+    </linearGradient>
+
+    <!-- 终端深色背景 -->
+    <linearGradient id="darkConsoleBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1E1B18"/>
+      <stop offset="100%" stop-color="#141311"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 1. macOS 标准应用圆角底座 Squircle -->
+  <rect x="100" y="100" width="824" height="824" rx="200" fill="url(#darkBgGrad)" stroke="#38332B" stroke-width="2.5"/>
+  <rect x="103" y="103" width="818" height="818" rx="197" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="2"/>
+
+  <!-- 2. 暗夜云朵底座 (质感深灰带边缘微光) -->
+  <g id="dark-cloud" opacity="0.95">
+    <rect x="260" y="626" width="504" height="136" rx="68" fill="#28241F" stroke="#3A342D" stroke-width="1.5"/>
+    <circle cx="355" cy="626" r="92" fill="#28241F"/>
+    <circle cx="468" cy="600" r="128" fill="#28241F"/>
+    <circle cx="582" cy="612" r="108" fill="#28241F"/>
+    <circle cx="652" cy="630" r="70" fill="#28241F"/>
+    <circle cx="704" cy="644" r="62" fill="#28241F"/>
+  </g>
+
+  <!-- 3. 工作台暗色控制舱视窗 (Dark Studio Cockpit) -->
+  <g id="workbench-window" filter="url(#darkGlow)">
+    <!-- 窗口卡片 -->
+    <rect x="228" y="236" width="568" height="376" rx="36" fill="#1C1A17" stroke="rgba(255,255,255,0.14)" stroke-width="2.5"/>
+
+    <!-- 顶栏与控制点 -->
+    <line x1="228" y1="294" x2="796" y2="294" stroke="rgba(255,255,255,0.08)" stroke-width="2"/>
+    <circle cx="270" cy="265" r="7.5" fill="#E06D53"/> <!-- 蜜桃霓虹红 -->
+    <circle cx="294" cy="265" r="7.5" fill="#D9B46A"/> <!-- 暖蜜金 -->
+    <circle cx="318" cy="265" r="7.5" fill="#A4C48C"/> <!-- 芽绿 -->
+
+    <rect x="468" y="258" width="88" height="14" rx="7" fill="#2A2621"/>
+
+    <!-- [左分栏] 项目文件树 -->
+    <g id="sidebar">
+      <rect x="248" y="312" width="132" height="280" rx="20" fill="#23201B"/>
+      <!-- 选中项目 (芽绿暗色主操作) -->
+      <rect x="258" y="328" width="112" height="42" rx="12" fill="#A4C48C"/>
+      <polygon points="274,342 274,356 286,349" fill="#1A1714"/>
+      <rect x="294" y="345" width="64" height="8" rx="4" fill="#1A1714"/>
+
+      <!-- 节点指示 -->
+      <circle cx="274" cy="396" r="4.5" fill="#D9B46A"/>
+      <rect x="286" y="392" width="76" height="8" rx="4" fill="#474138"/>
+      
+      <circle cx="274" cy="420" r="4.5" fill="#8FB3D6"/>
+      <rect x="286" y="416" width="62" height="8" rx="4" fill="#474138"/>
+
+      <circle cx="274" cy="444" r="4.5" fill="#E06D53"/>
+      <rect x="286" y="440" width="82" height="8" rx="4" fill="#474138"/>
+
+      <rect x="270" y="468" width="90" height="8" rx="4" fill="#36312A"/>
+      <rect x="270" y="492" width="70" height="8" rx="4" fill="#36312A"/>
+      <rect x="270" y="516" width="84" height="8" rx="4" fill="#36312A"/>
+    </g>
+
+    <!-- [右上分栏] 终端运行控制台 -->
+    <g id="terminal-panel">
+      <rect x="394" y="312" width="382" height="152" rx="20" fill="url(#darkConsoleBg)" stroke="#38332B" stroke-width="2"/>
+      <path d="M 420 346 L 436 358 L 420 370" fill="none" stroke="#A4C48C" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="448" y="347" width="14" height="22" rx="3.5" fill="#A4C48C"/>
+      <rect x="474" y="354" width="96" height="8" rx="4" fill="#7D766D"/>
+      
+      <rect x="420" y="392" width="220" height="7.5" rx="3.75" fill="#6FAD84"/>
+      <rect x="420" y="412" width="300" height="7.5" rx="3.75" fill="#4A443B"/>
+      <rect x="420" y="432" width="160" height="7.5" rx="3.75" fill="#8FB3D6"/>
+    </g>
+
+    <!-- [右下左] API 接口 -->
+    <g id="api-panel">
+      <rect x="394" y="478" width="184" height="114" rx="20" fill="#23201B" stroke="#38332B" stroke-width="2"/>
+      <rect x="412" y="494" width="58" height="22" rx="7" fill="#E06D53"/>
+      <text x="441" y="509" fill="#1A1714" font-family="-apple-system, system-ui, sans-serif" font-size="11" font-weight="900" text-anchor="middle">API</text>
+      <rect x="478" y="501" width="84" height="8" rx="4" fill="#A4C48C"/>
+      <rect x="412" y="530" width="150" height="7" rx="3.5" fill="#474138"/>
+      <rect x="412" y="548" width="120" height="7" rx="3.5" fill="#36312A"/>
+      <rect x="412" y="566" width="140" height="7" rx="3.5" fill="#36312A"/>
+    </g>
+
+    <!-- [右下右] Git 版本流 -->
+    <g id="git-panel">
+      <rect x="592" y="478" width="184" height="114" rx="20" fill="#23201B" stroke="#38332B" stroke-width="2"/>
+      <path d="M 632 574 L 632 506" stroke="#A4C48C" stroke-width="5.5" stroke-linecap="round" fill="none"/>
+      <path d="M 632 552 C 632 524 676 534 676 508 L 676 498" stroke="#E06D53" stroke-width="5.5" stroke-linecap="round" fill="none"/>
+      
+      <circle cx="632" cy="506" r="9.5" fill="#1C1A17" stroke="#A4C48C" stroke-width="5"/>
+      <circle cx="632" cy="566" r="9.5" fill="#1C1A17" stroke="#A4C48C" stroke-width="5"/>
+      <circle cx="676" cy="498" r="9.5" fill="#1C1A17" stroke="#E06D53" stroke-width="5"/>
+
+      <rect x="700" y="495" width="60" height="7.5" rx="3.75" fill="#E06D53"/>
+      <rect x="700" y="515" width="48" height="7.5" rx="3.75" fill="#A4C48C"/>
+      <rect x="652" y="562" width="76" height="7.5" rx="3.75" fill="#6FAD84"/>
+    </g>
+  </g>
+
+  <!-- 4. 暗夜微光云芽 -->
+  <g id="brand-sprout" filter="url(#darkGlow)">
+    <path d="M 752 260
+             C 745 230 730 205 700 185
+             C 665 162 620 166 614 167
+             C 610 188 620 226 655 250
+             C 685 270 724 268 752 260 Z"
+          fill="url(#darkSproutGrad)"/>
+    <path d="M 735 250
+             C 755 235 780 225 802 230
+             C 812 233 816 242 810 252
+             C 796 270 765 276 735 250 Z"
+          fill="#B2DF9C"/>
+    <path d="M 622 173 C 655 205 690 238 732 254"
+          fill="none" stroke="#FCF4E1" stroke-width="3" stroke-linecap="round" opacity="0.9"/>
+  </g>
+</svg>

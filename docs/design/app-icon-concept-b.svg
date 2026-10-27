@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- 暖奶茶底座垂直渐变 -->
+    <linearGradient id="milkTeaBgB" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#F5E8D6"/>
+      <stop offset="50%" stop-color="#EEDAC0"/>
+      <stop offset="100%" stop-color="#E2C7A3"/>
+    </linearGradient>
+
+    <!-- 立体魔方阴影 -->
+    <filter id="cubeShadowB" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="20" stdDeviation="28" flood-color="#7A6855" flood-opacity="0.25"/>
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#7A6855" flood-opacity="0.14"/>
+    </filter>
+
+    <!-- 云朵投影 -->
+    <filter id="cloudShadowB" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#9E8770" flood-opacity="0.18"/>
+    </filter>
+
+    <!-- 顶面渐变：抹茶绿台面 -->
+    <linearGradient id="topFaceGrad" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0%" stop-color="#467554"/>
+      <stop offset="100%" stop-color="#6DA27D"/>
+    </linearGradient>
+
+    <!-- 左侧面渐变：极客黑曜石终端 -->
+    <linearGradient id="leftFaceGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#23272F"/>
+      <stop offset="100%" stop-color="#181A1F"/>
+    </linearGradient>
+
+    <!-- 右侧面渐变：暖白数据卡片 -->
+    <linearGradient id="rightFaceGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFFDF9"/>
+      <stop offset="100%" stop-color="#EDE4D6"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 1. macOS 标准应用圆角底座 Squircle -->
+  <rect x="100" y="100" width="824" height="824" rx="200" fill="url(#milkTeaBgB)" stroke="#D8BE9B" stroke-width="2.5"/>
+  <rect x="103" y="103" width="818" height="818" rx="197" fill="none" stroke="rgba(255,255,255,0.6)" stroke-width="3"/>
+
+  <!-- 2. 底托：经典橦云白云（托起工台魔方） -->
+  <g id="cloud" filter="url(#cloudShadowB)" fill="#FCF4E1">
+    <rect x="260" y="626" width="504" height="136" rx="68"/>
+    <circle cx="355" cy="626" r="92"/>
+    <circle cx="468" cy="600" r="128"/>
+    <circle cx="582" cy="612" r="108"/>
+    <circle cx="652" cy="630" r="70"/>
+    <circle cx="704" cy="644" r="62"/>
+  </g>
+
+  <!-- 3. 工台魔方主体 (Isometric Studio Cube) -->
+  <g id="isometric-cube" filter="url(#cubeShadowB)">
+    <!-- 顶面：操作台面 (Top Face - Studio Platform) -->
+    <polygon points="512,210 726,316 512,422 298,316" fill="url(#topFaceGrad)" stroke="#5A8E69" stroke-width="2"/>
+    
+    <!-- 顶面中央：发光的云芽图腾 -->
+    <g transform="translate(512, 316) scale(0.65) translate(-512, -316)">
+      <!-- 芽芽线条微透视 -->
+      <path d="M 512 245 C 545 285 570 310 570 345 C 570 375 545 395 512 395 C 479 395 454 375 454 345 C 454 310 479 285 512 245 Z"
+            fill="#A4C48C" opacity="0.95"/>
+      <path d="M 512 270 L 512 375" stroke="#FCF4E1" stroke-width="6" stroke-linecap="round"/>
+      <circle cx="512" cy="242" r="8" fill="#FFFDF9"/>
+    </g>
+
+    <!-- 顶面网格边线 -->
+    <line x1="405" y1="263" x2="619" y2="369" stroke="rgba(255,255,255,0.2)" stroke-width="2"/>
+    <line x1="619" y1="263" x2="405" y2="369" stroke="rgba(255,255,255,0.2)" stroke-width="2"/>
+
+    <!-- 左侧面：终端运行与代码 (Left Face - Dev & Terminal) -->
+    <polygon points="298,316 512,422 512,654 298,548" fill="url(#leftFaceGrad)" stroke="#383C45" stroke-width="2"/>
+    <!-- 终端提示符 >_ (斜切透视变换) -->
+    <g transform="matrix(0.9 0.45 0 1 70 30)">
+      <!-- 提示符 > -->
+      <path d="M 285 365 L 305 380 L 285 395" fill="none" stroke="#96C77F" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="318" y="367" width="16" height="26" rx="4" fill="#96C77F"/>
+      <!-- 命令流 -->
+      <line x1="285" y1="420" x2="420" y2="420" stroke="#68D391" stroke-width="6" stroke-linecap="round"/>
+      <line x1="285" y1="445" x2="380" y2="445" stroke="#64748B" stroke-width="6" stroke-linecap="round"/>
+      <line x1="285" y1="470" x2="450" y2="470" stroke="#3E6F9E" stroke-width="6" stroke-linecap="round"/>
+      <line x1="285" y1="495" x2="340" y2="495" stroke="#C2593F" stroke-width="6" stroke-linecap="round"/>
+    </g>
+
+    <!-- 右侧面：数据表与版本分支 (Right Face - Data & Git) -->
+    <polygon points="512,422 726,316 726,548 512,654" fill="url(#rightFaceGrad)" stroke="#D8CEBD" stroke-width="2"/>
+    <!-- 数据表格与 Git 节点 -->
+    <g transform="matrix(0.9 -0.45 0 1 125 615)">
+      <!-- API 标志胶囊 -->
+      <rect x="450" y="350" width="70" height="26" rx="8" fill="#C2593F"/>
+      <text x="485" y="368" fill="#FFFDF9" font-family="-apple-system, sans-serif" font-size="13" font-weight="800" text-anchor="middle">API</text>
+      <!-- 数据条目 -->
+      <rect x="450" y="390" width="180" height="9" rx="4.5" fill="#4D7C5D"/>
+      <rect x="450" y="410" width="130" height="9" rx="4.5" fill="#D6C8B1"/>
+      <rect x="450" y="430" width="160" height="9" rx="4.5" fill="#E6DCCB"/>
+      <!-- Git 分支节点 -->
+      <circle cx="465" cy="465" r="10" fill="#FFF" stroke="#4D7C5D" stroke-width="6"/>
+      <path d="M 465 465 L 515 485" stroke="#EF8F7B" stroke-width="6" stroke-linecap="round"/>
+      <circle cx="515" cy="485" r="10" fill="#FFF" stroke="#EF8F7B" stroke-width="6"/>
+    </g>
+
+    <!-- 棱角高光线 (Bevel Highlight) -->
+    <line x1="512" y1="210" x2="512" y2="422" stroke="rgba(255,255,255,0.6)" stroke-width="3"/>
+    <line x1="512" y1="422" x2="512" y2="654" stroke="rgba(255,255,255,0.4)" stroke-width="3"/>
+  </g>
+</svg>
