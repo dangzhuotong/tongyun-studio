@@ -60,6 +60,22 @@ describe('dev runtime panel', () => {
     expect(startDevGroup).toHaveBeenCalledWith('shop');
   });
 
+  it('shows a single failed label when a port process has already crashed', async () => {
+    vi.mocked(listProjectServices).mockResolvedValue([{
+      ...service,
+      status: 'failed',
+      lifecycle: 'starting',
+      reachable: false,
+      portOpen: false,
+      pid: null,
+      exitCode: 7,
+      failure: '进程已退出',
+    }]);
+    render(<DevPanel project={project} projects={[project]}/>);
+    expect(await screen.findByText('执行失败')).toBeInTheDocument();
+    expect(screen.queryByText('启动中')).not.toBeInTheDocument();
+  });
+
   it('starts the registered command when that process is not running', async () => {
     vi.mocked(listProjectServices).mockResolvedValue([]);
     render(<DevPanel project={project} projects={[project]}/>);

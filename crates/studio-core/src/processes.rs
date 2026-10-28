@@ -147,15 +147,26 @@ impl Entry {
             let alive = snapshot.status == "running";
             // A dead group plus an open port is not this service. tongyun-dev checks the listener pid;
             // Studio refuses that combination instead of reporting ready.
-            let (has_probe, probe_ok) = if port_open && alive {
+            if !alive {
+                // The process group is already gone. tongyun-dev keeps "starting" for
+                // about 3 seconds after a starter script exits, because a detached JVM
+                // may still be coming up. Studio owns the whole group, so that grace
+                // would show "failed" and "starting" at the same time.
+                let failure = match snapshot.exit_code {
+                    Some(0) => "进程已退出".to_owned(),
+                    _ => exit_failure(snapshot.exit_code),
+                };
+                (LifeState::Failed, Some(failure), false)
+            } else {
+            let (has_probe, probe_ok) = if port_open {
                 self.observe_probe()
             } else {
                 (self.health_url.is_some(), false)
             };
             let (state, failure) = derive_state(StateInput {
-                process_alive: alive,
+                process_alive: true,
                 port_open,
-                port_conflict: port_open && !alive,
+                port_conflict: false,
                 has_probe,
                 probe_ok,
                 started_at: Some(0),
@@ -163,7 +174,8 @@ impl Entry {
                 timeout_secs: self.ready_timeout_secs,
                 start_error: None,
             });
-            (state, failure, port_open && alive)
+            (state, failure, port_open)
+            }
         };
         snapshot.lifecycle = state.as_str().into();
         snapshot.failure = failure;
@@ -585,5 +597,29 @@ mod tests {
         assert_eq!(short.lines().count(), 3);
         assert!(short.contains("boom"));
         assert!(done.log_tail.lines().count() <= LOG_TAIL_LINES);
+    }
+
+    #[test]
+    fn port_process_that_exits_immediately_is_failed_not_starting() {
+        let temp = tempfile::tempdir().unwrap();
+        let command = "echo crashed; exit 7";
+        let manager = ServiceManager::new();
+        let started = Instant::now();
+        let mut launched = false;
+        for _ in 0..8 {
+            let port = free_port();
+            let project = project_dev(temp.path(), "crash", command, Some(port), None, None);
+            match manager.start(&project, command) {
+                Ok(_) => { launched = true; break; }
+                Err(error) if error.contains("已有进程监听") => continue,
+                Err(error) => panic!("{error}"),
+            }
+        }
+        assert!(launched, "could not find an unused port");
+        let failed = wait_for(&manager, "crash", |service| service.status == "failed");
+        assert_eq!(failed.lifecycle, "failed");
+        assert!(!failed.reachable);
+        assert!(failed.failure.as_deref().is_some_and(|text| text.contains("7")));
+        assert!(started.elapsed() < Duration::from_secs(3), "failure should not wait out the old starting grace");
     }
 }
