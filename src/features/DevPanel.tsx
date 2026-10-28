@@ -219,8 +219,8 @@ export default function DevPanel({
       const result = action === 'start' ? await startDevGroup(group) : await stopDevGroup(group);
       if (mounted.current && currentProject.current === id) {
         onNotify?.(action === 'start'
-          ? `已提交同组 ${result.length} 个登记命令。就绪以端口和探针为准，不会等前一个完成。`
-          : result.length ? `已停止同组 ${result.length} 个登记命令。` : '同组没有正在运行的登记命令。');
+          ? `已按依赖顺序批量启动同组 ${result.length} 个登记项目。`
+          : result.length ? `已按依赖逆序停止同组 ${result.length} 个登记项目。` : '同组没有正在运行的登记命令。');
       }
     } catch (cause) {
       if (mounted.current && currentProject.current === id) { errorSource.current = 'action'; setError(String(cause)); }

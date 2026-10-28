@@ -18,6 +18,8 @@ export interface DevProfile {
   label: string;
   group?: string | null;
   confidence?: string | null;
+  dependsOn?: string[];
+  readyTimeoutSecs?: number | null;
 }
 
 export interface DevCandidate {
@@ -35,6 +37,7 @@ export interface DevCandidate {
   existingProjectId?: string | null;
   existingHasDev?: boolean;
   group?: string | null;
+  dependsOn?: string[];
 }
 
 export interface DevScanReport {

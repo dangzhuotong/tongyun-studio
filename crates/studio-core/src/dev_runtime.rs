@@ -142,6 +142,10 @@ pub struct DevProfile {
     pub group: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<String>,
+    #[serde(default, alias = "depends_on", skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
+    #[serde(default, alias = "ready_timeout_secs", skip_serializing_if = "Option::is_none")]
+    pub ready_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,6 +173,8 @@ pub struct DevCandidate {
     pub existing_has_dev: bool,
     #[serde(default)]
     pub group: Option<String>,
+    #[serde(default, alias = "depends_on", skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -342,6 +348,8 @@ pub fn prepare_import(candidate: &DevCandidate) -> Result<PreparedImport> {
             label,
             group,
             confidence,
+            depends_on: candidate.depends_on.clone(),
+            ready_timeout_secs: None,
         },
     })
 }
@@ -677,6 +685,7 @@ fn candidate(
         existing_project_id: None,
         existing_has_dev: false,
         group: None,
+        depends_on: Vec::new(),
     }
 }
 

@@ -5,16 +5,19 @@ use crate::dev_runtime::{
 };
 use crate::{Project, Result};
 use serde::Serialize;
+#[allow(unused_imports)]
+use std::path::Path;
+#[allow(unused_imports)]
+use std::process::{Child, Command, Stdio};
 use std::{
     collections::BTreeMap,
     io::Read,
-    path::Path,
-    process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
 
+#[allow(dead_code)]
 const OUTPUT_LIMIT: usize = 64 * 1024;
 const SERVICE_LIMIT: usize = 64;
 
@@ -45,6 +48,7 @@ pub struct ManagedService {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct Binding {
     expects_port: bool,
     port: Option<u16>,
@@ -64,11 +68,12 @@ impl Binding {
         }
         let port = dev.port.filter(|port| *port > 0);
         let health_url = dev.health_url.clone().filter(|url| !url.trim().is_empty());
+        let ready_timeout_secs = dev.ready_timeout_secs.unwrap_or(if port.is_some() { READY_TIMEOUT_SECS } else { 0 });
         Self {
             expects_port: port.is_some(),
             port,
             health_url,
-            ready_timeout_secs: if port.is_some() { READY_TIMEOUT_SECS } else { 0 },
+            ready_timeout_secs,
         }
     }
 }
@@ -76,6 +81,7 @@ impl Binding {
 #[derive(Default)]
 struct Output { bytes: Vec<u8>, truncated: bool }
 impl Output {
+    #[allow(dead_code)]
     fn append(&mut self, bytes: &[u8]) {
         self.bytes.extend_from_slice(bytes);
         if self.bytes.len() > OUTPUT_LIMIT {
@@ -87,7 +93,7 @@ impl Output {
 struct Entry {
     snapshot: ManagedService,
     directory: String,
-    child: Child,
+    child: Option<Child>,
     pgid: u32,
     stdout: Arc<Mutex<Output>>,
     stderr: Arc<Mutex<Output>>,
@@ -104,21 +110,23 @@ struct Entry {
 impl Entry {
     fn refresh(&mut self) -> Result<()> {
         if self.snapshot.status != "running" { return Ok(()); }
-        if !self.reaped {
-            if let Some(status) = self.child.try_wait().map_err(|e| format!("读取服务进程失败：{e}"))? {
-                self.reaped = true;
-                self.snapshot.exit_code = status.code();
+        if let Some(child) = self.child.as_mut() {
+            if !self.reaped {
+                if let Some(status) = child.try_wait().map_err(|e| format!("读取服务进程失败：{e}"))? {
+                    self.reaped = true;
+                    self.snapshot.exit_code = status.code();
+                }
             }
-        }
-        if self.reaped && !group_alive(self.pgid)? {
-            self.snapshot.pid = None;
-            self.snapshot.status = if self.user_stopped {
-                "stopped"
-            } else if self.expects_port || self.snapshot.exit_code != Some(0) {
-                "failed"
-            } else {
-                "exited"
-            }.into();
+            if self.reaped && !group_alive(self.pgid)? {
+                self.snapshot.pid = None;
+                self.snapshot.status = if self.user_stopped {
+                    "stopped"
+                } else if self.expects_port || self.snapshot.exit_code != Some(0) {
+                    "failed"
+                } else {
+                    "exited"
+                }.into();
+            }
         }
         Ok(())
     }
@@ -131,6 +139,9 @@ impl Entry {
         snapshot
     }
     fn apply_lifecycle(&mut self, snapshot: &mut ManagedService) {
+        if self.child.is_none() {
+            return;
+        }
         snapshot.port = self.port;
         snapshot.ready_timeout_secs = self.ready_timeout_secs;
         let (state, failure, port_open) = if self.user_stopped {
@@ -211,10 +222,12 @@ impl Entry {
     fn stop(&mut self) -> Result<()> {
         self.refresh()?;
         if self.snapshot.status != "running" { return Ok(()); }
-        signal_group(self.pgid, terminate_signal())?;
-        if !self.wait_stopped(Duration::from_millis(1000))? {
-            signal_group(self.pgid, kill_signal())?;
-            if !self.wait_stopped(Duration::from_secs(2))? { return Err("服务进程组仍存在，未确认停止；请重试。".into()); }
+        if self.pgid > 0 {
+            signal_group(self.pgid, terminate_signal())?;
+            if !self.wait_stopped(Duration::from_millis(1000))? {
+                signal_group(self.pgid, kill_signal())?;
+                if !self.wait_stopped(Duration::from_secs(2))? { return Err("服务进程组仍存在，未确认停止；请重试。".into()); }
+            }
         }
         self.user_stopped = true;
         self.snapshot.pid = None;
@@ -319,19 +332,142 @@ impl ServiceManager {
         registry.entries.insert(service_id.to_owned(), entry);
         Ok(snapshot)
     }
+    pub fn create_skipped_service(&self, project: &Project, command: &str, reason: &str) -> Result<ManagedService> {
+        let mut registry = self.registry.lock().map_err(|_| "服务记录锁不可用")?;
+        let existing = registry.entries.values()
+            .find(|e| e.snapshot.project_id == project.id && e.snapshot.command == command)
+            .map(|e| e.snapshot.id.clone());
+        let id = existing.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let dev = project.dev.as_ref();
+        let port = dev.and_then(|d| d.port);
+        let now = chrono::Utc::now().to_rfc3339();
+        let ready_timeout_secs = dev.and_then(|d| d.ready_timeout_secs).unwrap_or(if port.is_some() { READY_TIMEOUT_SECS } else { 0 });
+        let snapshot = ManagedService {
+            id: id.clone(),
+            project_id: project.id.clone(),
+            command: command.to_string(),
+            pid: None,
+            status: "failed".into(),
+            started_at: now,
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            output_truncated: false,
+            lifecycle: "failed".into(),
+            failure: Some(reason.to_string()),
+            port,
+            port_open: false,
+            elapsed_secs: None,
+            log_tail: format!("--- 跳过启动 ---\n{reason}"),
+            ready_timeout_secs,
+            reachable: false,
+        };
+        let entry = Entry {
+            snapshot: snapshot.clone(),
+            directory: project.path.clone(),
+            child: None,
+            pgid: 0,
+            stdout: Arc::new(Mutex::new(Output::default())),
+            stderr: Arc::new(Mutex::new(Output::default())),
+            reaped: true,
+            expects_port: port.is_some(),
+            port,
+            health_url: dev.and_then(|d| d.health_url.clone()),
+            ready_timeout_secs,
+            started: Instant::now(),
+            user_stopped: false,
+            port_cache: None,
+            probe_cache: None,
+        };
+        registry.entries.insert(id, entry);
+        Ok(snapshot)
+    }
+
+    fn wait_ready_or_failed(&self, service_id: &str, timeout: Duration) -> Result<ManagedService> {
+        let start = Instant::now();
+        loop {
+            {
+                let mut registry = self.registry.lock().map_err(|_| "服务记录锁不可用")?;
+                let entry = registry.entries.get_mut(service_id).ok_or("服务记录不存在")?;
+                entry.refresh()?;
+                let snapshot = entry.snapshot();
+                match snapshot.lifecycle.as_str() {
+                    "ready" | "exited" => return Ok(snapshot),
+                    "failed" => return Ok(snapshot),
+                    _ => {
+                        if snapshot.status != "running" {
+                            return Ok(snapshot);
+                        }
+                        if start.elapsed() >= timeout {
+                            entry.snapshot.lifecycle = "failed".into();
+                            entry.snapshot.failure = Some(format!("超过 {} 秒仍未就绪", timeout.as_secs()));
+                            return Ok(entry.snapshot());
+                        }
+                    }
+                }
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     pub fn start_group(&self, projects: &[Project], group: &str) -> Result<Vec<ManagedService>> {
         let matched = group_members(projects, group)?;
+        let sorted = sort_projects_by_dependencies(&matched)?;
+
+        let mut failed_blockers: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         let mut started = Vec::new();
-        for project in matched {
-            let command = project.dev.as_ref().expect("filtered").command.clone();
-            started.push(self.start(project, &command)?);
+
+        for project in sorted {
+            let dev = project.dev.as_ref().expect("filtered");
+            let command = dev.command.clone();
+            let deps = &dev.depends_on;
+
+            // Check if any dependency of this project has failed
+            let blocked_by = deps.iter().find_map(|dep| {
+                failed_blockers.get(dep).cloned().or_else(|| {
+                    matched.iter().find(|p| p.id == *dep || p.name == *dep).and_then(|p| {
+                        failed_blockers.get(&p.id).cloned().or_else(|| failed_blockers.get(&p.name).cloned())
+                    })
+                })
+            });
+
+            if let Some(blocker) = blocked_by {
+                failed_blockers.insert(project.id.clone(), blocker.clone());
+                failed_blockers.insert(project.name.clone(), blocker.clone());
+
+                let reason = format!("被依赖服务 {} 挡住，已跳过启动", blocker);
+                let skipped = self.create_skipped_service(project, &command, &reason)?;
+                started.push(skipped);
+                continue;
+            }
+
+            match self.start(project, &command) {
+                Ok(svc) => {
+                    let ready_timeout = Duration::from_secs(svc.ready_timeout_secs.max(1));
+                    let outcome = self.wait_ready_or_failed(&svc.id, ready_timeout)?;
+                    if outcome.lifecycle == "failed" {
+                        failed_blockers.insert(project.id.clone(), project.name.clone());
+                        failed_blockers.insert(project.name.clone(), project.name.clone());
+                    }
+                    started.push(outcome);
+                }
+                Err(err) => {
+                    failed_blockers.insert(project.id.clone(), project.name.clone());
+                    failed_blockers.insert(project.name.clone(), project.name.clone());
+                    let reason = format!("启动失败：{err}");
+                    let failed_svc = self.create_skipped_service(project, &command, &reason)?;
+                    started.push(failed_svc);
+                }
+            }
         }
         Ok(started)
     }
+
     pub fn stop_group(&self, projects: &[Project], group: &str) -> Result<Vec<ManagedService>> {
         let matched = group_members(projects, group)?;
+        let sorted = sort_projects_by_dependencies(&matched)?;
         let mut stopped = Vec::new();
-        for project in matched {
+        for project in sorted.into_iter().rev() {
             let command = project.dev.as_ref().expect("filtered").command.trim().to_owned();
             let ids = self.list(&project.id)?.into_iter().filter(|service| service.command == command && service.status == "running").map(|service| service.id).collect::<Vec<_>>();
             for id in ids {
@@ -366,6 +502,112 @@ fn group_members<'a>(projects: &'a [Project], group: &str) -> Result<Vec<&'a Pro
     Ok(matched)
 }
 
+fn project_deps<'a>(project: &'a Project) -> &'a [String] {
+    project.dev.as_ref().map(|d| d.depends_on.as_slice()).unwrap_or(&[])
+}
+
+pub fn sort_projects_by_dependencies<'a>(projects: &[&'a Project]) -> Result<Vec<&'a Project>> {
+    let n = projects.len();
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    if n == 1 {
+        let p = projects[0];
+        let deps = project_deps(p);
+        if deps.iter().any(|d| d == &p.id || d == &p.name) {
+            return Err(format!("检测到循环依赖：{} -> {}", p.name, p.name));
+        }
+        return Ok(projects.to_vec());
+    }
+
+    // 1. Cycle detection using DFS
+    let mut visited = std::collections::HashSet::new();
+    let mut on_stack = Vec::new();
+
+    fn dfs_cycle(
+        curr: usize,
+        projects: &[&Project],
+        visited: &mut std::collections::HashSet<usize>,
+        on_stack: &mut Vec<usize>,
+    ) -> Result<()> {
+        if let Some(pos) = on_stack.iter().position(|&idx| idx == curr) {
+            let mut cycle_names: Vec<String> = on_stack[pos..]
+                .iter()
+                .map(|&idx| projects[idx].name.clone())
+                .collect();
+            cycle_names.push(projects[curr].name.clone());
+            return Err(format!("检测到循环依赖：{}", cycle_names.join(" -> ")));
+        }
+        if visited.contains(&curr) {
+            return Ok(());
+        }
+
+        visited.insert(curr);
+        on_stack.push(curr);
+
+        let deps = project_deps(projects[curr]);
+
+        for dep in deps {
+            for (idx, p) in projects.iter().enumerate() {
+                if p.id == *dep || p.name == *dep {
+                    dfs_cycle(idx, projects, visited, on_stack)?;
+                }
+            }
+        }
+
+        on_stack.pop();
+        Ok(())
+    }
+
+    for i in 0..n {
+        if !visited.contains(&i) {
+            dfs_cycle(i, projects, &mut visited, &mut on_stack)?;
+        }
+    }
+
+    // 2. Kahn's algorithm for topological sorting
+    let mut in_degrees = vec![0usize; n];
+    let mut adj = vec![Vec::new(); n];
+
+    for j in 0..n {
+        let deps = project_deps(projects[j]);
+        for dep in deps {
+            for (i, p) in projects.iter().enumerate() {
+                if i != j && (p.id == *dep || p.name == *dep) {
+                    if !adj[i].contains(&j) {
+                        adj[i].push(j);
+                        in_degrees[j] += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut ready: Vec<usize> = (0..n).filter(|&i| in_degrees[i] == 0).collect();
+    ready.sort_by(|&a, &b| projects[a].name.cmp(&projects[b].name).then(projects[a].id.cmp(&projects[b].id)));
+
+    let mut sorted = Vec::with_capacity(n);
+    while !ready.is_empty() {
+        let curr = ready.remove(0);
+        sorted.push(projects[curr]);
+
+        for &nxt in &adj[curr] {
+            in_degrees[nxt] -= 1;
+            if in_degrees[nxt] == 0 {
+                ready.push(nxt);
+                ready.sort_by(|&a, &b| projects[a].name.cmp(&projects[b].name).then(projects[a].id.cmp(&projects[b].id)));
+            }
+        }
+    }
+
+    if sorted.len() < n {
+        return Err("检测到循环依赖：无法完成依赖拓扑排序".into());
+    }
+
+    Ok(sorted)
+}
+
+#[allow(dead_code)]
 fn read_output(reader: impl Read + Send + 'static, output: Arc<Mutex<Output>>) {
     thread::spawn(move || {
         let mut reader = reader;
@@ -418,7 +660,7 @@ fn spawn_entry(id: String, project_id: &str, directory: &str, command: &str, bin
             reachable: false,
         },
         directory: directory.into(),
-        child,
+        child: Some(child),
         pgid,
         stdout,
         stderr,
@@ -478,6 +720,8 @@ mod tests {
                 label: "fixture".into(),
                 group: group.map(str::to_owned),
                 confidence: Some("high".into()),
+                depends_on: Vec::new(),
+                ready_timeout_secs: None,
             }),
         }
     }
