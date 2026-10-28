@@ -1,6 +1,6 @@
 # 橦云工作台 (Tongyun Studio) · 应用图标设计规范与方案集
 
-> 状态：设计提案完成，就绪待选。已生成多套标准 1024×1024 矢量 SVG 与 3D 渲染图。
+> 状态：已采用方案 A，并生成到 `src-tauri/icons`（含 icns、ico、png 与托盘模板图）。方案 B/C/D 仍保留为未采用的设计稿。
 
 ---
 
@@ -73,6 +73,8 @@ cd repos/tongyun-studio
 # 使用 tauri icon 插件自动生成全平台 icns, ico, 各级 png
 npm run tauri icon docs/design/app-icon-concept-a.svg
 ```
+
+已采用方案 A，并生成到 `src-tauri/icons`。托盘彩图和 `trayTemplate` 由同一张主图缩出。`src-tauri/tauri.conf.json` 的 `bundle.icon` 仍指向这些文件。
 
 生成的尺寸映射：
 - `icon.icns`：macOS 应用主图标（16x16 至 1024x1024 Retina）

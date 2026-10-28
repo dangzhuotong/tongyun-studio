@@ -32,6 +32,24 @@ function lifecycleText(value: string | undefined): string {
   return lifecycleLabel[value] ?? value;
 }
 
+/** One label for the card and the log badge. A failed process is never also "starting". */
+function primaryStatus(service: Pick<ManagedService, 'status' | 'lifecycle'>): string {
+  if (service.lifecycle === 'failed' || service.status === 'failed') return statusLabel.failed;
+  if (service.lifecycle === 'ready') return lifecycleLabel.ready;
+  if (service.lifecycle === 'port_open') return lifecycleLabel.port_open;
+  if (service.lifecycle === 'exited' || service.status === 'exited') return statusLabel.exited;
+  if (service.lifecycle === 'stopped' || service.status === 'stopped') return statusLabel.stopped;
+  if (service.status === 'running') return statusLabel.running;
+  return lifecycleText(service.lifecycle) || statusLabel[service.status];
+}
+
+/** Readiness detail that does not contradict the primary label. */
+function secondaryStatus(service: Pick<ManagedService, 'status' | 'lifecycle'>): string {
+  if (service.status !== 'running' || service.lifecycle === 'failed') return '';
+  if (service.lifecycle === 'starting') return lifecycleLabel.starting;
+  return '';
+}
+
 export default function DevPanel({
   project,
   projects = [],
@@ -122,7 +140,7 @@ export default function DevPanel({
       const result = await action(id);
       if (mounted.current && currentProject.current === id) {
         setServices(previous => [result, ...previous.filter(item => item.id !== result.id)]);
-        onNotify?.(`${result.command}：${lifecycleText(result.lifecycle) || statusLabel[result.status]}`);
+        onNotify?.(`${result.command}：${primaryStatus(result)}`);
       }
     } catch (cause) {
       if (mounted.current && currentProject.current === id) { errorSource.current = 'action'; setError(String(cause)); }
@@ -349,15 +367,17 @@ export default function DevPanel({
       </section>
       <section className="active-services-section"><div className="section-heading"><div className="subcard-title"><Activity size={15}/><h3>进程与执行记录</h3></div><button className="text-button" disabled={!isDesktop || !!busy} onClick={() => void readServices(project.id)}><RotateCw size={13}/>刷新</button></div>
         {loading ? <p role="status">正在读取托管进程…</p> : services.length === 0 ? <p className="subcard-empty">这个项目还没有执行记录。运行后可在这里查看状态、停止、重启和读取日志。</p> : <div className="services-grid">{services.map(service => {
-          const readiness = lifecycleText(service.lifecycle);
-          return <div key={service.id} className="service-card"><div className="service-header"><div className="service-title-info"><span className={`status-dot ${service.lifecycle === 'ready' ? 'available' : service.status === 'running' ? 'active-pulse' : service.lifecycle === 'failed' ? 'error' : ''}`}/><span className="service-name">{statusLabel[service.status]}</span>{readiness && <span className="meta">{readiness}</span>}<code className="service-cmd">{service.command}</code></div><div className="service-actions"><button className="service-btn" disabled={!isDesktop || !!busy} onClick={() => void mutate(`restart:${service.id}`, id => restartProjectService(id, service.id))}><RotateCw size={13}/>{busy === `restart:${service.id}` ? '重启中…' : '重启'}</button><button className="service-btn stop" disabled={!isDesktop || !!busy || service.status !== 'running'} onClick={() => void mutate(`stop:${service.id}`, id => stopProjectService(id, service.id))}><Square size={13}/>{busy === `stop:${service.id}` ? '停止中…' : '停止'}</button></div></div><div className="service-footer"><span className="meta">{service.pid ? `进程组 ${service.pid}` : `退出码 ${service.exitCode ?? '无（信号终止）'}`}</span><span className="meta">{service.port ? `端口 ${service.port}${service.portOpen ? ' 已通' : ' 未通'}` : '无就绪端口'}</span><span className="meta">启动于 {new Date(service.startedAt).toLocaleString()}</span></div>{service.failure && <p className="meta">{service.failure}</p>}</div>;
+          const label = primaryStatus(service);
+          const detail = secondaryStatus(service);
+          const dot = service.lifecycle === 'failed' || service.status === 'failed' ? 'error' : service.lifecycle === 'ready' ? 'available' : service.status === 'running' ? 'active-pulse' : '';
+          return <div key={service.id} className="service-card"><div className="service-header"><div className="service-title-info"><span className={`status-dot ${dot}`}/><span className="service-name">{label}</span>{detail && <span className="meta">{detail}</span>}<code className="service-cmd">{service.command}</code></div><div className="service-actions"><button className="service-btn" disabled={!isDesktop || !!busy} onClick={() => void mutate(`restart:${service.id}`, id => restartProjectService(id, service.id))}><RotateCw size={13}/>{busy === `restart:${service.id}` ? '重启中…' : '重启'}</button><button className="service-btn stop" disabled={!isDesktop || !!busy || service.status !== 'running'} onClick={() => void mutate(`stop:${service.id}`, id => stopProjectService(id, service.id))}><Square size={13}/>{busy === `stop:${service.id}` ? '停止中…' : '停止'}</button></div></div><div className="service-footer"><span className="meta">{service.pid ? `进程组 ${service.pid}` : `退出码 ${service.exitCode ?? '无（信号终止）'}`}</span><span className="meta">{service.port ? `端口 ${service.port}${service.portOpen ? ' 已通' : ' 未通'}` : '无就绪端口'}</span><span className="meta">启动于 {new Date(service.startedAt).toLocaleString()}</span></div>{service.failure && <p className="meta">{service.failure}</p>}</div>;
         })}</div>}
       </section>
       <section className="terminal-console-card"><div className="terminal-console-header"><div className="terminal-title"><Terminal size={14}/><span>日志尾部</span></div><button className="terminal-btn" onClick={() => setHints(value => !value)}>{hints ? '收起排查提示' : '本地排查提示'}</button></div>
         {hints && <div className="ai-diagnostic-banner"><p>以下是固定排查提示，没有调用 AI，也未自动诊断你的项目。</p><ol><li>根据真实退出码和错误日志定位失败步骤。</li><li>核对命令、工作目录、依赖与环境变量。</li><li>仅在日志提示端口冲突时核对端口占用。</li></ol></div>}
         <div className="terminal-body">{services.length === 0 ? <div className="terminal-empty"><span className="terminal-prompt-hint">执行命令后，日志尾部会显示在这里。</span></div> : services.map(service => {
           const tail = service.logTail || [service.stdout, service.stderr].filter(Boolean).join('\n');
-          return <div key={service.id} className="terminal-log-entry"><div className="terminal-log-header"><span className="terminal-cmd-title">$ {service.command}</span><div className="terminal-cmd-meta"><span className={`exit-badge ${service.lifecycle === 'failed' || service.status === 'failed' ? 'exit-failure' : ''}`}>{lifecycleText(service.lifecycle) || statusLabel[service.status]}{service.exitCode != null ? ` · ${service.exitCode}` : ''}</span><button className="terminal-mini-btn" aria-label={`复制 ${service.command} 输出`} onClick={() => void copy(service)}>{copied === service.id ? <Check size={12}/> : <Copy size={12}/>}</button></div></div>{service.outputTruncated && <p className="meta">输出较多，每个输出流只保留最后 64 KiB，这里显示其中的末尾 200 行。</p>}<pre className="terminal-stdout">{tail || '暂无输出'}</pre></div>;
+          return <div key={service.id} className="terminal-log-entry"><div className="terminal-log-header"><span className="terminal-cmd-title">$ {service.command}</span><div className="terminal-cmd-meta"><span className={`exit-badge ${service.lifecycle === 'failed' || service.status === 'failed' ? 'exit-failure' : ''}`}>{primaryStatus(service)}{service.exitCode != null ? ` · ${service.exitCode}` : ''}</span><button className="terminal-mini-btn" aria-label={`复制 ${service.command} 输出`} onClick={() => void copy(service)}>{copied === service.id ? <Check size={12}/> : <Copy size={12}/>}</button></div></div>{service.outputTruncated && <p className="meta">输出较多，每个输出流只保留最后 64 KiB，这里显示其中的末尾 200 行。</p>}<pre className="terminal-stdout">{tail || '暂无输出'}</pre></div>;
         })}</div>
       </section>
     </>}
