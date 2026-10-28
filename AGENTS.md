@@ -4,8 +4,8 @@
 
 ## 当前范围
 - Tauri 2 + React 19 + TypeScript + Vite；Rust 核心与桌面适配器分离。
-- 当前：本地项目管理、内嵌 Files / Dev / API / SQLite / Git，以及只读 Agent 文件快照。当前边界以 docs/architecture.md 为准。
-- 原有工具保持独立，Studio 当前内嵌的是本地能力子集；未接入完整协议、共享数据库记忆或 worker 调度，不伪造联动。
+- 当前：本地项目管理、内嵌 Files / Dev / API / SQLite / Git，以及只读 Agent 文件快照。Dev 面板已继承 tongyun-dev 的扫描登记、启停重启、生命周期和日志尾部；未接入独立 CLI、:9099、工具链注入和跨产品协议。当前边界以 docs/architecture.md 为准。
+- 原有工具保持独立。Studio 没有伪造与 tongyun-dev 进程的联动，也未接入完整协议、共享数据库记忆或 worker 调度。
 - Agent 开发与验收不连接生产数据库、不自动启动用户业务项目；临时夹具可测试命令、SQL 和 Git。仅在用户要求时提交或推送产品仓。
 - 项目移除只移除登记，不删除磁盘文件。无隐式 git pull、commit 或 push。
 

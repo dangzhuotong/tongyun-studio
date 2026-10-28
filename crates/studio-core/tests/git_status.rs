@@ -10,7 +10,7 @@ fn status_preserves_unstaged_column_and_literal_non_ascii_filenames() {
     fs::write(root.path().join(path), "before").unwrap();
     git(&["add", "--", path]);
     git(&["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "initial"]);
-    let project = Project { id: "test".into(), name: "test".into(), path: root.path().to_str().unwrap().into(), created_at: String::new() };
+    let project = Project { id: "test".into(), name: "test".into(), path: root.path().to_str().unwrap().into(), created_at: String::new(), dev: None };
     fs::write(root.path().join(path), "after").unwrap();
     let changes = get_git_changed_files(&project).unwrap();
     assert_eq!(changes.len(), 1);

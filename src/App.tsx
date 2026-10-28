@@ -813,11 +813,13 @@ export default function App() {
               <Panel
                 key={`${tab}:${project?.id ?? 'empty'}`}
                 project={project}
+                projects={workspace.projects}
                 inspection={current?.result}
                 session={agentSession}
                 onNavigate={(t: ActiveTab) => setTab(t)}
                 onRefresh={() => setRefresh(v => v + 1)}
                 onNotify={notify}
+                onWorkspace={(next: Workspace) => setWorkspace(next)}
                 onExportAudit={handleExportAudit}
               />
             </Suspense>

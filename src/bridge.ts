@@ -1,5 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import type { Workspace, ProjectInspection, FileEntry, GitFileChange, ExecutionResult, HttpResponse, SqlQueryResult, DbTableInfo, DbColumnInfo, PaginatedData, ListeningPort, AiProjectContext, ManagedService, AgentSessionState } from './contracts';
+import type { Workspace, ProjectInspection, FileEntry, GitFileChange, ExecutionResult, HttpResponse, SqlQueryResult, DbTableInfo, DbColumnInfo, PaginatedData, ListeningPort, AiProjectContext, ManagedService, AgentSessionState, DevScanReport, DevCandidate, DevImportResult } from './contracts';
 
 export const isDesktop = isTauri();
 function native<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -47,6 +47,11 @@ export const startProjectService = (id: string, command: string) => native<Manag
 export const listProjectServices = (id: string) => native<ManagedService[]>('list_project_services', { id });
 export const stopProjectService = (id: string, serviceId: string) => native<ManagedService>('stop_project_service', { id, serviceId });
 export const restartProjectService = (id: string, serviceId: string) => native<ManagedService>('restart_project_service', { id, serviceId });
+export const scanDevDirectory = (path: string, depth?: number) => native<DevScanReport>('scan_dev_directory', { path, depth: depth ?? null });
+export const importDevCandidates = (candidates: DevCandidate[]) => native<DevImportResult>('import_dev_candidates', { candidates });
+export const startDevGroup = (group: string) => native<ManagedService[]>('start_dev_group', { group });
+export const stopDevGroup = (group: string) => native<ManagedService[]>('stop_dev_group', { group });
+export const devServiceLogTail = (id: string, serviceId: string, lines?: number) => native<string>('dev_service_log_tail', { id, serviceId, lines: lines ?? null });
 export function getInitialAgentSession(projectId: string | null = null): AgentSessionState {
   return { projectId, connectionStatus: 'not_connected', agentName: null, model: null, mode: null, activeGoal: null, plan: null, actions: [], tokensConsumed: null, filesTouched: null, lastHeartbeat: null };
 }

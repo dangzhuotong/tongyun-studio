@@ -2703,6 +2703,39 @@ body, html {
 }
 
 /* Dev Enterprise Styles */
+.dev-candidate-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dev-candidate {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 8px 12px;
+  background: var(--sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--ty-radius-sm);
+}
+
+.dev-candidate-fields,
+.dev-inline-fields {
+  display: flex;
+  min-width: 0;
+}
+
+.dev-candidate-fields {
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dev-inline-fields {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .dev-metrics-bar {
   display: flex;
   align-items: center;

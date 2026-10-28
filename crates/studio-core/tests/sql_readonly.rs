@@ -15,6 +15,7 @@ fn fixture() -> (tempfile::TempDir, Project) {
         name: "test".into(),
         path: dir.path().to_string_lossy().into(),
         created_at: String::new(),
+        dev: None,
     };
     (dir, project)
 }
