@@ -11,7 +11,12 @@ use std::{
 
 pub type Result<T> = std::result::Result<T, String>;
 
+pub mod dev_runtime;
 pub mod processes;
+pub use dev_runtime::{
+    scan_dev_directory, DevCandidate, DevProfile, DevScanReport, ExistingProject, LifeState,
+    PreparedImport,
+};
 pub use processes::{ManagedService, ServiceManager};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,6 +26,10 @@ pub struct Project {
     pub name: String,
     pub path: String,
     pub created_at: String,
+    /// Optional run profile discovered or confirmed from a directory scan.
+    /// Absent on records created before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dev: Option<DevProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +48,15 @@ impl Default for Workspace {
             active_project_id: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DevImportOutcome {
+    pub workspace: Workspace,
+    pub added: usize,
+    pub attached: usize,
+    pub unchanged: usize,
 }
 
 pub struct WorkspaceStore {
@@ -127,6 +145,7 @@ impl WorkspaceStore {
                     .unwrap_or_else(|| path.clone()),
                 path,
                 created_at: chrono::Utc::now().to_rfc3339(),
+                dev: None,
             };
             workspace.active_project_id = Some(project.id.clone());
             workspace.projects.push(project);
@@ -158,6 +177,65 @@ impl WorkspaceStore {
         }
         self.write(&workspace)?;
         Ok(workspace)
+    }
+
+    /// Register scanned directories. Existing paths keep their id. A path that was
+    /// registered without a run profile receives one; a path that already has a
+    /// profile is left unchanged.
+    pub fn import_dev_candidates(&self, candidates: &[DevCandidate]) -> Result<DevImportOutcome> {
+        if candidates.len() > 64 {
+            return Err("一次最多登记 64 个目录。".into());
+        }
+        let _guard = self.lock.lock().map_err(|_| "项目记录锁不可用")?;
+        let mut workspace = self.read()?;
+        let prepared = candidates
+            .iter()
+            .map(dev_runtime::prepare_import)
+            .collect::<Result<Vec<_>>>()?;
+        let mut seen = std::collections::HashSet::new();
+        for item in &prepared {
+            if !seen.insert(item.path.clone()) {
+                return Err("同一次登记里有重复目录。".into());
+            }
+        }
+        let new_paths = prepared
+            .iter()
+            .filter(|item| !workspace.projects.iter().any(|project| project.path == item.path))
+            .count();
+        if workspace.projects.len() + new_paths > 200 {
+            return Err("工作台最多登记 200 个项目。".into());
+        }
+        let mut added = 0usize;
+        let mut attached = 0usize;
+        let mut unchanged = 0usize;
+        let mut activate = None;
+        for item in prepared {
+            if let Some(existing) = workspace.projects.iter_mut().find(|project| project.path == item.path) {
+                if existing.dev.is_some() {
+                    unchanged += 1;
+                } else {
+                    existing.dev = Some(item.profile);
+                    attached += 1;
+                    activate = Some(existing.id.clone());
+                }
+            } else {
+                let id = uuid::Uuid::new_v4().to_string();
+                activate = Some(id.clone());
+                workspace.projects.push(Project {
+                    id,
+                    name: item.name,
+                    path: item.path,
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                    dev: Some(item.profile),
+                });
+                added += 1;
+            }
+        }
+        if let Some(id) = activate {
+            workspace.active_project_id = Some(id);
+        }
+        self.write(&workspace)?;
+        Ok(DevImportOutcome { workspace, added, attached, unchanged })
     }
 
     pub fn project(&self, id: &str) -> Result<Project> {
@@ -1568,6 +1646,55 @@ mod tests {
     }
 
     #[test]
+    fn old_workspace_loads_and_scan_import_does_not_overwrite_or_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = store(dir.path());
+        fs::create_dir_all(db.path.parent().unwrap()).unwrap();
+        fs::write(&db.path, r#"{"version":1,"projects":[],"activeProjectId":null}"#).unwrap();
+        assert!(db.load().unwrap().projects.is_empty());
+
+        let web = dir.path().join("shop/web");
+        fs::create_dir_all(&web).unwrap();
+        fs::write(web.join("package.json"), r#"{"devDependencies":{"vite":"^5"},"scripts":{"dev":"vite"}}"#).unwrap();
+        fs::write(web.join("KEEP"), "sentinel").unwrap();
+        let manual = dir.path().join("manual");
+        fs::create_dir(&manual).unwrap();
+        db.add(manual.to_str().unwrap()).unwrap();
+
+        let report = scan_dev_directory(dir.path(), 3, &db.load().unwrap().projects.iter().map(|project| ExistingProject {
+            id: project.id.clone(),
+            path: project.path.clone(),
+            has_dev: project.dev.is_some(),
+        }).collect::<Vec<_>>()).unwrap();
+        let candidate = report.candidates.iter().find(|item| item.kind == "vite").unwrap();
+        assert!(!candidate.already_registered);
+        let imported = db.import_dev_candidates(std::slice::from_ref(candidate)).unwrap();
+        assert_eq!(imported.added, 1);
+        assert!(web.join("KEEP").is_file());
+        let again = db.import_dev_candidates(std::slice::from_ref(candidate)).unwrap();
+        assert_eq!(again.added, 0);
+        assert_eq!(again.unchanged, 1);
+        assert_eq!(db.load().unwrap().projects.len(), 2);
+
+        let bare = report.candidates.iter().find(|item| item.path == fs::canonicalize(&manual).unwrap().to_string_lossy()).cloned();
+        // The manual directory has no manifest, so it is not a candidate. Attach via a synthetic one.
+        let _ = bare;
+        let mut attached = candidate.clone();
+        attached.path = fs::canonicalize(&manual).unwrap().to_string_lossy().into_owned();
+        attached.name = "manual".into();
+        attached.command = "npm run dev".into();
+        // The stored manual project has no dev profile, so import fills only that field.
+        let filled = db.import_dev_candidates(std::slice::from_ref(&attached)).unwrap();
+        assert_eq!(filled.attached, 1);
+        let loaded = db.load().unwrap();
+        let manual_project = loaded.projects.iter().find(|project| project.name == "manual").unwrap();
+        assert_eq!(manual_project.dev.as_ref().unwrap().command, "npm run dev");
+        let removed = db.remove(&imported.workspace.projects.iter().find(|project| project.path.ends_with("/web") || project.name == "web").unwrap().id).unwrap();
+        assert!(web.join("KEEP").is_file());
+        assert_eq!(removed.projects.len(), 1);
+    }
+
+    #[test]
     fn git_handles_empty_repo_changes_and_non_repo() {
         let dir = tempfile::tempdir().unwrap();
         assert!(!inspect_git(dir.path()).is_repository);
@@ -1618,6 +1745,7 @@ mod tests {
             name: "test".into(),
             path: dir.path().to_string_lossy().into_owned(),
             created_at: "".into(),
+            dev: None,
         };
 
         let tree = read_project_tree(&project, None).unwrap();
@@ -1649,6 +1777,7 @@ mod tests {
             name: "sandbox-test".into(),
             path: dir.path().to_string_lossy().into_owned(),
             created_at: "".into(),
+            dev: None,
         };
 
         // Write file inside nested directory

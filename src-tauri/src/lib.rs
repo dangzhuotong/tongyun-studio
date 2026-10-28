@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 use studio_core::{
-    AiProjectContext, DbColumnInfo, DbTableInfo, ExecutionResult, FileEntry, GitFileChange,
-    HttpResponse, ListeningPort, ManagedService, PaginatedData, ProjectInspection, ServiceManager,
-    SqlQueryResult, Workspace, WorkspaceStore,
+    AiProjectContext, DbColumnInfo, DbTableInfo, DevCandidate, DevImportOutcome, ExecutionResult,
+    ExistingProject, FileEntry, GitFileChange, HttpResponse, ListeningPort, ManagedService,
+    PaginatedData, ProjectInspection, ServiceManager, SqlQueryResult, Workspace, WorkspaceStore,
 };
 use tauri::Manager;
 
@@ -325,6 +325,55 @@ fn restart_project_service(
 }
 
 #[tauri::command]
+fn scan_dev_directory(
+    state: tauri::State<'_, AppState>,
+    path: String,
+    depth: Option<u32>,
+) -> Result<studio_core::DevScanReport, String> {
+    let workspace = state.store.load()?;
+    let existing = workspace
+        .projects
+        .iter()
+        .map(|project| ExistingProject {
+            id: project.id.clone(),
+            path: project.path.clone(),
+            has_dev: project.dev.is_some(),
+        })
+        .collect::<Vec<_>>();
+    studio_core::scan_dev_directory(std::path::Path::new(&path), depth.unwrap_or(3) as usize, &existing)
+}
+
+#[tauri::command]
+fn import_dev_candidates(
+    state: tauri::State<'_, AppState>,
+    candidates: Vec<DevCandidate>,
+) -> Result<DevImportOutcome, String> {
+    state.store.import_dev_candidates(&candidates)
+}
+
+#[tauri::command]
+fn start_dev_group(state: tauri::State<'_, AppState>, group: String) -> Result<Vec<ManagedService>, String> {
+    let workspace = state.store.load()?;
+    state.services.start_group(&workspace.projects, &group)
+}
+
+#[tauri::command]
+fn stop_dev_group(state: tauri::State<'_, AppState>, group: String) -> Result<Vec<ManagedService>, String> {
+    let workspace = state.store.load()?;
+    state.services.stop_group(&workspace.projects, &group)
+}
+
+#[tauri::command]
+fn dev_service_log_tail(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    service_id: String,
+    lines: Option<u32>,
+) -> Result<String, String> {
+    state.services.log_tail(&id, &service_id, lines.unwrap_or(200) as usize)
+}
+
+#[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
     studio_core::open_url(&url)
 }
@@ -399,6 +448,11 @@ pub fn run() {
             list_project_services,
             stop_project_service,
             restart_project_service,
+            scan_dev_directory,
+            import_dev_candidates,
+            start_dev_group,
+            stop_dev_group,
+            dev_service_log_tail,
             open_url,
             write_project_file,
             append_project_file,

@@ -7,6 +7,49 @@ export interface Project {
   name: string;
   path: string;
   createdAt: string;
+  dev?: DevProfile | null;
+}
+
+export interface DevProfile {
+  command: string;
+  port?: number | null;
+  healthUrl?: string | null;
+  kind: string;
+  label: string;
+  group?: string | null;
+  confidence?: string | null;
+}
+
+export interface DevCandidate {
+  name: string;
+  path: string;
+  kind: string;
+  label: string;
+  confidence: string;
+  command: string;
+  port?: number | null;
+  portGuessed?: boolean;
+  healthUrl?: string | null;
+  why?: string[];
+  alreadyRegistered?: boolean;
+  existingProjectId?: string | null;
+  existingHasDev?: boolean;
+  group?: string | null;
+}
+
+export interface DevScanReport {
+  root: string;
+  depth: number;
+  dirsVisited: number;
+  truncated: boolean;
+  candidates: DevCandidate[];
+}
+
+export interface DevImportResult {
+  workspace: Workspace;
+  added: number;
+  attached: number;
+  unchanged: number;
 }
 
 export interface Workspace {
@@ -145,6 +188,14 @@ export interface ManagedService {
   stdout: string;
   stderr: string;
   outputTruncated: boolean;
+  lifecycle: 'stopped' | 'starting' | 'port_open' | 'ready' | 'failed' | 'exited';
+  failure: string | null;
+  port: number | null;
+  portOpen: boolean;
+  elapsedSecs: number | null;
+  logTail: string;
+  readyTimeoutSecs: number;
+  reachable: boolean;
 }
 
 export type AgentActionKind = 'terminal' | 'edit' | 'git' | 'sql' | 'http' | 'inspect' | 'plan';

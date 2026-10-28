@@ -2,10 +2,11 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import DevPanel from '../features/DevPanel';
 import { listProjectServices, stopProjectService } from '../bridge';
-const fixture = vi.hoisted(() => ({id:'s',projectId:'p',command:'sleep 60',pid:123,status:'running',startedAt:'2026-10-23T00:00:00Z',exitCode:null,stdout:'ready',stderr:'',outputTruncated:false}));
+const fixture = vi.hoisted(() => ({id:'s',projectId:'p',command:'sleep 60',pid:123,status:'running',startedAt:'2026-10-23T00:00:00Z',exitCode:null,stdout:'ready',stderr:'',outputTruncated:false,lifecycle:'starting',failure:null,port:null,portOpen:false,elapsedSecs:1,logTail:'ready',readyTimeoutSecs:0,reachable:false}));
 vi.mock('../bridge', () => ({
   isDesktop:true, listProjectServices:vi.fn(async () => [fixture]), detectListeningPorts:vi.fn(async () => []),
   startProjectService:vi.fn(), restartProjectService:vi.fn(), stopProjectService:vi.fn(), openUrl:vi.fn(),
+  chooseProjectDirectory:vi.fn(), scanDevDirectory:vi.fn(), importDevCandidates:vi.fn(), startDevGroup:vi.fn(), stopDevGroup:vi.fn(),
 }));
 const project = {id:'p',name:'p',path:'/synthetic',createdAt:''};
 describe('service state comes from the manager', () => {
