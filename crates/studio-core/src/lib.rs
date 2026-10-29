@@ -86,13 +86,13 @@ impl WorkspaceStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Workspace::default()),
             Err(e) => return Err(format!("无法读取项目记录：{e}")),
         };
-        let value: serde_json::Value =
-            serde_json::from_reader(file).map_err(|e| format!("项目记录损坏，已保留原文件：{e}"))?;
+        let value: serde_json::Value = serde_json::from_reader(file)
+            .map_err(|e| format!("项目记录损坏，已保留原文件：{e}"))?;
         if value.get("version").and_then(|v| v.as_u64()) != Some(1) {
             return Err("项目记录版本不受支持，已保留原文件".into());
         }
-        let workspace: Workspace =
-            serde_json::from_value(value).map_err(|e| format!("项目记录格式错误，已保留原文件：{e}"))?;
+        let workspace: Workspace = serde_json::from_value(value)
+            .map_err(|e| format!("项目记录格式错误，已保留原文件：{e}"))?;
         let mut ids = std::collections::HashSet::new();
         let mut paths = std::collections::HashSet::new();
         for project in &workspace.projects {
@@ -208,7 +208,12 @@ impl WorkspaceStore {
         }
         let new_paths = prepared
             .iter()
-            .filter(|item| !workspace.projects.iter().any(|project| project.path == item.path))
+            .filter(|item| {
+                !workspace
+                    .projects
+                    .iter()
+                    .any(|project| project.path == item.path)
+            })
             .count();
         if workspace.projects.len() + new_paths > 200 {
             return Err("工作台最多登记 200 个项目。".into());
@@ -218,7 +223,11 @@ impl WorkspaceStore {
         let mut unchanged = 0usize;
         let mut activate = None;
         for item in prepared {
-            if let Some(existing) = workspace.projects.iter_mut().find(|project| project.path == item.path) {
+            if let Some(existing) = workspace
+                .projects
+                .iter_mut()
+                .find(|project| project.path == item.path)
+            {
                 if existing.dev.is_some() {
                     unchanged += 1;
                 } else {
@@ -243,7 +252,12 @@ impl WorkspaceStore {
             workspace.active_project_id = Some(id);
         }
         self.write(&workspace)?;
-        Ok(DevImportOutcome { workspace, added, attached, unchanged })
+        Ok(DevImportOutcome {
+            workspace,
+            added,
+            attached,
+            unchanged,
+        })
     }
 
     pub fn project(&self, id: &str) -> Result<Project> {
@@ -252,6 +266,19 @@ impl WorkspaceStore {
             .into_iter()
             .find(|p| p.id == id)
             .ok_or_else(|| "项目不存在".into())
+    }
+
+    pub fn update_project_dev(&self, id: &str, dev: Option<DevProfile>) -> Result<Workspace> {
+        let _guard = self.lock.lock().map_err(|_| "项目记录锁不可用")?;
+        let mut workspace = self.read()?;
+        let project = workspace
+            .projects
+            .iter_mut()
+            .find(|p| p.id == id)
+            .ok_or_else(|| "项目不存在".to_string())?;
+        project.dev = dev;
+        self.write(&workspace)?;
+        Ok(workspace)
     }
 }
 
@@ -313,6 +340,10 @@ pub struct ProjectInspection {
     pub tech_stack: Vec<String>,
     pub scripts: Vec<PackageScript>,
     pub db_artifacts: Vec<DbArtifact>,
+    #[serde(default)]
+    pub deps_missing: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -506,7 +537,10 @@ fn inspect_git(path: &Path) -> GitSummary {
         if !status.success {
             return Err(output_string(&status.stderr));
         }
-        let mut entries = status.stdout.split(|b| *b == 0).filter(|entry| !entry.is_empty());
+        let mut entries = status
+            .stdout
+            .split(|b| *b == 0)
+            .filter(|entry| !entry.is_empty());
         while let Some(entry) = entries.next() {
             summary.changed_files += 1;
             if entry.first().is_some_and(|b| *b == b'R' || *b == b'C')
@@ -548,7 +582,9 @@ fn scan_project_files(root: &Path) -> (usize, Vec<String>, Vec<DbArtifact>) {
     let mut db_artifacts = Vec::new();
 
     while let Some((path, depth)) = pending.pop() {
-        let Ok(entries) = fs::read_dir(&path) else { continue };
+        let Ok(entries) = fs::read_dir(&path) else {
+            continue;
+        };
         for entry in entries.flatten() {
             visited += 1;
             if visited > 20_000 || start.elapsed() > Duration::from_millis(250) {
@@ -559,7 +595,9 @@ fn scan_project_files(root: &Path) -> (usize, Vec<String>, Vec<DbArtifact>) {
             if name_str.starts_with('.') {
                 continue;
             }
-            let Ok(kind) = entry.file_type() else { continue };
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
             let entry_path = entry.path();
             let rel_path = entry_path
                 .strip_prefix(root)
@@ -578,16 +616,21 @@ fn scan_project_files(root: &Path) -> (usize, Vec<String>, Vec<DbArtifact>) {
                 if depth < 12
                     && !matches!(
                         name_str.as_ref(),
-                        "node_modules" | "target" | "dist" | "build" | "vendor" | "coverage" | "__pycache__"
+                        "node_modules"
+                            | "target"
+                            | "dist"
+                            | "build"
+                            | "vendor"
+                            | "coverage"
+                            | "__pycache__"
                     )
                 {
                     pending.push((entry_path, depth + 1));
                 }
             } else if kind.is_file() {
-                if entry_path
-                    .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("http") || e.eq_ignore_ascii_case("rest"))
-                {
+                if entry_path.extension().is_some_and(|e| {
+                    e.eq_ignore_ascii_case("http") || e.eq_ignore_ascii_case("rest")
+                }) {
                     http_count += 1;
                     if http_paths.len() < 20 {
                         http_paths.push(rel_path.clone());
@@ -652,11 +695,14 @@ fn detect_tech_and_scripts(root: &Path) -> (Vec<String>, Vec<PackageScript>) {
                     stack.push("Next.js".into());
                 } else if dep_lower.contains("vite") && !stack.contains(&"Vite".to_string()) {
                     stack.push("Vite".into());
-                } else if dep_lower.contains("tailwind") && !stack.contains(&"Tailwind".to_string()) {
+                } else if dep_lower.contains("tailwind") && !stack.contains(&"Tailwind".to_string())
+                {
                     stack.push("Tailwind".into());
                 }
             }
-            if root.join("tsconfig.json").is_file() || all_deps.iter().any(|d| d.contains("typescript")) {
+            if root.join("tsconfig.json").is_file()
+                || all_deps.iter().any(|d| d.contains("typescript"))
+            {
                 stack.push("TypeScript".into());
             } else if !detected_framework {
                 stack.push("Node.js".into());
@@ -728,6 +774,16 @@ pub fn inspect_project(project: &Project) -> ProjectInspection {
     } else {
         (vec![], vec![])
     };
+    let deps_missing = if exists {
+        dev_runtime::node_deps_missing(path)
+    } else {
+        false
+    };
+    let install_command = if exists {
+        dev_runtime::detect_install_command(path, project.dev.as_ref())
+    } else {
+        None
+    };
     ProjectInspection {
         exists,
         git: if exists {
@@ -740,14 +796,15 @@ pub fn inspect_project(project: &Project) -> ProjectInspection {
         tech_stack,
         scripts,
         db_artifacts,
+        deps_missing,
+        install_command,
     }
 }
 
 // ==================== WORKBENCH OPERATIONS ====================
 
 fn safe_project_path(project: &Project, relative: Option<&str>) -> Result<PathBuf> {
-    let root = fs::canonicalize(&project.path)
-        .map_err(|e| format!("无法访问项目根目录：{e}"))?;
+    let root = fs::canonicalize(&project.path).map_err(|e| format!("无法访问项目根目录：{e}"))?;
     if let Some(rel) = relative {
         let trimmed = rel.trim_start_matches('/');
         let target = root.join(trimmed);
@@ -772,7 +829,12 @@ pub fn read_project_tree(project: &Project, relative_dir: Option<&str>) -> Resul
 
     for item in dir.flatten() {
         let name = item.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') || matches!(name.as_str(), "node_modules" | "target" | "dist" | "build" | ".venv") {
+        if name.starts_with('.')
+            || matches!(
+                name.as_str(),
+                "node_modules" | "target" | "dist" | "build" | ".venv"
+            )
+        {
             continue;
         }
         let Ok(meta) = item.metadata() else { continue };
@@ -791,12 +853,10 @@ pub fn read_project_tree(project: &Project, relative_dir: Option<&str>) -> Resul
         });
     }
 
-    entries.sort_by(|a, b| {
-        match (a.is_dir, b.is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-        }
+    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
 
     Ok(entries)
@@ -816,21 +876,47 @@ pub fn read_project_file_content(project: &Project, relative_path: &str) -> Resu
 }
 
 pub fn get_git_changed_files(project: &Project) -> Result<Vec<GitFileChange>> {
-    let output = git(Path::new(&project.path), &["status", "--porcelain=v1", "-z"])?;
-    if !output.success { return Err(output_string(&output.stderr)); }
+    let output = git(
+        Path::new(&project.path),
+        &["status", "--porcelain=v1", "-z"],
+    )?;
+    if !output.success {
+        return Err(output_string(&output.stderr));
+    }
     // Status columns include significant leading spaces; -z also keeps paths literal.
     let mut records = output.stdout.split(|byte| *byte == 0);
     let mut changes = Vec::new();
     while let Some(record) = records.next() {
-        if record.len() < 4 { continue; }
+        if record.len() < 4 {
+            continue;
+        }
         let (x, y) = (record[0], record[1]);
-        let path = String::from_utf8(record[3..].to_vec()).map_err(|_| "Git 文件名不是有效 UTF-8")?;
-        if x == b'R' || x == b'C' || y == b'R' || y == b'C' { records.next(); }
+        let path =
+            String::from_utf8(record[3..].to_vec()).map_err(|_| "Git 文件名不是有效 UTF-8")?;
+        if x == b'R' || x == b'C' || y == b'R' || y == b'C' {
+            records.next();
+        }
         if x == b'?' && y == b'?' {
-            changes.push(GitFileChange { path, status: "??".into(), staged: false });
+            changes.push(GitFileChange {
+                path,
+                status: "??".into(),
+                staged: false,
+            });
         } else {
-            if x != b' ' { changes.push(GitFileChange { path: path.clone(), status: (x as char).to_string(), staged: true }); }
-            if y != b' ' { changes.push(GitFileChange { path, status: (y as char).to_string(), staged: false }); }
+            if x != b' ' {
+                changes.push(GitFileChange {
+                    path: path.clone(),
+                    status: (x as char).to_string(),
+                    staged: true,
+                });
+            }
+            if y != b' ' {
+                changes.push(GitFileChange {
+                    path,
+                    status: (y as char).to_string(),
+                    staged: false,
+                });
+            }
         }
     }
     Ok(changes)
@@ -927,7 +1013,11 @@ pub fn git_remote_sync(project: &Project, action: &str) -> Result<String> {
                 return Err(output_string(&out.stderr));
             }
             let res = output_string(&out.stdout);
-            Ok(if res.is_empty() { "Pull 完成".into() } else { res })
+            Ok(if res.is_empty() {
+                "Pull 完成".into()
+            } else {
+                res
+            })
         }
         "push" => {
             let out = git(path, &["push"])?;
@@ -935,7 +1025,11 @@ pub fn git_remote_sync(project: &Project, action: &str) -> Result<String> {
                 return Err(output_string(&out.stderr));
             }
             let res = output_string(&out.stderr);
-            Ok(if res.is_empty() { "Push 完成".into() } else { res })
+            Ok(if res.is_empty() {
+                "Push 完成".into()
+            } else {
+                res
+            })
         }
         other => Err(format!("未知的远程同步操作: {other}")),
     }
@@ -994,7 +1088,10 @@ pub fn create_git_commit(project: &Project, message: &str) -> Result<String> {
     // Preserve the index exactly as selected by the user, including partial staging.
     let commit_out = git(path, &["commit", "-m", message.trim()])?;
     if !commit_out.success {
-        return Err(format!("git commit 失败：{}", output_string(&commit_out.stderr)));
+        return Err(format!(
+            "git commit 失败：{}",
+            output_string(&commit_out.stderr)
+        ));
     }
     let rev_out = git(path, &["rev-parse", "--short", "HEAD"])?;
     Ok(output_string(&rev_out.stdout))
@@ -1007,7 +1104,11 @@ pub fn get_git_branches(project: &Project) -> Result<Vec<String>> {
         return Err(output_string(&output.stderr));
     }
     let text = output_string(&output.stdout);
-    Ok(text.lines().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect())
+    Ok(text
+        .lines()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .collect())
 }
 
 pub fn switch_git_branch(project: &Project, branch: &str) -> Result<String> {
@@ -1037,7 +1138,9 @@ pub fn execute_project_script(project: &Project, command: &str) -> Result<Execut
     let output = run_bounded(&mut cmd, Duration::from_secs(30))?;
     let duration_ms = start.elapsed().as_millis() as u64;
     Ok(ExecutionResult {
-        exit_code: output.exit_code.unwrap_or(if output.success { 0 } else { 1 }),
+        exit_code: output
+            .exit_code
+            .unwrap_or(if output.success { 0 } else { 1 }),
         stdout: output_string(&output.stdout),
         stderr: output_string(&output.stderr),
         duration_ms,
@@ -1063,7 +1166,8 @@ pub fn send_http_request(
         if !b.trim().is_empty() {
             let mut f = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
             f.write_all(b.as_bytes()).map_err(|e| e.to_string())?;
-            cmd.arg("--data-binary").arg(format!("@{}", f.path().to_string_lossy()));
+            cmd.arg("--data-binary")
+                .arg(format!("@{}", f.path().to_string_lossy()));
             Some(f)
         } else {
             None
@@ -1299,8 +1403,15 @@ pub fn get_db_tables(project: &Project, db_path: &str) -> Result<Vec<DbTableInfo
     Ok(tables)
 }
 
-pub fn get_table_columns(project: &Project, db_path: &str, table_name: &str) -> Result<Vec<DbColumnInfo>> {
-    if !table_name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+pub fn get_table_columns(
+    project: &Project,
+    db_path: &str,
+    table_name: &str,
+) -> Result<Vec<DbColumnInfo>> {
+    if !table_name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
         return Err("表名包含非法字符".into());
     }
     let sql = format!("PRAGMA table_info(\"{table_name}\");");
@@ -1315,7 +1426,11 @@ pub fn get_table_columns(project: &Project, db_path: &str, table_name: &str) -> 
             let name = row[1].clone();
             let data_type = row[2].clone();
             let not_null = row[3] == "1";
-            let dflt_value = if row[4] == "NULL" { None } else { Some(row[4].clone()) };
+            let dflt_value = if row[4] == "NULL" {
+                None
+            } else {
+                Some(row[4].clone())
+            };
             let pk = row[5] == "1";
             columns.push(DbColumnInfo {
                 cid,
@@ -1337,7 +1452,10 @@ pub fn get_table_data(
     page: usize,
     page_size: usize,
 ) -> Result<PaginatedData> {
-    if !table_name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+    if !table_name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
         return Err("表名包含非法字符".into());
     }
     let page = page.max(1);
@@ -1346,7 +1464,9 @@ pub fn get_table_data(
 
     let count_sql = format!("SELECT count(*) FROM \"{table_name}\";");
     let count_res = execute_sql_query(project, db_path, &count_sql)?;
-    if let Some(err) = count_res.error { return Err(err); }
+    if let Some(err) = count_res.error {
+        return Err(err);
+    }
     let total_rows = count_res
         .rows
         .first()
@@ -1382,11 +1502,34 @@ fn is_dev_port(port: u16, proc_name: &str) -> bool {
     let lower = proc_name.to_lowercase();
 
     const EXCLUSIONS: &[&str] = &[
-        "rapport", "controlce", "controlcenter", "launchd", "identityservices",
-        "sharingd", "remoted", "wifi", "bluetooth", "mdns", "airplay", "cupsd",
-        "wechat", "doubao", "feishu", "dingtalk", "slack", "telegram", "clash",
-        "v2ray", "surge", "sing-box", "antigrav", "agy", "language_", "sandbox",
-        "editor_", "electron",
+        "rapport",
+        "controlce",
+        "controlcenter",
+        "launchd",
+        "identityservices",
+        "sharingd",
+        "remoted",
+        "wifi",
+        "bluetooth",
+        "mdns",
+        "airplay",
+        "cupsd",
+        "wechat",
+        "doubao",
+        "feishu",
+        "dingtalk",
+        "slack",
+        "telegram",
+        "clash",
+        "v2ray",
+        "surge",
+        "sing-box",
+        "antigrav",
+        "agy",
+        "language_",
+        "sandbox",
+        "editor_",
+        "electron",
     ];
 
     for excl in EXCLUSIONS {
@@ -1396,11 +1539,9 @@ fn is_dev_port(port: u16, proc_name: &str) -> bool {
     }
 
     const DEV_SERVERS: &[&str] = &[
-        "node", "vite", "next", "nuxt", "astro", "deno", "bun",
-        "python", "uvicorn", "gunicorn", "flask", "django",
-        "cargo", "rust", "go", "ruby", "rails", "puma", "php",
-        "caddy", "nginx", "docker", "postgres", "mysqld", "redis",
-        "java",
+        "node", "vite", "next", "nuxt", "astro", "deno", "bun", "python", "uvicorn", "gunicorn",
+        "flask", "django", "cargo", "rust", "go", "ruby", "rails", "puma", "php", "caddy", "nginx",
+        "docker", "postgres", "mysqld", "redis", "java",
     ];
 
     DEV_SERVERS.iter().any(|s| lower.contains(s))
@@ -1424,7 +1565,9 @@ pub fn detect_listening_ports() -> Vec<ListeningPort> {
                         let addr = parts[8];
                         if let Some(port_str) = addr.split(':').last() {
                             if let Ok(p) = port_str.parse::<u16>() {
-                                if is_dev_port(p, &proc_name) && !ports.iter().any(|item: &ListeningPort| item.port == p) {
+                                if is_dev_port(p, &proc_name)
+                                    && !ports.iter().any(|item: &ListeningPort| item.port == p)
+                                {
                                     ports.push(ListeningPort {
                                         port: p,
                                         process: proc_name,
@@ -1445,19 +1588,39 @@ pub fn generate_ai_project_context(project: &Project) -> Result<AiProjectContext
     let mut md = String::new();
     md.push_str(&format!("# 橦云 AI 上下文报告 · {}\n\n", project.name));
     md.push_str(&format!("- **物理路径**: `{}`\n", project.path));
-    md.push_str(&format!("- **技术栈运行时**: {}\n", if inspection.tech_stack.is_empty() { "未检测到特定运行时".into() } else { inspection.tech_stack.join(", ") }));
+    md.push_str(&format!(
+        "- **技术栈运行时**: {}\n",
+        if inspection.tech_stack.is_empty() {
+            "未检测到特定运行时".into()
+        } else {
+            inspection.tech_stack.join(", ")
+        }
+    ));
 
     if inspection.git.is_repository {
-        md.push_str(&format!("- **Git 分支**: `{}` (HEAD: `{}`)\n", inspection.git.branch.as_deref().unwrap_or("未知"), inspection.git.head.as_deref().unwrap_or("空")));
-        md.push_str(&format!("- **工作区未提交项**: {} 项\n", inspection.git.changed_files));
+        md.push_str(&format!(
+            "- **Git 分支**: `{}` (HEAD: `{}`)\n",
+            inspection.git.branch.as_deref().unwrap_or("未知"),
+            inspection.git.head.as_deref().unwrap_or("空")
+        ));
+        md.push_str(&format!(
+            "- **工作区未提交项**: {} 项\n",
+            inspection.git.changed_files
+        ));
     } else {
         md.push_str("- **Git 状态**: 非 Git 仓库\n");
     }
 
     let ports = detect_listening_ports();
     if !ports.is_empty() {
-        let port_strings: Vec<String> = ports.iter().map(|p| format!("http://localhost:{} ({})", p.port, p.process)).collect();
-        md.push_str(&format!("- **本机活跃服务监听**: {}\n", port_strings.join(", ")));
+        let port_strings: Vec<String> = ports
+            .iter()
+            .map(|p| format!("http://localhost:{} ({})", p.port, p.process))
+            .collect();
+        md.push_str(&format!(
+            "- **本机活跃服务监听**: {}\n",
+            port_strings.join(", ")
+        ));
     }
 
     if !inspection.scripts.is_empty() {
@@ -1538,7 +1701,9 @@ pub fn open_project_file(project: &Project, relative_path: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         let output = run_bounded(
-            Command::new("/usr/bin/open").arg("--").arg(_full.to_string_lossy().as_ref()),
+            Command::new("/usr/bin/open")
+                .arg("--")
+                .arg(_full.to_string_lossy().as_ref()),
             Duration::from_secs(5),
         )?;
         if !output.success {
@@ -1581,13 +1746,27 @@ pub fn open_url(url: &str) -> Result<()> {
 // any directory or opening the target. This also prevents parent-swap traversal races.
 #[cfg(unix)]
 fn open_project_output(project: &Project, relative_path: &str, append: bool) -> Result<fs::File> {
-    use std::{ffi::CString, os::{fd::{AsRawFd, FromRawFd, OwnedFd}, unix::fs::MetadataExt}, path::Component};
+    use std::{
+        ffi::CString,
+        os::{
+            fd::{AsRawFd, FromRawFd, OwnedFd},
+            unix::fs::MetadataExt,
+        },
+        path::Component,
+    };
     let relative = Path::new(relative_path);
-    let parts = relative.components().map(|component| match component {
-        Component::Normal(name) => CString::new(name.as_encoded_bytes()).map_err(|_| "路径包含无效字符".to_string()),
-        _ => Err("必须使用项目内的相对路径".into()),
-    }).collect::<Result<Vec<_>>>()?;
-    if parts.is_empty() { return Err("相对路径不能为空".into()); }
+    let parts = relative
+        .components()
+        .map(|component| match component {
+            Component::Normal(name) => {
+                CString::new(name.as_encoded_bytes()).map_err(|_| "路径包含无效字符".to_string())
+            }
+            _ => Err("必须使用项目内的相对路径".into()),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if parts.is_empty() {
+        return Err("相对路径不能为空".into());
+    }
     let root = fs::File::open(&project.path).map_err(|e| format!("无法打开项目目录：{e}"))?;
     let mut directory: OwnedFd = root.into();
     for part in &parts[..parts.len() - 1] {
@@ -1596,31 +1775,68 @@ fn open_project_output(project: &Project, relative_path: &str, append: bool) -> 
         if fd < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT) {
             let created = unsafe { libc::mkdirat(directory.as_raw_fd(), part.as_ptr(), 0o700) };
             if created < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
-                return Err(format!("无法创建项目目录：{}", std::io::Error::last_os_error()));
+                return Err(format!(
+                    "无法创建项目目录：{}",
+                    std::io::Error::last_os_error()
+                ));
             }
             fd = unsafe { libc::openat(directory.as_raw_fd(), part.as_ptr(), flags) };
         }
-        if fd < 0 { return Err(format!("拒绝不可访问或链接目录：{}", std::io::Error::last_os_error())); }
+        if fd < 0 {
+            return Err(format!(
+                "拒绝不可访问或链接目录：{}",
+                std::io::Error::last_os_error()
+            ));
+        }
         directory = unsafe { OwnedFd::from_raw_fd(fd) };
     }
-    let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK | if append { libc::O_APPEND } else { 0 };
-    let fd = unsafe { libc::openat(directory.as_raw_fd(), parts.last().unwrap().as_ptr(), flags, 0o600) };
-    if fd < 0 { return Err(format!("无法安全打开项目文件：{}", std::io::Error::last_os_error())); }
+    let flags = libc::O_WRONLY
+        | libc::O_CREAT
+        | libc::O_NOFOLLOW
+        | libc::O_CLOEXEC
+        | libc::O_NONBLOCK
+        | if append { libc::O_APPEND } else { 0 };
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            parts.last().unwrap().as_ptr(),
+            flags,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(format!(
+            "无法安全打开项目文件：{}",
+            std::io::Error::last_os_error()
+        ));
+    }
     let file = unsafe { fs::File::from_raw_fd(fd) };
     let metadata = file.metadata().map_err(|e| e.to_string())?;
-    if !metadata.is_file() || metadata.nlink() != 1 { return Err("拒绝写入非普通文件或硬链接".into()); }
-    if !append { file.set_len(0).map_err(|e| e.to_string())?; }
+    if !metadata.is_file() || metadata.nlink() != 1 {
+        return Err("拒绝写入非普通文件或硬链接".into());
+    }
+    if !append {
+        file.set_len(0).map_err(|e| e.to_string())?;
+    }
     Ok(file)
 }
 #[cfg(not(unix))]
-fn open_project_output(_project: &Project, _relative_path: &str, _append: bool) -> Result<fs::File> {
+fn open_project_output(
+    _project: &Project,
+    _relative_path: &str,
+    _append: bool,
+) -> Result<fs::File> {
     Err("当前平台尚未实现安全项目文件写入".into())
 }
 pub fn write_project_file(project: &Project, relative_path: &str, content: &str) -> Result<()> {
-    open_project_output(project, relative_path, false)?.write_all(content.as_bytes()).map_err(|e| format!("写入文件失败：{e}"))
+    open_project_output(project, relative_path, false)?
+        .write_all(content.as_bytes())
+        .map_err(|e| format!("写入文件失败：{e}"))
 }
 pub fn append_project_file(project: &Project, relative_path: &str, content: &str) -> Result<()> {
-    open_project_output(project, relative_path, true)?.write_all(content.as_bytes()).map_err(|e| format!("追加写入失败：{e}"))
+    open_project_output(project, relative_path, true)?
+        .write_all(content.as_bytes())
+        .map_err(|e| format!("追加写入失败：{e}"))
 }
 
 #[cfg(test)]
@@ -1641,10 +1857,19 @@ mod tests {
         let db = store(dir.path());
         let first = db.add(project.to_str().unwrap()).unwrap();
         let id = first.projects[0].id.clone();
-        assert_eq!(db.add(project.join(".").to_str().unwrap()).unwrap().projects.len(), 1);
+        assert_eq!(
+            db.add(project.join(".").to_str().unwrap())
+                .unwrap()
+                .projects
+                .len(),
+            1
+        );
         db.add(other.to_str().unwrap()).unwrap();
         db.select(&id).unwrap();
-        assert_eq!(store(dir.path()).load().unwrap().active_project_id, Some(id.clone()));
+        assert_eq!(
+            store(dir.path()).load().unwrap().active_project_id,
+            Some(id.clone())
+        );
         let remaining = db.remove(&id).unwrap();
         assert_eq!(remaining.projects.len(), 1);
         assert!(project.exists());
@@ -1674,46 +1899,95 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = store(dir.path());
         fs::create_dir_all(db.path.parent().unwrap()).unwrap();
-        fs::write(&db.path, r#"{"version":1,"projects":[],"activeProjectId":null}"#).unwrap();
+        fs::write(
+            &db.path,
+            r#"{"version":1,"projects":[],"activeProjectId":null}"#,
+        )
+        .unwrap();
         assert!(db.load().unwrap().projects.is_empty());
 
         let web = dir.path().join("shop/web");
         fs::create_dir_all(&web).unwrap();
-        fs::write(web.join("package.json"), r#"{"devDependencies":{"vite":"^5"},"scripts":{"dev":"vite"}}"#).unwrap();
+        fs::write(
+            web.join("package.json"),
+            r#"{"devDependencies":{"vite":"^5"},"scripts":{"dev":"vite"}}"#,
+        )
+        .unwrap();
         fs::write(web.join("KEEP"), "sentinel").unwrap();
         let manual = dir.path().join("manual");
         fs::create_dir(&manual).unwrap();
         db.add(manual.to_str().unwrap()).unwrap();
 
-        let report = scan_dev_directory(dir.path(), 3, &db.load().unwrap().projects.iter().map(|project| ExistingProject {
-            id: project.id.clone(),
-            path: project.path.clone(),
-            has_dev: project.dev.is_some(),
-        }).collect::<Vec<_>>()).unwrap();
-        let candidate = report.candidates.iter().find(|item| item.kind == "vite").unwrap();
+        let report = scan_dev_directory(
+            dir.path(),
+            3,
+            &db.load()
+                .unwrap()
+                .projects
+                .iter()
+                .map(|project| ExistingProject {
+                    id: project.id.clone(),
+                    path: project.path.clone(),
+                    has_dev: project.dev.is_some(),
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let candidate = report
+            .candidates
+            .iter()
+            .find(|item| item.kind == "vite")
+            .unwrap();
         assert!(!candidate.already_registered);
-        let imported = db.import_dev_candidates(std::slice::from_ref(candidate)).unwrap();
+        let imported = db
+            .import_dev_candidates(std::slice::from_ref(candidate))
+            .unwrap();
         assert_eq!(imported.added, 1);
         assert!(web.join("KEEP").is_file());
-        let again = db.import_dev_candidates(std::slice::from_ref(candidate)).unwrap();
+        let again = db
+            .import_dev_candidates(std::slice::from_ref(candidate))
+            .unwrap();
         assert_eq!(again.added, 0);
         assert_eq!(again.unchanged, 1);
         assert_eq!(db.load().unwrap().projects.len(), 2);
 
-        let bare = report.candidates.iter().find(|item| item.path == fs::canonicalize(&manual).unwrap().to_string_lossy()).cloned();
+        let bare = report
+            .candidates
+            .iter()
+            .find(|item| item.path == fs::canonicalize(&manual).unwrap().to_string_lossy())
+            .cloned();
         // The manual directory has no manifest, so it is not a candidate. Attach via a synthetic one.
         let _ = bare;
         let mut attached = candidate.clone();
-        attached.path = fs::canonicalize(&manual).unwrap().to_string_lossy().into_owned();
+        attached.path = fs::canonicalize(&manual)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         attached.name = "manual".into();
         attached.command = "npm run dev".into();
         // The stored manual project has no dev profile, so import fills only that field.
-        let filled = db.import_dev_candidates(std::slice::from_ref(&attached)).unwrap();
+        let filled = db
+            .import_dev_candidates(std::slice::from_ref(&attached))
+            .unwrap();
         assert_eq!(filled.attached, 1);
         let loaded = db.load().unwrap();
-        let manual_project = loaded.projects.iter().find(|project| project.name == "manual").unwrap();
+        let manual_project = loaded
+            .projects
+            .iter()
+            .find(|project| project.name == "manual")
+            .unwrap();
         assert_eq!(manual_project.dev.as_ref().unwrap().command, "npm run dev");
-        let removed = db.remove(&imported.workspace.projects.iter().find(|project| project.path.ends_with("/web") || project.name == "web").unwrap().id).unwrap();
+        let removed = db
+            .remove(
+                &imported
+                    .workspace
+                    .projects
+                    .iter()
+                    .find(|project| project.path.ends_with("/web") || project.name == "web")
+                    .unwrap()
+                    .id,
+            )
+            .unwrap();
         assert!(web.join("KEEP").is_file());
         assert_eq!(removed.projects.len(), 1);
     }
@@ -1727,7 +2001,12 @@ mod tests {
             prev
         });
         assert!(!inspect_git(dir.path()).is_repository);
-        assert!(Command::new("git").args(["init", "-q"]).arg(dir.path()).status().unwrap().success());
+        assert!(Command::new("git")
+            .args(["init", "-q"])
+            .arg(dir.path())
+            .status()
+            .unwrap()
+            .success());
         let empty = inspect_git(dir.path());
         assert!(empty.is_repository);
         assert!(empty.branch.is_some());
@@ -1736,22 +2015,24 @@ mod tests {
         fs::write(dir.path().join("hello.txt"), "hello").unwrap();
         assert_eq!(inspect_git(dir.path()).changed_files, 1);
         assert!(git(dir.path(), &["add", "hello.txt"]).unwrap().success);
-        assert!(git(
-            dir.path(),
-            &[
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@example.invalid",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "-qm",
-                "test"
-            ]
-        )
-        .unwrap()
-        .success);
+        assert!(
+            git(
+                dir.path(),
+                &[
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "-qm",
+                    "test"
+                ]
+            )
+            .unwrap()
+            .success
+        );
         let committed = inspect_git(dir.path());
         assert!(committed.head.is_some());
         assert_eq!(committed.changed_files, 0);
@@ -1793,7 +2074,10 @@ mod tests {
     #[test]
     fn command_timeout_is_bounded() {
         let start = Instant::now();
-        let result = run_bounded(Command::new("/bin/sleep").arg("2"), Duration::from_millis(40));
+        let result = run_bounded(
+            Command::new("/bin/sleep").arg("2"),
+            Duration::from_millis(40),
+        );
         assert!(result.unwrap_err().contains("超时"));
         assert!(start.elapsed() < Duration::from_secs(1));
     }
@@ -1811,14 +2095,20 @@ mod tests {
         };
 
         // Write file inside nested directory
-        write_project_file(&project, ".tongyun/agent-session.json", r#"{"agent":"agy"}"#).unwrap();
+        write_project_file(
+            &project,
+            ".tongyun/agent-session.json",
+            r#"{"agent":"agy"}"#,
+        )
+        .unwrap();
         let content = read_project_file_content(&project, ".tongyun/agent-session.json").unwrap();
         assert_eq!(content, r#"{"agent":"agy"}"#);
 
         // Append line
         append_project_file(&project, ".tongyun/agent-instructions.jsonl", "line 1\n").unwrap();
         append_project_file(&project, ".tongyun/agent-instructions.jsonl", "line 2\n").unwrap();
-        let appended = read_project_file_content(&project, ".tongyun/agent-instructions.jsonl").unwrap();
+        let appended =
+            read_project_file_content(&project, ".tongyun/agent-instructions.jsonl").unwrap();
         assert_eq!(appended, "line 1\nline 2\n");
 
         // Reject directory traversal attempts

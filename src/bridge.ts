@@ -53,6 +53,9 @@ export const importDevCandidates = (candidates: DevCandidate[]) => native<DevImp
 export const startDevGroup = (group: string) => native<ManagedService[]>('start_dev_group', { group });
 export const stopDevGroup = (group: string) => native<ManagedService[]>('stop_dev_group', { group });
 export const devServiceLogTail = (id: string, serviceId: string, lines?: number) => native<string>('dev_service_log_tail', { id, serviceId, lines: lines ?? null });
+export const updateProjectDev = (id: string, dev: import('./contracts').DevProfile | null) => native<Workspace>('update_project_dev', { id, dev });
+export const updateProjectAutoInstall = (id: string, autoInstall: boolean) => native<Workspace>('update_project_auto_install', { id, autoInstall });
+export const installProjectDependencies = (id: string) => native<ManagedService>('install_project_dependencies', { id });
 export function getInitialAgentSession(projectId: string | null = null): AgentSessionState {
   return { projectId, connectionStatus: 'not_connected', agentName: null, model: null, mode: null, activeGoal: null, plan: null, actions: [], tokensConsumed: null, filesTouched: null, lastHeartbeat: null };
 }

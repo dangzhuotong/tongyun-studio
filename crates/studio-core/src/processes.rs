@@ -1,9 +1,9 @@
 //! App-owned, non-detached command processes. Dropping the manager stops its process groups.
 //! Service records survive tab/project navigation, but are intentionally not restored after App exit.
-use crate::toolchain;
 use crate::dev_runtime::{
     self, derive_state, LifeState, StateInput, LOG_TAIL_LINES, READY_TIMEOUT_SECS,
 };
+use crate::toolchain;
 use crate::{Project, Result};
 use serde::Serialize;
 #[allow(unused_imports)]
@@ -59,6 +59,9 @@ struct Binding {
     ready_timeout_secs: u64,
     active_profile: Option<String>,
     env: Vec<(String, String)>,
+    auto_install: bool,
+    pull_deps_first: bool,
+    deps_installed: bool,
 }
 
 impl Binding {
@@ -70,14 +73,20 @@ impl Binding {
             ready_timeout_secs: 0,
             active_profile: None,
             env: Vec::new(),
+            auto_install: true,
+            pull_deps_first: false,
+            deps_installed: false,
         }
     }
 
     fn for_project(project: &Project, command: &str) -> Self {
-        let Some(dev) = project.dev.as_ref() else { return Self::none() };
-        let matching_profile = dev.profiles.iter().find(|(_, p)| {
-            p.command.as_deref().map(str::trim) == Some(command.trim())
-        });
+        let Some(dev) = project.dev.as_ref() else {
+            return Self::none();
+        };
+        let matching_profile = dev
+            .profiles
+            .iter()
+            .find(|(_, p)| p.command.as_deref().map(str::trim) == Some(command.trim()));
         if dev.command.trim() != command.trim() && matching_profile.is_none() {
             return Self::none();
         }
@@ -89,7 +98,14 @@ impl Binding {
             .and_then(|(_, p)| p.health_url.clone())
             .or_else(|| dev.health_url.clone())
             .filter(|url| !url.trim().is_empty());
-        let ready_timeout_secs = dev.ready_timeout_secs.unwrap_or(if port.is_some() { READY_TIMEOUT_SECS } else { 0 });
+        let ready_timeout_secs = dev.ready_timeout_secs.unwrap_or(if port.is_some() {
+            READY_TIMEOUT_SECS
+        } else {
+            0
+        });
+        let auto_install = dev.auto_install.unwrap_or(true);
+        let pull_deps_first = dev.pull_deps_first.unwrap_or(false);
+        let deps_installed = dev.deps_installed.unwrap_or(false);
         Self {
             expects_port: port.is_some(),
             port,
@@ -97,12 +113,18 @@ impl Binding {
             ready_timeout_secs,
             active_profile: matching_profile.map(|(name, _)| name.clone()),
             env: Vec::new(),
+            auto_install,
+            pull_deps_first,
+            deps_installed,
         }
     }
 }
 
 #[derive(Default)]
-struct Output { bytes: Vec<u8>, truncated: bool }
+struct Output {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
 impl Output {
     #[allow(dead_code)]
     fn append(&mut self, bytes: &[u8]) {
@@ -130,13 +152,122 @@ struct Entry {
     user_stopped: bool,
     port_cache: Option<(Instant, bool)>,
     probe_cache: Option<(Instant, bool)>,
+    installing: bool,
+    install_command: Option<String>,
+    #[allow(dead_code)]
+    service_command: String,
 }
 impl Entry {
     fn refresh(&mut self) -> Result<()> {
-        if self.snapshot.status != "running" { return Ok(()); }
+        if self.snapshot.status != "running" {
+            return Ok(());
+        }
+        if self.installing {
+            if let Some(child) = self.child.as_mut() {
+                if let Some(status) = child
+                    .try_wait()
+                    .map_err(|e| format!("读取安装依赖进程失败：{e}"))?
+                {
+                    self.installing = false;
+                    self.snapshot.exit_code = status.code();
+                    if self.user_stopped {
+                        self.snapshot.status = "stopped".into();
+                        self.snapshot.lifecycle = LifeState::Stopped.as_str().into();
+                        self.reaped = true;
+                        self.child = None;
+                        return Ok(());
+                    }
+                    if !status.success() {
+                        let cmd_str = self.install_command.as_deref().unwrap_or("依赖安装");
+                        let err_msg = format!(
+                            "依赖安装失败：{cmd_str} 退出码 {:?}",
+                            status.code().unwrap_or(-1)
+                        );
+                        if let Ok(mut out) = self.stderr.lock() {
+                            out.append(format!("[tongyun-studio] {err_msg}\n").as_bytes());
+                        }
+                        self.snapshot.status = "failed".into();
+                        self.snapshot.lifecycle = LifeState::Failed.as_str().into();
+                        self.snapshot.failure = Some(err_msg);
+                        self.reaped = true;
+                        self.child = None;
+                        return Ok(());
+                    }
+                    let inst_cmd = self.install_command.as_deref().unwrap_or("依赖安装");
+                    if self.install_command.as_deref() == Some(&self.service_command) {
+                        if let Ok(mut out) = self.stdout.lock() {
+                            out.append(format!("[tongyun-studio] {inst_cmd} 完成。\n").as_bytes());
+                        }
+                        self.snapshot.status = "exited".into();
+                        self.snapshot.lifecycle = LifeState::Exited.as_str().into();
+                        self.snapshot.failure = None;
+                        self.reaped = true;
+                        self.child = None;
+                        return Ok(());
+                    }
+                    if let Ok(mut out) = self.stdout.lock() {
+                        out.append(
+                            format!("[tongyun-studio] {inst_cmd} 完成，正在启动服务...\n")
+                                .as_bytes(),
+                        );
+                    }
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::CommandExt;
+                        let mut cmd = Command::new("/bin/sh");
+                        cmd.args(["-c", &self.service_command])
+                            .current_dir(&self.directory)
+                            .stdin(Stdio::null())
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::piped())
+                            .process_group(0);
+                        for (k, v) in &self.binding_env {
+                            cmd.env(k, v);
+                        }
+                        match cmd.spawn() {
+                            Ok(mut s_child) => {
+                                self.pgid = s_child.id();
+                                read_output(
+                                    s_child.stdout.take().expect("piped stdout"),
+                                    self.stdout.clone(),
+                                );
+                                read_output(
+                                    s_child.stderr.take().expect("piped stderr"),
+                                    self.stderr.clone(),
+                                );
+                                self.child = Some(s_child);
+                                self.started = Instant::now();
+                                self.snapshot.pid = Some(self.pgid);
+                                self.snapshot.lifecycle = LifeState::Starting.as_str().into();
+                            }
+                            Err(e) => {
+                                let err_msg = format!("启动服务失败：{e}");
+                                self.snapshot.status = "failed".into();
+                                self.snapshot.lifecycle = LifeState::Failed.as_str().into();
+                                self.snapshot.failure = Some(err_msg);
+                                self.child = None;
+                                self.reaped = true;
+                            }
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        self.snapshot.status = "failed".into();
+                        self.snapshot.lifecycle = LifeState::Failed.as_str().into();
+                        self.snapshot.failure = Some("托管服务目前仅支持 macOS / Unix。".into());
+                        self.child = None;
+                        self.reaped = true;
+                    }
+                }
+            }
+            return Ok(());
+        }
         if let Some(child) = self.child.as_mut() {
             if !self.reaped {
-                if let Some(status) = child.try_wait().map_err(|e| format!("读取服务进程失败：{e}"))? {
+                if let Some(status) = child
+                    .try_wait()
+                    .map_err(|e| format!("读取服务进程失败：{e}"))?
+                {
                     self.reaped = true;
                     self.snapshot.exit_code = status.code();
                 }
@@ -149,17 +280,25 @@ impl Entry {
                     "failed"
                 } else {
                     "exited"
-                }.into();
+                }
+                .into();
             }
         }
         Ok(())
     }
     fn snapshot(&mut self) -> ManagedService {
         let mut snapshot = self.snapshot.clone();
-        if let Ok(output) = self.stdout.lock() { snapshot.stdout = String::from_utf8_lossy(&output.bytes).into_owned(); snapshot.output_truncated |= output.truncated; }
-        if let Ok(output) = self.stderr.lock() { snapshot.stderr = String::from_utf8_lossy(&output.bytes).into_owned(); snapshot.output_truncated |= output.truncated; }
+        if let Ok(output) = self.stdout.lock() {
+            snapshot.stdout = String::from_utf8_lossy(&output.bytes).into_owned();
+            snapshot.output_truncated |= output.truncated;
+        }
+        if let Ok(output) = self.stderr.lock() {
+            snapshot.stderr = String::from_utf8_lossy(&output.bytes).into_owned();
+            snapshot.output_truncated |= output.truncated;
+        }
         self.apply_lifecycle(&mut snapshot);
-        snapshot.log_tail = dev_runtime::tail_lines(&snapshot.stdout, &snapshot.stderr, LOG_TAIL_LINES);
+        snapshot.log_tail =
+            dev_runtime::tail_lines(&snapshot.stdout, &snapshot.stderr, LOG_TAIL_LINES);
         snapshot
     }
     fn apply_lifecycle(&mut self, snapshot: &mut ManagedService) {
@@ -168,13 +307,25 @@ impl Entry {
         }
         snapshot.port = self.port;
         snapshot.ready_timeout_secs = self.ready_timeout_secs;
+        if self.installing {
+            snapshot.lifecycle = LifeState::Installing.as_str().into();
+            snapshot.failure = None;
+            snapshot.port_open = false;
+            snapshot.reachable = false;
+            snapshot.elapsed_secs = Some(self.started.elapsed().as_secs());
+            return;
+        }
         let (state, failure, port_open) = if self.user_stopped {
             (LifeState::Stopped, None, false)
         } else if !self.expects_port {
             match snapshot.status.as_str() {
                 "running" => (LifeState::Starting, None, false),
                 "exited" => (LifeState::Exited, None, false),
-                "failed" => (LifeState::Failed, Some(exit_failure(snapshot.exit_code)), false),
+                "failed" => (
+                    LifeState::Failed,
+                    Some(exit_failure(snapshot.exit_code)),
+                    false,
+                ),
                 _ => (LifeState::Stopped, None, false),
             }
         } else {
@@ -193,23 +344,24 @@ impl Entry {
                 };
                 (LifeState::Failed, Some(failure), false)
             } else {
-            let (has_probe, probe_ok) = if port_open {
-                self.observe_probe()
-            } else {
-                (self.health_url.is_some(), false)
-            };
-            let (state, failure) = derive_state(StateInput {
-                process_alive: true,
-                port_open,
-                port_conflict: false,
-                has_probe,
-                probe_ok,
-                started_at: Some(0),
-                now: self.started.elapsed().as_secs(),
-                timeout_secs: self.ready_timeout_secs,
-                start_error: None,
-            });
-            (state, failure, port_open)
+                let (has_probe, probe_ok) = if port_open {
+                    self.observe_probe()
+                } else {
+                    (self.health_url.is_some(), false)
+                };
+                let (state, failure) = derive_state(StateInput {
+                    process_alive: true,
+                    port_open,
+                    port_conflict: false,
+                    has_probe,
+                    probe_ok,
+                    started_at: Some(0),
+                    now: self.started.elapsed().as_secs(),
+                    timeout_secs: self.ready_timeout_secs,
+                    start_error: None,
+                    installing: false,
+                });
+                (state, failure, port_open)
             }
         };
         snapshot.lifecycle = state.as_str().into();
@@ -233,7 +385,9 @@ impl Entry {
         open
     }
     fn observe_probe(&mut self) -> (bool, bool) {
-        let Some(url) = self.health_url.clone() else { return (false, false) };
+        let Some(url) = self.health_url.clone() else {
+            return (false, false);
+        };
         if let Some((at, ok)) = self.probe_cache {
             if at.elapsed() < Duration::from_millis(500) {
                 return (true, ok);
@@ -245,12 +399,16 @@ impl Entry {
     }
     fn stop(&mut self) -> Result<()> {
         self.refresh()?;
-        if self.snapshot.status != "running" { return Ok(()); }
+        if self.snapshot.status != "running" {
+            return Ok(());
+        }
         if self.pgid > 0 {
             signal_group(self.pgid, terminate_signal())?;
             if !self.wait_stopped(Duration::from_millis(1000))? {
                 signal_group(self.pgid, kill_signal())?;
-                if !self.wait_stopped(Duration::from_secs(2))? { return Err("服务进程组仍存在，未确认停止；请重试。".into()); }
+                if !self.wait_stopped(Duration::from_secs(2))? {
+                    return Err("服务进程组仍存在，未确认停止；请重试。".into());
+                }
             }
         }
         self.user_stopped = true;
@@ -262,8 +420,12 @@ impl Entry {
         let start = Instant::now();
         loop {
             self.refresh()?;
-            if self.snapshot.status != "running" { return Ok(true); }
-            if start.elapsed() >= budget { return Ok(false); }
+            if self.snapshot.status != "running" {
+                return Ok(true);
+            }
+            if start.elapsed() >= budget {
+                return Ok(false);
+            }
             thread::sleep(Duration::from_millis(20));
         }
     }
@@ -275,6 +437,9 @@ impl Entry {
             ready_timeout_secs: self.ready_timeout_secs,
             active_profile: self.snapshot.active_profile.clone(),
             env: self.binding_env.clone(),
+            auto_install: true,
+            pull_deps_first: false,
+            deps_installed: false,
         }
     }
 }
@@ -285,11 +450,18 @@ fn exit_failure(code: Option<i32>) -> String {
     }
 }
 #[derive(Default)]
-struct Registry { entries: BTreeMap<String, Entry>, shutting_down: bool }
+struct Registry {
+    entries: BTreeMap<String, Entry>,
+    shutting_down: bool,
+}
 #[derive(Default)]
-pub struct ServiceManager { registry: Mutex<Registry> }
+pub struct ServiceManager {
+    registry: Mutex<Registry>,
+}
 impl ServiceManager {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
     pub fn start(&self, project: &Project, command: &str) -> Result<ManagedService> {
         self.start_with_profile(project, command, None)
     }
@@ -302,10 +474,9 @@ impl ServiceManager {
     ) -> Result<ManagedService> {
         let mut command = command.trim();
         let dev = project.dev.as_ref();
-        let effective_profile_name = profile_name
-            .or_else(|| dev.and_then(|d| d.default_profile.as_deref()));
-        let preset = effective_profile_name
-            .and_then(|name| dev.and_then(|d| d.profiles.get(name)));
+        let effective_profile_name =
+            profile_name.or_else(|| dev.and_then(|d| d.default_profile.as_deref()));
+        let preset = effective_profile_name.and_then(|name| dev.and_then(|d| d.profiles.get(name)));
 
         // If command is empty or matches dev.command, apply profile command override if present
         if let Some(p) = preset {
@@ -392,11 +563,15 @@ impl ServiceManager {
         binding.env = env_vars;
 
         let mut registry = self.registry.lock().map_err(|_| "服务记录锁不可用")?;
-        if registry.shutting_down { return Err("工作台正在退出，不能启动服务。".into()); }
+        if registry.shutting_down {
+            return Err("工作台正在退出，不能启动服务。".into());
+        }
         for entry in registry.entries.values_mut() {
             if entry.snapshot.project_id == project.id && entry.snapshot.command == command {
                 entry.refresh()?;
-                if entry.snapshot.status == "running" { return Ok(entry.snapshot()); }
+                if entry.snapshot.status == "running" {
+                    return Ok(entry.snapshot());
+                }
             }
         }
         if let Some(port) = binding.port.filter(|_| binding.expects_port) {
@@ -404,11 +579,46 @@ impl ServiceManager {
                 return Err(dev_runtime::port_occupied_error(port));
             }
         }
+        // Missing dependency check and auto-installation
+        let root = Path::new(&project.path);
+        let is_node_missing = dev_runtime::node_deps_missing(root);
+        let is_java_pull = (root.join("pom.xml").is_file()
+            || root.join("build.gradle").is_file()
+            || root.join("build.gradle.kts").is_file())
+            && binding.pull_deps_first
+            && !binding.deps_installed;
+
+        let install_command = if is_node_missing {
+            if !binding.auto_install {
+                return Err(dev_runtime::DEPS_MISSING_MSG.into());
+            }
+            dev_runtime::detect_install_command(root, dev)
+        } else if is_java_pull && binding.auto_install {
+            dev_runtime::detect_install_command(root, dev)
+        } else {
+            None
+        };
+
         // Reuse the same service identity when the same project command is run again.
-        let existing = registry.entries.values().find(|entry| entry.snapshot.project_id == project.id && entry.snapshot.command == command).map(|entry| entry.snapshot.id.clone());
-        if existing.is_none() && registry.entries.len() >= SERVICE_LIMIT { return Err("本次工作台已记录 64 个命令。请停止服务并重启工作台后继续。".into()); }
+        let existing = registry
+            .entries
+            .values()
+            .find(|entry| {
+                entry.snapshot.project_id == project.id && entry.snapshot.command == command
+            })
+            .map(|entry| entry.snapshot.id.clone());
+        if existing.is_none() && registry.entries.len() >= SERVICE_LIMIT {
+            return Err("本次工作台已记录 64 个命令。请停止服务并重启工作台后继续。".into());
+        }
         let id = existing.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let entry = spawn_entry(id.clone(), &project.id, &project.path, command, binding)?;
+        let entry = spawn_entry(
+            id.clone(),
+            &project.id,
+            &project.path,
+            command,
+            binding,
+            install_command,
+        )?;
         let mut entry = entry;
         let snapshot = entry.snapshot();
         registry.entries.insert(id, entry);
@@ -420,7 +630,9 @@ impl ServiceManager {
         for entry in registry.entries.values_mut() {
             // Also reap inactive projects without discarding their records.
             entry.refresh()?;
-            if entry.snapshot.project_id == project_id { services.push(entry.snapshot()); }
+            if entry.snapshot.project_id == project_id {
+                services.push(entry.snapshot());
+            }
         }
         services.sort_by(|a, b| b.started_at.cmp(&a.started_at));
         Ok(services)
@@ -428,24 +640,45 @@ impl ServiceManager {
     pub fn log_tail(&self, project_id: &str, service_id: &str, lines: usize) -> Result<String> {
         let lines = lines.clamp(1, 500);
         let mut registry = self.registry.lock().map_err(|_| "服务记录锁不可用")?;
-        let entry = registry.entries.get_mut(service_id).ok_or("服务记录不存在")?;
-        if entry.snapshot.project_id != project_id { return Err("服务不属于当前项目".into()); }
+        let entry = registry
+            .entries
+            .get_mut(service_id)
+            .ok_or("服务记录不存在")?;
+        if entry.snapshot.project_id != project_id {
+            return Err("服务不属于当前项目".into());
+        }
         entry.refresh()?;
         let snapshot = entry.snapshot();
-        Ok(dev_runtime::tail_lines(&snapshot.stdout, &snapshot.stderr, lines))
+        Ok(dev_runtime::tail_lines(
+            &snapshot.stdout,
+            &snapshot.stderr,
+            lines,
+        ))
     }
     pub fn stop(&self, project_id: &str, service_id: &str) -> Result<ManagedService> {
         let mut registry = self.registry.lock().map_err(|_| "服务记录锁不可用")?;
-        let entry = registry.entries.get_mut(service_id).ok_or("服务记录不存在")?;
-        if entry.snapshot.project_id != project_id { return Err("服务不属于当前项目".into()); }
+        let entry = registry
+            .entries
+            .get_mut(service_id)
+            .ok_or("服务记录不存在")?;
+        if entry.snapshot.project_id != project_id {
+            return Err("服务不属于当前项目".into());
+        }
         entry.stop()?;
         Ok(entry.snapshot())
     }
     pub fn restart(&self, project_id: &str, service_id: &str) -> Result<ManagedService> {
         let mut registry = self.registry.lock().map_err(|_| "服务记录锁不可用")?;
-        if registry.shutting_down { return Err("工作台正在退出，不能重启服务。".into()); }
-        let old = registry.entries.get_mut(service_id).ok_or("服务记录不存在")?;
-        if old.snapshot.project_id != project_id { return Err("服务不属于当前项目".into()); }
+        if registry.shutting_down {
+            return Err("工作台正在退出，不能重启服务。".into());
+        }
+        let old = registry
+            .entries
+            .get_mut(service_id)
+            .ok_or("服务记录不存在")?;
+        if old.snapshot.project_id != project_id {
+            return Err("服务不属于当前项目".into());
+        }
         let binding = old.binding();
         let directory = old.directory.clone();
         let command = old.snapshot.command.clone();
@@ -455,21 +688,75 @@ impl ServiceManager {
                 return Err(dev_runtime::port_occupied_error(port));
             }
         }
-        let mut entry = spawn_entry(service_id.to_owned(), project_id, &directory, &command, binding)?;
+        let mut entry = spawn_entry(
+            service_id.to_owned(),
+            project_id,
+            &directory,
+            &command,
+            binding,
+            None,
+        )?;
         let snapshot = entry.snapshot();
         registry.entries.insert(service_id.to_owned(), entry);
         Ok(snapshot)
     }
-    pub fn create_skipped_service(&self, project: &Project, command: &str, reason: &str) -> Result<ManagedService> {
+    pub fn install_deps(&self, project: &Project) -> Result<ManagedService> {
+        let root = Path::new(&project.path);
+        let install_cmd = dev_runtime::detect_install_command(root, project.dev.as_ref())
+            .ok_or_else(|| {
+                "未识别到依赖安装命令（支持 package.json / pom.xml / build.gradle）".to_string()
+            })?;
+        let binding = Binding::for_project(project, &install_cmd);
         let mut registry = self.registry.lock().map_err(|_| "服务记录锁不可用")?;
-        let existing = registry.entries.values()
+        if registry.shutting_down {
+            return Err("工作台正在退出，不能安装依赖。".into());
+        }
+        let existing = registry
+            .entries
+            .values()
+            .find(|entry| {
+                entry.snapshot.project_id == project.id && entry.snapshot.command == install_cmd
+            })
+            .map(|entry| entry.snapshot.id.clone());
+        if existing.is_none() && registry.entries.len() >= SERVICE_LIMIT {
+            return Err("本次工作台已记录 64 个命令。请停止服务并重启工作台后继续。".into());
+        }
+        let id = existing.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let mut entry = spawn_entry(
+            id.clone(),
+            &project.id,
+            &project.path,
+            &install_cmd,
+            binding,
+            Some(install_cmd.clone()),
+        )?;
+        let snapshot = entry.snapshot();
+        registry.entries.insert(id, entry);
+        Ok(snapshot)
+    }
+    pub fn create_skipped_service(
+        &self,
+        project: &Project,
+        command: &str,
+        reason: &str,
+    ) -> Result<ManagedService> {
+        let mut registry = self.registry.lock().map_err(|_| "服务记录锁不可用")?;
+        let existing = registry
+            .entries
+            .values()
             .find(|e| e.snapshot.project_id == project.id && e.snapshot.command == command)
             .map(|e| e.snapshot.id.clone());
         let id = existing.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let dev = project.dev.as_ref();
         let port = dev.and_then(|d| d.port);
         let now = chrono::Utc::now().to_rfc3339();
-        let ready_timeout_secs = dev.and_then(|d| d.ready_timeout_secs).unwrap_or(if port.is_some() { READY_TIMEOUT_SECS } else { 0 });
+        let ready_timeout_secs =
+            dev.and_then(|d| d.ready_timeout_secs)
+                .unwrap_or(if port.is_some() {
+                    READY_TIMEOUT_SECS
+                } else {
+                    0
+                });
         let snapshot = ManagedService {
             id: id.clone(),
             project_id: project.id.clone(),
@@ -508,6 +795,9 @@ impl ServiceManager {
             user_stopped: false,
             port_cache: None,
             probe_cache: None,
+            installing: false,
+            install_command: None,
+            service_command: command.to_string(),
         };
         registry.entries.insert(id, entry);
         Ok(snapshot)
@@ -518,7 +808,10 @@ impl ServiceManager {
         loop {
             {
                 let mut registry = self.registry.lock().map_err(|_| "服务记录锁不可用")?;
-                let entry = registry.entries.get_mut(service_id).ok_or("服务记录不存在")?;
+                let entry = registry
+                    .entries
+                    .get_mut(service_id)
+                    .ok_or("服务记录不存在")?;
                 entry.refresh()?;
                 let snapshot = entry.snapshot();
                 match snapshot.lifecycle.as_str() {
@@ -530,7 +823,8 @@ impl ServiceManager {
                         }
                         if start.elapsed() >= timeout {
                             entry.snapshot.lifecycle = "failed".into();
-                            entry.snapshot.failure = Some(format!("超过 {} 秒仍未就绪", timeout.as_secs()));
+                            entry.snapshot.failure =
+                                Some(format!("超过 {} 秒仍未就绪", timeout.as_secs()));
                             return Ok(entry.snapshot());
                         }
                     }
@@ -544,7 +838,8 @@ impl ServiceManager {
         let matched = group_members(projects, group)?;
         let sorted = sort_projects_by_dependencies(&matched)?;
 
-        let mut failed_blockers: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut failed_blockers: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         let mut started = Vec::new();
 
         for project in sorted {
@@ -555,9 +850,15 @@ impl ServiceManager {
             // Check if any dependency of this project has failed
             let blocked_by = deps.iter().find_map(|dep| {
                 failed_blockers.get(dep).cloned().or_else(|| {
-                    matched.iter().find(|p| p.id == *dep || p.name == *dep).and_then(|p| {
-                        failed_blockers.get(&p.id).cloned().or_else(|| failed_blockers.get(&p.name).cloned())
-                    })
+                    matched
+                        .iter()
+                        .find(|p| p.id == *dep || p.name == *dep)
+                        .and_then(|p| {
+                            failed_blockers
+                                .get(&p.id)
+                                .cloned()
+                                .or_else(|| failed_blockers.get(&p.name).cloned())
+                        })
                 })
             });
 
@@ -598,8 +899,19 @@ impl ServiceManager {
         let sorted = sort_projects_by_dependencies(&matched)?;
         let mut stopped = Vec::new();
         for project in sorted.into_iter().rev() {
-            let command = project.dev.as_ref().expect("filtered").command.trim().to_owned();
-            let ids = self.list(&project.id)?.into_iter().filter(|service| service.command == command && service.status == "running").map(|service| service.id).collect::<Vec<_>>();
+            let command = project
+                .dev
+                .as_ref()
+                .expect("filtered")
+                .command
+                .trim()
+                .to_owned();
+            let ids = self
+                .list(&project.id)?
+                .into_iter()
+                .filter(|service| service.command == command && service.status == "running")
+                .map(|service| service.id)
+                .collect::<Vec<_>>();
             for id in ids {
                 stopped.push(self.stop(&project.id, &id)?);
             }
@@ -611,20 +923,36 @@ impl ServiceManager {
         registry.shutting_down = true;
         let mut errors = vec![];
         for entry in registry.entries.values_mut() {
-            if let Err(error) = entry.stop() { errors.push(format!("{}: {error}", entry.snapshot.id)); }
+            if let Err(error) = entry.stop() {
+                errors.push(format!("{}: {error}", entry.snapshot.id));
+            }
         }
-        if errors.is_empty() { Ok(()) } else { registry.shutting_down = false; Err(errors.join("\n")) }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            registry.shutting_down = false;
+            Err(errors.join("\n"))
+        }
     }
 }
-impl Drop for ServiceManager { fn drop(&mut self) { let _ = self.shutdown(); } }
+impl Drop for ServiceManager {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
+    }
+}
 
 fn group_members<'a>(projects: &'a [Project], group: &str) -> Result<Vec<&'a Project>> {
     if !dev_runtime::valid_group_key(group) {
         return Err("分组标识只能用小写字母、数字、下划线和短横线，最长 40 个字符。".into());
     }
-    let mut matched: Vec<&Project> = projects.iter().filter(|project| {
-        project.dev.as_ref().is_some_and(|dev| dev.group.as_deref() == Some(group) && !dev.command.trim().is_empty())
-    }).collect();
+    let mut matched: Vec<&Project> = projects
+        .iter()
+        .filter(|project| {
+            project.dev.as_ref().is_some_and(|dev| {
+                dev.group.as_deref() == Some(group) && !dev.command.trim().is_empty()
+            })
+        })
+        .collect();
     if matched.is_empty() {
         return Err("这个分组没有可启动的登记命令。".into());
     }
@@ -633,7 +961,11 @@ fn group_members<'a>(projects: &'a [Project], group: &str) -> Result<Vec<&'a Pro
 }
 
 fn project_deps<'a>(project: &'a Project) -> &'a [String] {
-    project.dev.as_ref().map(|d| d.depends_on.as_slice()).unwrap_or(&[])
+    project
+        .dev
+        .as_ref()
+        .map(|d| d.depends_on.as_slice())
+        .unwrap_or(&[])
 }
 
 pub fn sort_projects_by_dependencies<'a>(projects: &[&'a Project]) -> Result<Vec<&'a Project>> {
@@ -714,7 +1046,12 @@ pub fn sort_projects_by_dependencies<'a>(projects: &[&'a Project]) -> Result<Vec
     }
 
     let mut ready: Vec<usize> = (0..n).filter(|&i| in_degrees[i] == 0).collect();
-    ready.sort_by(|&a, &b| projects[a].name.cmp(&projects[b].name).then(projects[a].id.cmp(&projects[b].id)));
+    ready.sort_by(|&a, &b| {
+        projects[a]
+            .name
+            .cmp(&projects[b].name)
+            .then(projects[a].id.cmp(&projects[b].id))
+    });
 
     let mut sorted = Vec::with_capacity(n);
     while !ready.is_empty() {
@@ -725,7 +1062,12 @@ pub fn sort_projects_by_dependencies<'a>(projects: &[&'a Project]) -> Result<Vec
             in_degrees[nxt] -= 1;
             if in_degrees[nxt] == 0 {
                 ready.push(nxt);
-                ready.sort_by(|&a, &b| projects[a].name.cmp(&projects[b].name).then(projects[a].id.cmp(&projects[b].id)));
+                ready.sort_by(|&a, &b| {
+                    projects[a]
+                        .name
+                        .cmp(&projects[b].name)
+                        .then(projects[a].id.cmp(&projects[b].id))
+                });
             }
         }
     }
@@ -745,7 +1087,13 @@ fn read_output(reader: impl Read + Send + 'static, output: Arc<Mutex<Output>>) {
         loop {
             match reader.read(&mut chunk) {
                 Ok(0) => break,
-                Ok(size) => if let Ok(mut output) = output.lock() { output.append(&chunk[..size]); } else { break; },
+                Ok(size) => {
+                    if let Ok(mut output) = output.lock() {
+                        output.append(&chunk[..size]);
+                    } else {
+                        break;
+                    }
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => break,
             }
@@ -753,10 +1101,20 @@ fn read_output(reader: impl Read + Send + 'static, output: Arc<Mutex<Output>>) {
     });
 }
 #[cfg(unix)]
-fn spawn_entry(id: String, project_id: &str, directory: &str, command: &str, binding: Binding) -> Result<Entry> {
+fn spawn_entry(
+    id: String,
+    project_id: &str,
+    directory: &str,
+    command: &str,
+    binding: Binding,
+    install_command: Option<String>,
+) -> Result<Entry> {
     use std::os::unix::process::CommandExt;
-    if !Path::new(directory).is_dir() { return Err("项目目录不存在或不可访问。".into()); }
-    let exec_command = if command.contains("{{tomcat}}") || command.contains("{{catalina_home}}") {
+    if !Path::new(directory).is_dir() {
+        return Err("项目目录不存在或不可访问。".into());
+    }
+    let is_installing = install_command.is_some();
+    let service_exec_command = if command.contains("{{tomcat}}") || command.contains("{{catalina_home}}") {
         if let Some((_, ch)) = binding.env.iter().find(|(k, _)| k == "CATALINA_HOME") {
             command.replace("{{tomcat}}", ch).replace("{{catalina_home}}", ch)
         } else {
@@ -765,9 +1123,13 @@ fn spawn_entry(id: String, project_id: &str, directory: &str, command: &str, bin
     } else {
         command.to_string()
     };
+    let exec_cmd = install_command.as_deref().unwrap_or(&service_exec_command);
     let mut cmd = Command::new("/bin/sh");
-    cmd.args(["-c", &exec_command]).current_dir(directory)
-        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
+    cmd.args(["-c", exec_cmd])
+        .current_dir(directory)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .process_group(0);
     for (k, v) in &binding.env {
         cmd.env(k, v);
@@ -776,12 +1138,22 @@ fn spawn_entry(id: String, project_id: &str, directory: &str, command: &str, bin
     let pgid = child.id();
     let stdout = Arc::new(Mutex::new(Output::default()));
     let stderr = Arc::new(Mutex::new(Output::default()));
+    if is_installing {
+        if let Ok(mut out) = stdout.lock() {
+            out.append(format!("[tongyun-studio] 检测到依赖缺失，正在安装依赖：{exec_cmd}（目录 {directory}）\n").as_bytes());
+        }
+    }
     read_output(child.stdout.take().expect("piped stdout"), stdout.clone());
     read_output(child.stderr.take().expect("piped stderr"), stderr.clone());
     let expects_port = binding.expects_port;
     let port = binding.port;
     let health_url = binding.health_url;
     let ready_timeout_secs = binding.ready_timeout_secs;
+    let lifecycle = if is_installing {
+        LifeState::Installing.as_str().into()
+    } else {
+        LifeState::Starting.as_str().into()
+    };
     Ok(Entry {
         snapshot: ManagedService {
             id,
@@ -794,7 +1166,7 @@ fn spawn_entry(id: String, project_id: &str, directory: &str, command: &str, bin
             stdout: String::new(),
             stderr: String::new(),
             output_truncated: false,
-            lifecycle: LifeState::Starting.as_str().into(),
+            lifecycle,
             failure: None,
             port,
             port_open: false,
@@ -819,29 +1191,71 @@ fn spawn_entry(id: String, project_id: &str, directory: &str, command: &str, bin
         user_stopped: false,
         port_cache: None,
         probe_cache: None,
+        installing: is_installing,
+        install_command,
+        service_command: command.into(),
     })
 }
 #[cfg(not(unix))]
-fn spawn_entry(_id: String, _project_id: &str, _directory: &str, _command: &str, _binding: Binding) -> Result<Entry> { Err("托管服务目前仅支持 macOS / Unix。".into()) }
+fn spawn_entry(
+    _id: String,
+    _project_id: &str,
+    _directory: &str,
+    _command: &str,
+    _binding: Binding,
+    _install_command: Option<String>,
+) -> Result<Entry> {
+    Err("托管服务目前仅支持 macOS / Unix。".into())
+}
 #[cfg(unix)]
 fn group_alive(pgid: u32) -> Result<bool> {
     // IDs originate only from our own child handles, never from caller input.
-    if unsafe { libc::kill(-(pgid as i32), 0) } == 0 { return Ok(true); }
+    if unsafe { libc::kill(-(pgid as i32), 0) } == 0 {
+        return Ok(true);
+    }
     let error = std::io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::ESRCH) { Ok(false) } else { Err(format!("无法核验服务进程组：{error}")) }
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(false)
+    } else {
+        Err(format!("无法核验服务进程组：{error}"))
+    }
 }
 #[cfg(unix)]
 fn signal_group(pgid: u32, signal: i32) -> Result<()> {
-    if unsafe { libc::kill(-(pgid as i32), signal) } == 0 { return Ok(()); }
+    if unsafe { libc::kill(-(pgid as i32), signal) } == 0 {
+        return Ok(());
+    }
     let error = std::io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::ESRCH) { Ok(()) } else { Err(format!("停止服务失败：{error}")) }
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(format!("停止服务失败：{error}"))
+    }
 }
-#[cfg(unix)] fn terminate_signal() -> i32 { libc::SIGTERM }
-#[cfg(unix)] fn kill_signal() -> i32 { libc::SIGKILL }
-#[cfg(not(unix))] fn group_alive(_pgid: u32) -> Result<bool> { Err("当前平台不支持托管服务".into()) }
-#[cfg(not(unix))] fn signal_group(_pgid: u32, _signal: i32) -> Result<()> { Err("当前平台不支持托管服务".into()) }
-#[cfg(not(unix))] fn terminate_signal() -> i32 { 0 }
-#[cfg(not(unix))] fn kill_signal() -> i32 { 0 }
+#[cfg(unix)]
+fn terminate_signal() -> i32 {
+    libc::SIGTERM
+}
+#[cfg(unix)]
+fn kill_signal() -> i32 {
+    libc::SIGKILL
+}
+#[cfg(not(unix))]
+fn group_alive(_pgid: u32) -> Result<bool> {
+    Err("当前平台不支持托管服务".into())
+}
+#[cfg(not(unix))]
+fn signal_group(_pgid: u32, _signal: i32) -> Result<()> {
+    Err("当前平台不支持托管服务".into())
+}
+#[cfg(not(unix))]
+fn terminate_signal() -> i32 {
+    0
+}
+#[cfg(not(unix))]
+fn kill_signal() -> i32 {
+    0
+}
 
 #[cfg(test)]
 mod tests {
@@ -851,9 +1265,22 @@ mod tests {
 
     #[allow(dead_code)]
     fn project(directory: &Path) -> Project {
-        Project { id: "synthetic-project".into(), name: "synthetic".into(), path: directory.to_str().unwrap().into(), created_at: String::new(), dev: None }
+        Project {
+            id: "synthetic-project".into(),
+            name: "synthetic".into(),
+            path: directory.to_str().unwrap().into(),
+            created_at: String::new(),
+            dev: None,
+        }
     }
-    fn project_dev(directory: &Path, id: &str, command: &str, port: Option<u16>, health: Option<&str>, group: Option<&str>) -> Project {
+    fn project_dev(
+        directory: &Path,
+        id: &str,
+        command: &str,
+        port: Option<u16>,
+        health: Option<&str>,
+        group: Option<&str>,
+    ) -> Project {
         Project {
             id: id.into(),
             name: id.into(),
@@ -874,60 +1301,102 @@ mod tests {
         }
     }
     #[allow(dead_code)]
-    fn wait_for(manager: &ServiceManager, id: &str, condition: impl Fn(&ManagedService) -> bool) -> ManagedService {
+    fn wait_for(
+        manager: &ServiceManager,
+        id: &str,
+        condition: impl Fn(&ManagedService) -> bool,
+    ) -> ManagedService {
         let start = Instant::now();
-        loop { let item = manager.list(id).unwrap().remove(0); if condition(&item) { return item; } assert!(start.elapsed() < Duration::from_secs(8), "service did not reach expected state: {item:?}"); thread::sleep(Duration::from_millis(20)); }
+        loop {
+            let item = manager.list(id).unwrap().remove(0);
+            if condition(&item) {
+                return item;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(8),
+                "service did not reach expected state: {item:?}"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
     }
     #[allow(dead_code)]
     fn free_port() -> u16 {
-        TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+        TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
     }
     #[test]
     #[cfg(unix)]
     fn start_deduplicates_and_stop_terminates_descendants() {
-        let temp = tempfile::tempdir().unwrap(); let project = project(temp.path()); let manager = ServiceManager::new();
+        let temp = tempfile::tempdir().unwrap();
+        let project = project(temp.path());
+        let manager = ServiceManager::new();
         let command = "sleep 60 & echo child:$!; wait";
         let first = manager.start(&project, command).unwrap();
         let duplicate = manager.start(&project, command).unwrap();
-        assert_eq!(first.id, duplicate.id); assert_eq!(first.pid, duplicate.pid);
+        assert_eq!(first.id, duplicate.id);
+        assert_eq!(first.pid, duplicate.pid);
         assert_eq!(first.lifecycle, "starting");
         assert!(!first.reachable);
         let active = wait_for(&manager, &project.id, |s| s.stdout.contains("child:"));
-        let child_pid: i32 = active.stdout.trim().strip_prefix("child:").unwrap().parse().unwrap();
+        let child_pid: i32 = active
+            .stdout
+            .trim()
+            .strip_prefix("child:")
+            .unwrap()
+            .parse()
+            .unwrap();
         let stopped = manager.stop(&project.id, &first.id).unwrap();
         assert_eq!(stopped.status, "stopped");
         assert_eq!(stopped.lifecycle, "stopped");
         assert!(!group_alive(first.pid.unwrap()).unwrap());
         assert_ne!(unsafe { libc::kill(child_pid, 0) }, 0);
         let restarted = manager.restart(&project.id, &first.id).unwrap();
-        assert_eq!(restarted.id, first.id); assert_ne!(restarted.pid, first.pid);
+        assert_eq!(restarted.id, first.id);
+        assert_ne!(restarted.pid, first.pid);
         manager.stop(&project.id, &first.id).unwrap();
     }
     #[test]
     #[cfg(unix)]
     fn failures_and_bounded_output_are_truthful() {
-        let temp = tempfile::tempdir().unwrap(); let project = project(temp.path()); let manager = ServiceManager::new();
-        manager.start(&project, "printf failure >&2; exit 7").unwrap();
-        let failed = wait_for(&manager, &project.id, |s| s.status == "failed" && s.stderr.contains("failure"));
-        assert_eq!(failed.exit_code, Some(7)); assert_eq!(failed.pid, None);
+        let temp = tempfile::tempdir().unwrap();
+        let project = project(temp.path());
+        let manager = ServiceManager::new();
+        manager
+            .start(&project, "printf failure >&2; exit 7")
+            .unwrap();
+        let failed = wait_for(&manager, &project.id, |s| {
+            s.status == "failed" && s.stderr.contains("failure")
+        });
+        assert_eq!(failed.exit_code, Some(7));
+        assert_eq!(failed.pid, None);
         assert_eq!(failed.lifecycle, "failed");
         assert!(!failed.reachable);
         assert!(failed.failure.unwrap().contains("7"));
         manager.start(&project, "head -c 100000 /dev/zero").unwrap();
-        let output = wait_for(&manager, &project.id, |s| s.status == "exited" && s.output_truncated);
-        assert!(output.stdout.len() <= OUTPUT_LIMIT); assert_eq!(output.exit_code, Some(0));
+        let output = wait_for(&manager, &project.id, |s| {
+            s.status == "exited" && s.output_truncated
+        });
+        assert!(output.stdout.len() <= OUTPUT_LIMIT);
+        assert_eq!(output.exit_code, Some(0));
         assert_eq!(output.lifecycle, "exited");
     }
     #[test]
     #[cfg(unix)]
     fn registry_survives_navigation_and_enforces_project_ownership() {
-        let temp = tempfile::tempdir().unwrap(); let project = project(temp.path()); let manager = ServiceManager::new();
+        let temp = tempfile::tempdir().unwrap();
+        let project = project(temp.path());
+        let manager = ServiceManager::new();
         let started = manager.start(&project, "sleep 60").unwrap();
         assert!(manager.list("different-project").unwrap().is_empty());
         assert_eq!(manager.list(&project.id).unwrap()[0].id, started.id);
         assert!(manager.stop("different-project", &started.id).is_err());
         assert!(manager.restart("different-project", &started.id).is_err());
-        assert!(manager.log_tail("different-project", &started.id, 10).is_err());
+        assert!(manager
+            .log_tail("different-project", &started.id, 10)
+            .is_err());
         manager.shutdown().unwrap();
         assert!(!group_alive(started.pid.unwrap()).unwrap());
         assert!(manager.start(&project, "sleep 60").is_err());
@@ -935,8 +1404,15 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn drop_cleans_up_and_stop_escalates_when_term_is_ignored() {
-        let temp = tempfile::tempdir().unwrap(); let project = project(temp.path()); let manager = ServiceManager::new();
-        let started = manager.start(&project, "trap '' TERM; echo ready; while :; do sleep 1; done").unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let project = project(temp.path());
+        let manager = ServiceManager::new();
+        let started = manager
+            .start(
+                &project,
+                "trap '' TERM; echo ready; while :; do sleep 1; done",
+            )
+            .unwrap();
         wait_for(&manager, &project.id, |s| s.stdout.contains("ready"));
         drop(manager);
         assert!(!group_alive(started.pid.unwrap()).unwrap());
@@ -947,7 +1423,14 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let busy_port = listener.local_addr().unwrap().port();
-        let blocked = project_dev(temp.path(), "blocked", "sleep 30", Some(busy_port), None, Some("demo"));
+        let blocked = project_dev(
+            temp.path(),
+            "blocked",
+            "sleep 30",
+            Some(busy_port),
+            None,
+            Some("demo"),
+        );
         let manager = ServiceManager::new();
         let refused = manager.start(&blocked, "sleep 30").unwrap_err();
         assert!(refused.contains("已有进程监听"), "{refused}");
@@ -956,43 +1439,72 @@ mod tests {
 
         let port = free_port();
         let command = format!("python3 -m http.server {port} --bind 127.0.0.1");
-        let server = project_dev(temp.path(), "server", &command, Some(port), Some(&format!("http://127.0.0.1:{port}/")), Some("demo"));
+        let server = project_dev(
+            temp.path(),
+            "server",
+            &command,
+            Some(port),
+            Some(&format!("http://127.0.0.1:{port}/")),
+            Some("demo"),
+        );
         manager.start(&server, &command).unwrap();
-        let ready = wait_for(&manager, "server", |service| service.lifecycle == "ready" && service.reachable && service.port_open);
+        let ready = wait_for(&manager, "server", |service| {
+            service.lifecycle == "ready" && service.reachable && service.port_open
+        });
         assert_eq!(ready.status, "running");
-        assert!(ready.log_tail.contains("http") || ready.stderr.contains("Serving") || ready.lifecycle == "ready");
+        assert!(
+            ready.log_tail.contains("http")
+                || ready.stderr.contains("Serving")
+                || ready.lifecycle == "ready"
+        );
         let tail = manager.log_tail("server", &ready.id, 5).unwrap();
         assert!(!tail.is_empty() || ready.log_tail.is_empty() || !ready.log_tail.is_empty());
 
         let missing = free_port();
         let missing_command = format!("python3 -m http.server {missing} --bind 127.0.0.1");
-        let missing_project = project_dev(temp.path(), "missing", &missing_command, Some(missing), Some(&format!("http://127.0.0.1:{missing}/no-such-studio-probe")), Some("demo"));
+        let missing_project = project_dev(
+            temp.path(),
+            "missing",
+            &missing_command,
+            Some(missing),
+            Some(&format!("http://127.0.0.1:{missing}/no-such-studio-probe")),
+            Some("demo"),
+        );
         manager.start(&missing_project, &missing_command).unwrap();
-        let opened = wait_for(&manager, "missing", |service| service.lifecycle == "port_open");
+        let opened = wait_for(&manager, "missing", |service| {
+            service.lifecycle == "port_open"
+        });
         assert!(!opened.reachable || opened.lifecycle == "port_open");
         assert_eq!(opened.lifecycle, "port_open");
 
         let other = tempfile::tempdir().unwrap();
         let extra = project_dev(other.path(), "extra", "sleep 60", None, None, Some("other"));
-        let grouped = vec![
-            server.clone(),
-            missing_project.clone(),
-            extra.clone(),
-        ];
+        let grouped = vec![server.clone(), missing_project.clone(), extra.clone()];
         // The two demo servers are already running; starting the group again returns them
         // and also starts the other group separately.
         manager.start(&extra, "sleep 60").unwrap();
         let stopped = manager.stop_group(&grouped, "demo").unwrap();
         assert_eq!(stopped.len(), 2);
         assert!(stopped.iter().all(|service| service.lifecycle == "stopped"));
-        assert!(manager.list("extra").unwrap().iter().any(|service| service.status == "running"));
+        assert!(manager
+            .list("extra")
+            .unwrap()
+            .iter()
+            .any(|service| service.status == "running"));
         manager.stop_group(&[extra.clone()], "other").unwrap();
-        assert!(manager.list("extra").unwrap().iter().all(|service| service.status != "running"));
+        assert!(manager
+            .list("extra")
+            .unwrap()
+            .iter()
+            .all(|service| service.status != "running"));
 
-        let lines = "i=0; while [ \"$i\" -lt 30 ]; do echo line-$i; i=$((i+1)); done; echo boom >&2";
+        let lines =
+            "i=0; while [ \"$i\" -lt 30 ]; do echo line-$i; i=$((i+1)); done; echo boom >&2";
         let logged = project(temp.path());
         manager.start(&logged, lines).unwrap();
-        let done = wait_for(&manager, &logged.id, |service| service.lifecycle == "exited" && service.log_tail.contains("boom"));
+        let done = wait_for(&manager, &logged.id, |service| {
+            service.lifecycle == "exited" && service.log_tail.contains("boom")
+        });
         let short = manager.log_tail(&logged.id, &done.id, 3).unwrap();
         assert_eq!(short.lines().count(), 3);
         assert!(short.contains("boom"));
@@ -1011,7 +1523,10 @@ mod tests {
             let port = free_port();
             let project = project_dev(temp.path(), "crash", command, Some(port), None, None);
             match manager.start(&project, command) {
-                Ok(_) => { launched = true; break; }
+                Ok(_) => {
+                    launched = true;
+                    break;
+                }
                 Err(error) if error.contains("已有进程监听") => continue,
                 Err(error) => panic!("{error}"),
             }
@@ -1020,8 +1535,14 @@ mod tests {
         let failed = wait_for(&manager, "crash", |service| service.status == "failed");
         assert_eq!(failed.lifecycle, "failed");
         assert!(!failed.reachable);
-        assert!(failed.failure.as_deref().is_some_and(|text| text.contains("7")));
-        assert!(started.elapsed() < Duration::from_secs(3), "failure should not wait out the old starting grace");
+        assert!(failed
+            .failure
+            .as_deref()
+            .is_some_and(|text| text.contains("7")));
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "failure should not wait out the old starting grace"
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Dev-panel runtime aligned with tongyun-dev's scan and lifecycle contract.
 //!
 //! This is a Studio-owned subset. It does not embed the tongyun-dev CLI, the
-//! :9099 console, toolchain injection, dependency installation, or profile graphs.
+//! :9099 console, or profile graphs.
 //! Directory guesses are heuristics: one candidate per directory, text checks
 //! instead of a full Maven/Gradle/package model.
 
@@ -47,8 +47,20 @@ const SKIP_DIRS: &[&str] = &[
 ];
 
 const SOURCE_DIRS: &[&str] = &[
-    "src", "public", "static", "assets", "resources", "test", "tests", "docs", "doc", "scripts",
-    "config", "lib", "mock", "mocks",
+    "src",
+    "public",
+    "static",
+    "assets",
+    "resources",
+    "test",
+    "tests",
+    "docs",
+    "doc",
+    "scripts",
+    "config",
+    "lib",
+    "mock",
+    "mocks",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +68,7 @@ const SOURCE_DIRS: &[&str] = &[
 pub enum LifeState {
     Stopped,
     Starting,
+    Installing,
     PortOpen,
     Ready,
     Failed,
@@ -68,6 +81,7 @@ impl LifeState {
         match self {
             Self::Stopped => "stopped",
             Self::Starting => "starting",
+            Self::Installing => "installing",
             Self::PortOpen => "port_open",
             Self::Ready => "ready",
             Self::Failed => "failed",
@@ -82,8 +96,8 @@ impl LifeState {
     }
 }
 
-/// Inputs for the tongyun-dev readiness table. `Installing` is intentionally absent.
-#[derive(Debug, Clone)]
+/// Inputs for the tongyun-dev readiness table.
+#[derive(Debug, Clone, Default)]
 pub struct StateInput {
     pub process_alive: bool,
     pub port_open: bool,
@@ -94,11 +108,15 @@ pub struct StateInput {
     pub now: u64,
     pub timeout_secs: u64,
     pub start_error: Option<String>,
+    pub installing: bool,
 }
 
 pub fn derive_state(input: StateInput) -> (LifeState, Option<String>) {
     if let Some(err) = input.start_error {
         return (LifeState::Failed, Some(err));
+    }
+    if input.installing {
+        return (LifeState::Installing, None);
     }
     let effective_port_open = input.port_open && !input.port_conflict;
     if effective_port_open && (!input.has_probe || input.probe_ok) {
@@ -127,6 +145,76 @@ pub fn derive_state(input: StateInput) -> (LifeState, Option<String>) {
         return (LifeState::Starting, None);
     }
     (LifeState::Stopped, None)
+}
+
+pub const DEPS_MISSING_MSG: &str = "依赖未安装（缺 node_modules）";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackageManager {
+    Pnpm,
+    Yarn,
+    Npm,
+}
+
+impl PackageManager {
+    pub fn install_command(self) -> &'static str {
+        match self {
+            Self::Pnpm => "pnpm install",
+            Self::Yarn => "yarn install",
+            Self::Npm => "npm install",
+        }
+    }
+}
+
+pub fn detect_package_manager(root: &Path) -> Option<PackageManager> {
+    if !root.join("package.json").is_file() {
+        return None;
+    }
+    if root.join("pnpm-lock.yaml").is_file() {
+        Some(PackageManager::Pnpm)
+    } else if root.join("yarn.lock").is_file() {
+        Some(PackageManager::Yarn)
+    } else {
+        Some(PackageManager::Npm)
+    }
+}
+
+pub fn node_deps_missing(root: &Path) -> bool {
+    root.join("package.json").is_file() && !root.join("node_modules").is_dir()
+}
+
+pub fn deps_missing(root: &Path) -> bool {
+    node_deps_missing(root)
+}
+
+pub fn maven_install_command(root: &Path) -> String {
+    if root.join("mvnw").is_file() {
+        "./mvnw dependency:resolve".to_string()
+    } else {
+        "mvn dependency:resolve".to_string()
+    }
+}
+
+pub fn gradle_install_command(root: &Path) -> String {
+    if root.join("gradlew").is_file() {
+        "./gradlew dependencies".to_string()
+    } else {
+        "gradle dependencies".to_string()
+    }
+}
+
+pub fn detect_install_command(root: &Path, _dev: Option<&DevProfile>) -> Option<String> {
+    if root.join("package.json").is_file() {
+        return detect_package_manager(root).map(|pm| pm.install_command().to_string());
+    }
+    if root.join("pom.xml").is_file() {
+        return Some(maven_install_command(root));
+    }
+    if root.join("build.gradle").is_file() || root.join("build.gradle.kts").is_file() {
+        return Some(gradle_install_command(root));
+    }
+    None
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -160,7 +248,11 @@ pub struct DevProfile {
     pub confidence: Option<String>,
     #[serde(default, alias = "depends_on", skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
-    #[serde(default, alias = "ready_timeout_secs", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "ready_timeout_secs",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub ready_timeout_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub java: Option<String>,
@@ -174,12 +266,38 @@ pub struct DevProfile {
     pub catalina_home: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub env: std::collections::BTreeMap<String, String>,
-    #[serde(default, alias = "default_profile", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "default_profile",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub default_profile: Option<String>,
-    #[serde(default, alias = "selected_profile", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "selected_profile",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub selected_profile: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub profiles: std::collections::BTreeMap<String, EnvPreset>,
+    #[serde(
+        default,
+        alias = "auto_install",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub auto_install: Option<bool>,
+    #[serde(
+        default,
+        alias = "pull_deps_first",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub pull_deps_first: Option<bool>,
+    #[serde(
+        default,
+        alias = "deps_installed",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub deps_installed: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,12 +339,32 @@ pub struct DevCandidate {
     pub catalina_home: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub env: std::collections::BTreeMap<String, String>,
-    #[serde(default, alias = "default_profile", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "default_profile",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub default_profile: Option<String>,
-    #[serde(default, alias = "selected_profile", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "selected_profile",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub selected_profile: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub profiles: std::collections::BTreeMap<String, EnvPreset>,
+    #[serde(
+        default,
+        alias = "auto_install",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub auto_install: Option<bool>,
+    #[serde(
+        default,
+        alias = "pull_deps_first",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub pull_deps_first: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -298,11 +436,15 @@ pub fn scan_dev_directory(
         let hit = inspect_dir(&dir);
         let is_project = hit.candidate.is_some();
         if let Some(mut candidate) = hit.candidate {
-            if let Some(canonical) = fs::canonicalize(&dir).ok().and_then(|path| path_text(&path).ok()) {
+            if let Some(canonical) = fs::canonicalize(&dir)
+                .ok()
+                .and_then(|path| path_text(&path).ok())
+            {
                 candidate.path = canonical.clone();
-                if let Some((_, id, has_dev)) = known.iter().find(|(path, _, _)| {
-                    path.to_string_lossy().as_ref() == canonical
-                }) {
+                if let Some((_, id, has_dev)) = known
+                    .iter()
+                    .find(|(path, _, _)| path.to_string_lossy().as_ref() == canonical)
+                {
                     candidate.already_registered = true;
                     candidate.existing_project_id = Some(id.clone());
                     candidate.existing_has_dev = *has_dev;
@@ -314,10 +456,14 @@ pub fn scan_dev_directory(
         if level >= depth {
             continue;
         }
-        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
         let mut children = Vec::new();
         for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else { continue };
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
             if !file_type.is_dir() {
                 continue;
             }
@@ -368,7 +514,12 @@ pub fn prepare_import(candidate: &DevCandidate) -> Result<PreparedImport> {
         Some(0) | None => None,
         Some(port) => Some(port),
     };
-    let health_url = match candidate.health_url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let health_url = match candidate
+        .health_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         None => None,
         Some(url) => {
             if parse_loopback_http(url).is_none() {
@@ -379,10 +530,17 @@ pub fn prepare_import(candidate: &DevCandidate) -> Result<PreparedImport> {
     };
     let kind = bounded_token(&candidate.kind, "类型")?;
     let label = bounded_token(&candidate.label, "类型名称")?;
-    let group = match candidate.group.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let group = match candidate
+        .group
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         None => None,
         Some(group) if valid_group_key(group) => Some(group.to_owned()),
-        Some(_) => return Err("分组标识只能用小写字母、数字、下划线和短横线，最长 40 个字符。".into()),
+        Some(_) => {
+            return Err("分组标识只能用小写字母、数字、下划线和短横线，最长 40 个字符。".into())
+        }
     };
     let confidence = match candidate.confidence.trim() {
         "" => None,
@@ -411,6 +569,9 @@ pub fn prepare_import(candidate: &DevCandidate) -> Result<PreparedImport> {
             default_profile: candidate.default_profile.clone(),
             selected_profile: candidate.selected_profile.clone(),
             profiles: candidate.profiles.clone(),
+            auto_install: candidate.auto_install,
+            pull_deps_first: candidate.pull_deps_first,
+            deps_installed: None,
         },
     })
 }
@@ -488,7 +649,10 @@ pub fn probe_loopback(url: &str) -> bool {
     let text = String::from_utf8_lossy(&buf[..size]);
     let mut parts = text.split_whitespace();
     let version = parts.next().unwrap_or("");
-    let code = parts.next().and_then(|value| value.parse::<u16>().ok()).unwrap_or(0);
+    let code = parts
+        .next()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(0);
     version.starts_with("HTTP/") && (200..300).contains(&code)
 }
 
@@ -754,7 +918,10 @@ struct DirHit {
 }
 
 fn inspect_dir(dir: &Path) -> DirHit {
-    let mut hit = DirHit { container: false, candidate: None };
+    let mut hit = DirHit {
+        container: false,
+        candidate: None,
+    };
     if let Some(maven) = inspect_maven(dir) {
         hit.container |= maven.container;
         hit.candidate = maven.candidate;
@@ -785,12 +952,21 @@ fn inspect_maven(dir: &Path) -> Option<DirHit> {
     let spring = pom.contains("spring-boot");
     let packaging = xml_packaging(&pom);
     if modules && !spring {
-        return Some(DirHit { container: true, candidate: None });
+        return Some(DirHit {
+            container: true,
+            candidate: None,
+        });
     }
     if spring {
         let wrapper = dir.join("mvnw").is_file();
-        let command = if wrapper { "./mvnw spring-boot:run" } else { "mvn spring-boot:run" };
-        let (port, guessed) = spring_port(dir).map(|port| (port, false)).unwrap_or((8080, true));
+        let command = if wrapper {
+            "./mvnw spring-boot:run"
+        } else {
+            "mvn spring-boot:run"
+        };
+        let (port, guessed) = spring_port(dir)
+            .map(|port| (port, false))
+            .unwrap_or((8080, true));
         let mut why = vec!["pom.xml 含有 spring-boot".into()];
         if wrapper {
             why.push("启动命令使用 mvnw。".into());
@@ -800,7 +976,16 @@ fn inspect_maven(dir: &Path) -> Option<DirHit> {
         } else {
             why.push(format!("端口来自 application 配置：{port}。"));
         }
-        let mut cand = candidate(dir, "spring-boot-maven", "Spring Boot（Maven）", "high", command, Some(port), guessed, why);
+        let mut cand = candidate(
+            dir,
+            "spring-boot-maven",
+            "Spring Boot（Maven）",
+            "high",
+            command,
+            Some(port),
+            guessed,
+            why,
+        );
         let profiles = suggest_spring_profiles(dir);
         if !profiles.is_empty() {
             if profiles.contains_key("dev") {
@@ -816,6 +1001,8 @@ fn inspect_maven(dir: &Path) -> Option<DirHit> {
             cand.why.push(format!("Java 版本要求：{jv}。"));
             cand.java = Some(jv);
         }
+        cand.auto_install = Some(true);
+        cand.pull_deps_first = Some(false);
         return Some(DirHit {
             container: modules,
             candidate: Some(cand),
@@ -873,25 +1060,47 @@ fn inspect_gradle(dir: &Path) -> Option<DirHit> {
         .or_else(|| read_limited(&dir.join("build.gradle.kts"), MAX_TEXT));
     let settings = read_limited(&dir.join("settings.gradle"), 256 * 1024)
         .or_else(|| read_limited(&dir.join("settings.gradle.kts"), 256 * 1024));
-    let spring = build.as_ref().is_some_and(|text| text.contains("org.springframework.boot") || text.contains("spring-boot"));
-    let multi = settings.as_ref().is_some_and(|text| text.lines().any(|line| {
-        let trimmed = line.trim();
-        trimmed.starts_with("include ") || trimmed.starts_with("include(")
-    }));
+    let spring = build.as_ref().is_some_and(|text| {
+        text.contains("org.springframework.boot") || text.contains("spring-boot")
+    });
+    let multi = settings.as_ref().is_some_and(|text| {
+        text.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed.starts_with("include ") || trimmed.starts_with("include(")
+        })
+    });
     if multi && !spring {
-        return Some(DirHit { container: true, candidate: None });
+        return Some(DirHit {
+            container: true,
+            candidate: None,
+        });
     }
     if spring {
         let wrapper = dir.join("gradlew").is_file();
-        let command = if wrapper { "./gradlew bootRun" } else { "gradle bootRun" };
-        let (port, guessed) = spring_port(dir).map(|port| (port, false)).unwrap_or((8080, true));
+        let command = if wrapper {
+            "./gradlew bootRun"
+        } else {
+            "gradle bootRun"
+        };
+        let (port, guessed) = spring_port(dir)
+            .map(|port| (port, false))
+            .unwrap_or((8080, true));
         let mut why = vec!["Gradle 构建使用了 Spring Boot 插件。".into()];
         if guessed {
             why.push("没有读到 server.port，暂用 8080。".into());
         } else {
             why.push(format!("端口来自 application 配置：{port}。"));
         }
-        let mut cand = candidate(dir, "spring-boot-gradle", "Spring Boot（Gradle）", "high", command, Some(port), guessed, why);
+        let mut cand = candidate(
+            dir,
+            "spring-boot-gradle",
+            "Spring Boot（Gradle）",
+            "high",
+            command,
+            Some(port),
+            guessed,
+            why,
+        );
         let profiles = suggest_spring_profiles(dir);
         if !profiles.is_empty() {
             if profiles.contains_key("dev") {
@@ -903,6 +1112,8 @@ fn inspect_gradle(dir: &Path) -> Option<DirHit> {
             }
             cand.profiles = profiles;
         }
+        cand.auto_install = Some(true);
+        cand.pull_deps_first = Some(false);
         return Some(DirHit {
             container: multi,
             candidate: Some(cand),
@@ -915,7 +1126,10 @@ fn inspect_node(dir: &Path) -> Option<DirHit> {
     let text = read_limited(&dir.join("package.json"), MAX_TEXT)?;
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
     if is_workspace_root(&value) {
-        return Some(DirHit { container: true, candidate: None });
+        return Some(DirHit {
+            container: true,
+            candidate: None,
+        });
     }
     let deps = dependency_names(&value);
     let scripts = value.get("scripts").and_then(|item| item.as_object());
@@ -944,13 +1158,18 @@ fn inspect_node(dir: &Path) -> Option<DirHit> {
     if kind == "cra" {
         confidence = "medium";
     }
-    let script_body = scripts.and_then(|map| map.get(script)).and_then(|item| item.as_str()).unwrap_or("");
+    let script_body = scripts
+        .and_then(|map| map.get(script))
+        .and_then(|item| item.as_str())
+        .unwrap_or("");
     if script_body.is_empty() && confidence == "high" {
         confidence = "medium";
     }
     let command = script_command(dir, &value, script);
     let mut why = vec![format!("package.json 识别为 {label}。")];
-    why.push(format!("启动命令按锁文件或 packageManager 选用 {command}。"));
+    why.push(format!(
+        "启动命令按锁文件或 packageManager 选用 {command}。"
+    ));
     let (port, guessed) = if let Some(port) = port_flag(script_body) {
         why.push(format!("端口来自脚本参数 {port}。"));
         (Some(port), false)
@@ -965,6 +1184,11 @@ fn inspect_node(dir: &Path) -> Option<DirHit> {
         (None, false)
     };
     let mut cand = candidate(dir, kind, label, confidence, &command, port, guessed, why);
+    cand.auto_install = Some(true);
+    if node_deps_missing(dir) {
+        cand.why
+            .push("缺少 node_modules，启动前将自动检测并安装依赖。".into());
+    }
     if let Some(nv) = node_version_from_package(&value) {
         cand.why.push(format!("Node 版本要求：{nv}。"));
         cand.node = Some(nv);
@@ -976,7 +1200,11 @@ fn inspect_node(dir: &Path) -> Option<DirHit> {
 }
 
 fn inspect_python(dir: &Path) -> Option<DevCandidate> {
-    let python = if dir.join(".venv/bin/python").is_file() { "./.venv/bin/python" } else { "python3" };
+    let python = if dir.join(".venv/bin/python").is_file() {
+        "./.venv/bin/python"
+    } else {
+        "python3"
+    };
     if dir.join("manage.py").is_file() {
         return Some(candidate(
             dir,
@@ -1021,7 +1249,9 @@ fn inspect_python(dir: &Path) -> Option<DevCandidate> {
             &format!("{python} -m uvicorn {module} --host 127.0.0.1 --port 8000"),
             Some(8000),
             true,
-            vec![format!("依赖里有 fastapi，应用模块按 {module} 猜测，端口暂用 8000。")],
+            vec![format!(
+                "依赖里有 fastapi，应用模块按 {module} 猜测，端口暂用 8000。"
+            )],
         ));
     }
     if dep_word(&lower, "flask") {
@@ -1050,7 +1280,10 @@ fn candidate(
     why: Vec<String>,
 ) -> DevCandidate {
     DevCandidate {
-        name: dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "project".into()),
+        name: dir
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "project".into()),
         path: dir.to_string_lossy().into_owned(),
         kind: kind.into(),
         label: label.into(),
@@ -1074,6 +1307,8 @@ fn candidate(
         default_profile: None,
         selected_profile: None,
         profiles: BTreeMap::new(),
+        auto_install: Some(true),
+        pull_deps_first: Some(false),
     }
 }
 
@@ -1144,7 +1379,13 @@ fn default_node_port(kind: &str) -> Option<u16> {
 
 fn node_config_port(dir: &Path, kind: &str) -> Option<u16> {
     let files: &[&str] = match kind {
-        "vite" => &["vite.config.ts", "vite.config.js", "vite.config.mjs", "vite.config.cjs", "vite.config.mts"],
+        "vite" => &[
+            "vite.config.ts",
+            "vite.config.js",
+            "vite.config.mjs",
+            "vite.config.cjs",
+            "vite.config.mts",
+        ],
         "vue-cli" => &["vue.config.js", "vue.config.ts"],
         "nuxt" => &["nuxt.config.ts", "nuxt.config.js"],
         _ => &[],
@@ -1162,10 +1403,20 @@ fn node_config_port(dir: &Path, kind: &str) -> Option<u16> {
 fn config_port(text: &str) -> Option<u16> {
     for line in text.lines() {
         let trimmed = line.trim().trim_start_matches("//").trim();
-        let rest = trimmed.strip_prefix("port").or_else(|| trimmed.strip_prefix("\"port\""));
+        let rest = trimmed
+            .strip_prefix("port")
+            .or_else(|| trimmed.strip_prefix("\"port\""));
         let Some(rest) = rest else { continue };
-        let rest = rest.trim().trim_start_matches(':').trim().trim_matches(|c| c == ',' || c == '"' || c == '\'');
-        if let Some(port) = parse_port(rest.split(|c: char| !c.is_ascii_digit()).next().unwrap_or("")) {
+        let rest = rest
+            .trim()
+            .trim_start_matches(':')
+            .trim()
+            .trim_matches(|c| c == ',' || c == '"' || c == '\'');
+        if let Some(port) = parse_port(
+            rest.split(|c: char| !c.is_ascii_digit())
+                .next()
+                .unwrap_or(""),
+        ) {
             return Some(port);
         }
     }
@@ -1187,7 +1438,11 @@ fn port_flag(script: &str) -> Option<u16> {
 
 fn spring_port(dir: &Path) -> Option<u16> {
     let resources = dir.join("src/main/resources");
-    for name in ["application.properties", "application.yml", "application.yaml"] {
+    for name in [
+        "application.properties",
+        "application.yml",
+        "application.yaml",
+    ] {
         if let Some(text) = read_limited(&resources.join(name), 256 * 1024) {
             if let Some(port) = server_port(&text) {
                 return Some(port);
@@ -1205,7 +1460,11 @@ fn server_port(text: &str) -> Option<u16> {
         }
         if let Some(rest) = trimmed.strip_prefix("server.port") {
             let rest = rest.trim().trim_start_matches(['=', ':']).trim();
-            if let Some(port) = parse_port(rest.split(|c: char| !c.is_ascii_digit()).next().unwrap_or("")) {
+            if let Some(port) = parse_port(
+                rest.split(|c: char| !c.is_ascii_digit())
+                    .next()
+                    .unwrap_or(""),
+            ) {
                 return Some(port);
             }
         }
@@ -1285,12 +1544,17 @@ fn xml_packaging(pom: &str) -> Option<String> {
 }
 
 fn dep_word(text: &str, word: &str) -> bool {
-    text.split(|c: char| !c.is_ascii_alphanumeric()).any(|part| part == word)
+    text.split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|part| part == word)
 }
 
 fn parse_port(value: &str) -> Option<u16> {
     let port = value.trim().parse::<u16>().ok()?;
-    if port == 0 { None } else { Some(port) }
+    if port == 0 {
+        None
+    } else {
+        Some(port)
+    }
 }
 
 fn group_key(root: &Path, candidate: &Path) -> Option<String> {
@@ -1300,7 +1564,11 @@ fn group_key(root: &Path, candidate: &Path) -> Option<String> {
     }
     let name = parent.file_name()?.to_str()?;
     let slug = slug(name);
-    if valid_group_key(&slug) { Some(slug) } else { None }
+    if valid_group_key(&slug) {
+        Some(slug)
+    } else {
+        None
+    }
 }
 
 fn slug(value: &str) -> String {
@@ -1330,7 +1598,9 @@ fn read_limited(path: &Path, max: u64) -> Option<String> {
 }
 
 fn path_text(path: &Path) -> Result<String> {
-    path.to_str().map(str::to_owned).ok_or_else(|| "目录路径不是有效的 Unicode".into())
+    path.to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "目录路径不是有效的 Unicode".into())
 }
 
 fn sanitize_name(value: String) -> Result<String> {
@@ -1413,42 +1683,184 @@ mod tests {
             now: 100,
             timeout_secs: 10,
             start_error: None,
+            installing: false,
         }
     }
 
     #[test]
     fn lifecycle_table_matches_tongyun_dev_states() {
         let cases = [
-            (StateInput { process_alive: true, port_open: true, has_probe: true, probe_ok: true, started_at: Some(100), now: 105, ..base() }, LifeState::Ready, None),
-            (StateInput { process_alive: true, port_open: true, started_at: Some(100), now: 105, ..base() }, LifeState::Ready, None),
-            (StateInput { process_alive: true, port_open: true, has_probe: true, started_at: Some(100), now: 105, ..base() }, LifeState::PortOpen, None),
-            (StateInput { process_alive: true, started_at: Some(100), now: 105, ..base() }, LifeState::Starting, None),
-            (StateInput { started_at: Some(100), now: 105, ..base() }, LifeState::Failed, Some("进程已退出")),
-            (StateInput { process_alive: true, started_at: Some(100), now: 115, ..base() }, LifeState::Failed, Some("超过 10 秒仍未就绪")),
-            (StateInput { process_alive: true, port_open: true, port_conflict: true, started_at: Some(100), now: 105, ..base() }, LifeState::Starting, None),
-            (StateInput { started_at: Some(100), now: 100, start_error: Some("缺 Java 8".into()), ..base() }, LifeState::Failed, Some("缺 Java 8")),
+            (
+                StateInput {
+                    installing: true,
+                    ..base()
+                },
+                LifeState::Installing,
+                None,
+            ),
+            (
+                StateInput {
+                    process_alive: true,
+                    port_open: true,
+                    has_probe: true,
+                    probe_ok: true,
+                    started_at: Some(100),
+                    now: 105,
+                    ..base()
+                },
+                LifeState::Ready,
+                None,
+            ),
+            (
+                StateInput {
+                    process_alive: true,
+                    port_open: true,
+                    started_at: Some(100),
+                    now: 105,
+                    ..base()
+                },
+                LifeState::Ready,
+                None,
+            ),
+            (
+                StateInput {
+                    process_alive: true,
+                    port_open: true,
+                    has_probe: true,
+                    started_at: Some(100),
+                    now: 105,
+                    ..base()
+                },
+                LifeState::PortOpen,
+                None,
+            ),
+            (
+                StateInput {
+                    process_alive: true,
+                    started_at: Some(100),
+                    now: 105,
+                    ..base()
+                },
+                LifeState::Starting,
+                None,
+            ),
+            (
+                StateInput {
+                    started_at: Some(100),
+                    now: 105,
+                    ..base()
+                },
+                LifeState::Failed,
+                Some("进程已退出"),
+            ),
+            (
+                StateInput {
+                    process_alive: true,
+                    started_at: Some(100),
+                    now: 115,
+                    ..base()
+                },
+                LifeState::Failed,
+                Some("超过 10 秒仍未就绪"),
+            ),
+            (
+                StateInput {
+                    process_alive: true,
+                    port_open: true,
+                    port_conflict: true,
+                    started_at: Some(100),
+                    now: 105,
+                    ..base()
+                },
+                LifeState::Starting,
+                None,
+            ),
+            (
+                StateInput {
+                    started_at: Some(100),
+                    now: 100,
+                    start_error: Some("缺 Java 8".into()),
+                    ..base()
+                },
+                LifeState::Failed,
+                Some("缺 Java 8"),
+            ),
             (base(), LifeState::Stopped, None),
-            (StateInput { port_open: true, port_conflict: true, ..base() }, LifeState::Stopped, None),
-            (StateInput { process_alive: true, port_open: true, has_probe: true, started_at: Some(100), now: 115, ..base() }, LifeState::Failed, Some("超过 10 秒仍未就绪")),
-            (StateInput { process_alive: true, ..base() }, LifeState::Starting, None),
-            (StateInput { started_at: Some(100), now: 100 + START_EXIT_GRACE_SECS - 1, ..base() }, LifeState::Starting, None),
-            (StateInput { started_at: Some(100), now: 100 + START_EXIT_GRACE_SECS, ..base() }, LifeState::Failed, Some("进程已退出")),
+            (
+                StateInput {
+                    port_open: true,
+                    port_conflict: true,
+                    ..base()
+                },
+                LifeState::Stopped,
+                None,
+            ),
+            (
+                StateInput {
+                    process_alive: true,
+                    port_open: true,
+                    has_probe: true,
+                    started_at: Some(100),
+                    now: 115,
+                    ..base()
+                },
+                LifeState::Failed,
+                Some("超过 10 秒仍未就绪"),
+            ),
+            (
+                StateInput {
+                    process_alive: true,
+                    ..base()
+                },
+                LifeState::Starting,
+                None,
+            ),
+            (
+                StateInput {
+                    started_at: Some(100),
+                    now: 100 + START_EXIT_GRACE_SECS - 1,
+                    ..base()
+                },
+                LifeState::Starting,
+                None,
+            ),
+            (
+                StateInput {
+                    started_at: Some(100),
+                    now: 100 + START_EXIT_GRACE_SECS,
+                    ..base()
+                },
+                LifeState::Failed,
+                Some("进程已退出"),
+            ),
         ];
         for (case, state, failure) in cases {
             let (got, why) = derive_state(input(case));
             assert_eq!(got, state);
             assert_eq!(why.as_deref(), failure);
-            assert_eq!(got.reachable(), matches!(state, LifeState::Ready | LifeState::PortOpen));
+            assert_eq!(
+                got.reachable(),
+                matches!(state, LifeState::Ready | LifeState::PortOpen)
+            );
         }
     }
 
     #[test]
     fn tail_and_loopback_parser_are_bounded() {
-        let stdout = (0..20).map(|i| format!("out-{i}")).collect::<Vec<_>>().join("\n");
+        let stdout = (0..20)
+            .map(|i| format!("out-{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let tail = tail_lines(&stdout, "err-1\nerr-2", 4);
         assert_eq!(tail, "out-19\n--- stderr ---\nerr-1\nerr-2");
-        assert_eq!(parse_loopback_http("http://127.0.0.1:5173/health"), Some((5173, "/health".into())));
-        assert_eq!(parse_loopback_http("http://localhost:80"), Some((80, "/".into())));
+        assert_eq!(
+            parse_loopback_http("http://127.0.0.1:5173/health"),
+            Some((5173, "/health".into()))
+        );
+        assert_eq!(
+            parse_loopback_http("http://localhost:80"),
+            Some((80, "/".into()))
+        );
         assert!(parse_loopback_http("https://127.0.0.1:80/").is_none());
         assert!(parse_loopback_http("http://example.com:80/").is_none());
         assert!(parse_loopback_http("http://user:pass@127.0.0.1:80/").is_none());
@@ -1492,46 +1904,106 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let web = root.path().join("shop/web");
         fs::create_dir_all(web.join("node_modules/nested")).unwrap();
-        fs::write(web.join("package.json"), r#"{"devDependencies":{"vite":"5.0.0"},"scripts":{"dev":"vite --port 5174"}}"#).unwrap();
+        fs::write(
+            web.join("package.json"),
+            r#"{"devDependencies":{"vite":"5.0.0"},"scripts":{"dev":"vite --port 5174"}}"#,
+        )
+        .unwrap();
         fs::write(web.join("pnpm-lock.yaml"), "lockfileVersion: 9\n").unwrap();
-        fs::write(web.join("node_modules/nested/package.json"), r#"{"dependencies":{"vite":"1"}}"#).unwrap();
-        fs::write(web.join("vite.config.ts"), "export default { server: { port: 5999 } }\n").unwrap();
+        fs::write(
+            web.join("node_modules/nested/package.json"),
+            r#"{"dependencies":{"vite":"1"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            web.join("vite.config.ts"),
+            "export default { server: { port: 5999 } }\n",
+        )
+        .unwrap();
 
         let api = root.path().join("api");
         fs::create_dir_all(api.join("src/main/resources")).unwrap();
-        fs::write(api.join("pom.xml"), "<project><dependencies>spring-boot</dependencies></project>").unwrap();
+        fs::write(
+            api.join("pom.xml"),
+            "<project><dependencies>spring-boot</dependencies></project>",
+        )
+        .unwrap();
         fs::write(api.join("mvnw"), "#!/bin/sh\n").unwrap();
-        fs::write(api.join("src/main/resources/application.yml"), "server:\n  port: 8088\n").unwrap();
+        fs::write(
+            api.join("src/main/resources/application.yml"),
+            "server:\n  port: 8088\n",
+        )
+        .unwrap();
 
         let parent = root.path().join("suite");
         fs::create_dir_all(parent.join("child")).unwrap();
-        fs::write(parent.join("pom.xml"), "<project><modules><module>child</module></modules></project>").unwrap();
-        fs::write(parent.join("child/pom.xml"), "<project>spring-boot</project>").unwrap();
+        fs::write(
+            parent.join("pom.xml"),
+            "<project><modules><module>child</module></modules></project>",
+        )
+        .unwrap();
+        fs::write(
+            parent.join("child/pom.xml"),
+            "<project>spring-boot</project>",
+        )
+        .unwrap();
 
         let app = root.path().join("pyapp");
         fs::create_dir_all(&app).unwrap();
         fs::write(app.join("manage.py"), "# django\n").unwrap();
-        fs::write(root.path().join("package.json"), r#"{"workspaces":["shop/*"]}"#).unwrap();
+        fs::write(
+            root.path().join("package.json"),
+            r#"{"workspaces":["shop/*"]}"#,
+        )
+        .unwrap();
 
         let existing_web = fs::canonicalize(&web).unwrap();
-        let report = scan_dev_directory(root.path(), 3, &[ExistingProject {
-            id: "already".into(),
-            path: existing_web.to_string_lossy().into(),
-            has_dev: true,
-        }]).unwrap();
+        let report = scan_dev_directory(
+            root.path(),
+            3,
+            &[ExistingProject {
+                id: "already".into(),
+                path: existing_web.to_string_lossy().into(),
+                has_dev: true,
+            }],
+        )
+        .unwrap();
 
-        assert!(report.candidates.iter().all(|item| !item.path.contains("node_modules")));
-        let web_hit = report.candidates.iter().find(|item| item.kind == "vite").unwrap();
+        assert!(report
+            .candidates
+            .iter()
+            .all(|item| !item.path.contains("node_modules")));
+        let web_hit = report
+            .candidates
+            .iter()
+            .find(|item| item.kind == "vite")
+            .unwrap();
         assert_eq!(web_hit.command, "pnpm dev");
         assert_eq!(web_hit.port, Some(5174));
         assert!(!web_hit.port_guessed);
         assert!(web_hit.already_registered);
         assert!(web_hit.existing_has_dev);
         assert_eq!(web_hit.group.as_deref(), Some("shop"));
-        assert!(report.candidates.iter().any(|item| item.kind == "spring-boot-maven" && item.port == Some(8088) && item.command.starts_with("./mvnw")));
-        assert!(report.candidates.iter().any(|item| item.kind == "django" && item.command.contains("runserver")));
-        assert!(report.candidates.iter().all(|item| item.path != fs::canonicalize(root.path()).unwrap().to_string_lossy()));
-        assert!(report.candidates.iter().any(|item| item.path.ends_with("/suite/child") || item.path.ends_with("\\suite\\child") || item.kind == "spring-boot-maven" && item.name == "child"));
+        assert!(report
+            .candidates
+            .iter()
+            .any(|item| item.kind == "spring-boot-maven"
+                && item.port == Some(8088)
+                && item.command.starts_with("./mvnw")));
+        assert!(report
+            .candidates
+            .iter()
+            .any(|item| item.kind == "django" && item.command.contains("runserver")));
+        assert!(report
+            .candidates
+            .iter()
+            .all(|item| item.path != fs::canonicalize(root.path()).unwrap().to_string_lossy()));
+        assert!(report
+            .candidates
+            .iter()
+            .any(|item| item.path.ends_with("/suite/child")
+                || item.path.ends_with("\\suite\\child")
+                || item.kind == "spring-boot-maven" && item.name == "child"));
     }
 }
 
@@ -1616,7 +2088,10 @@ pub fn normalize_java_version(raw: &str) -> Option<String> {
     if t == "1.8" || t == "8" {
         return Some("8".into());
     }
-    let digits: String = t.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let digits: String = t
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
     let first = digits.split('.').next().unwrap_or("");
     if let Ok(n) = first.parse::<u32>() {
         if (8..=30).contains(&n) {
