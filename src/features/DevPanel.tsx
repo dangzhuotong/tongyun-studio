@@ -15,6 +15,7 @@ import {
   stopDevGroup,
   updateProjectDev,
   installProjectDependencies,
+  devProjectLogTail,
 } from '../bridge';
 import { Activity, Bot, Check, Copy, Cpu, FolderOpen, LoaderCircle, Play, RotateCw, Search, Square, Terminal } from '../components/Icons';
 
@@ -73,6 +74,7 @@ export default function DevPanel({
 }) {
   const [services, setServices] = useState<ManagedService[]>([]);
   const [listeningPorts, setListeningPorts] = useState<ListeningPort[]>([]);
+  const [recentLog, setRecentLog] = useState<string | null>(null);
   const [customCommand, setCustomCommand] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -103,13 +105,15 @@ export default function DevPanel({
     if (!isDesktop || mutations.current.has(id)) return;
     const request = ++requestSequence.current;
     try {
-      const [result, ports] = await Promise.all([
+      const [result, ports, diskLog] = await Promise.all([
         listProjectServices(id),
         detectListeningPorts(),
+        devProjectLogTail(id, 200).catch(() => null),
       ]);
       if (mounted.current && currentProject.current === id && request === requestSequence.current) {
         setServices(result);
         setListeningPorts(ports);
+        setRecentLog(diskLog || null);
         if (errorSource.current !== 'action') {
           errorSource.current = null;
           setError(null);
@@ -128,7 +132,7 @@ export default function DevPanel({
   useEffect(() => {
     mounted.current = true;
     requestSequence.current++;
-    setServices([]); setListeningPorts([]); setSelectedProfile(null); errorSource.current = null; setError(null); setBusy(null); setCustomCommand(''); setCopied(null); setHints(false);
+    setServices([]); setListeningPorts([]); setRecentLog(null); setSelectedProfile(null); errorSource.current = null; setError(null); setBusy(null); setCustomCommand(''); setCopied(null); setHints(false);
     if (!projectId || !isDesktop) { setLoading(false); return; }
     setLoading(true);
     void readServices(projectId);
@@ -240,12 +244,11 @@ export default function DevPanel({
     }
   }
 
-  async function copy(service: ManagedService) {
+  async function copyText(text: string, label: string) {
     const id = projectId;
-    const body = service.logTail || `${service.stdout}\n${service.stderr}`;
     try {
-      await navigator.clipboard.writeText(`$ ${service.command}\n${body}`);
-      if (mounted.current && currentProject.current === id) { setCopied(service.id); onNotify?.('已复制日志尾部'); }
+      await navigator.clipboard.writeText(text);
+      if (mounted.current && currentProject.current === id) { setCopied(label); onNotify?.('已复制日志尾部'); }
     } catch (cause) { if (mounted.current && currentProject.current === id) { errorSource.current = 'action'; setError(`复制失败：${String(cause)}`); } }
   }
 
@@ -277,6 +280,11 @@ export default function DevPanel({
     } finally {
       if (mounted.current) setBusy(null);
     }
+  }
+
+  async function copy(service: ManagedService) {
+    const body = service.logTail || `${service.stdout}\n${service.stderr}`;
+    await copyText(`$ ${service.command}\n${body}`, service.id);
   }
   const running = services.filter(service => service.status === 'running').length;
   const readyCount = services.filter(service => service.lifecycle === 'ready').length;
@@ -503,7 +511,28 @@ export default function DevPanel({
       </section>
       <section className="terminal-console-card"><div className="terminal-console-header"><div className="terminal-title"><Terminal size={14}/><span>日志尾部</span></div><button className="terminal-btn" onClick={() => setHints(value => !value)}>{hints ? '收起排查提示' : '本地排查提示'}</button></div>
         {hints && <div className="ai-diagnostic-banner"><p>以下是固定排查提示，没有调用 AI，也未自动诊断你的项目。</p><ol><li>根据真实退出码和错误日志定位失败步骤。</li><li>核对命令、工作目录、依赖与环境变量。</li><li>仅在日志提示端口冲突时核对端口占用。</li></ol></div>}
-        <div className="terminal-body">{services.length === 0 ? <div className="terminal-empty"><span className="terminal-prompt-hint">执行命令后，日志尾部会显示在这里。</span></div> : services.map(service => {
+        <div className="terminal-body">{services.length === 0 ? (
+          recentLog ? (
+            <div className="terminal-log-entry">
+              <div className="terminal-log-header">
+                <span className="terminal-cmd-title">上次运行日志（已落盘）</span>
+                <div className="terminal-cmd-meta">
+                  <span className="exit-badge">历史记录</span>
+                  <button
+                    className="terminal-mini-btn"
+                    aria-label="复制上次运行输出"
+                    onClick={() => void copyText(recentLog, 'recent')}
+                  >
+                    {copied === 'recent' ? <Check size={12}/> : <Copy size={12}/>}
+                  </button>
+                </div>
+              </div>
+              <pre className="terminal-stdout">{recentLog}</pre>
+            </div>
+          ) : (
+            <div className="terminal-empty"><span className="terminal-prompt-hint">执行命令后，日志尾部会显示在这里。</span></div>
+          )
+        ) : services.map(service => {
           const tail = service.logTail || [service.stdout, service.stderr].filter(Boolean).join('\n');
           return <div key={service.id} className="terminal-log-entry"><div className="terminal-log-header"><span className="terminal-cmd-title">$ {service.command}</span><div className="terminal-cmd-meta"><span className={`exit-badge ${service.lifecycle === 'failed' || service.status === 'failed' ? 'exit-failure' : ''}`}>{primaryStatus(service)}{service.exitCode != null ? ` · ${service.exitCode}` : ''}</span><button className="terminal-mini-btn" aria-label={`复制 ${service.command} 输出`} onClick={() => void copy(service)}>{copied === service.id ? <Check size={12}/> : <Copy size={12}/>}</button></div></div>{service.outputTruncated && <p className="meta">输出较多，每个输出流只保留最后 64 KiB，这里显示其中的末尾 200 行。</p>}<pre className="terminal-stdout">{tail || '暂无输出'}</pre></div>;
         })}</div>

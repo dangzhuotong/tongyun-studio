@@ -24,7 +24,10 @@ pub use dev_runtime::{
     DevCandidate, DevProfile, DevScanReport, EnvPreset, ExistingProject, LifeState, PortOccupant,
     PreparedImport,
 };
-pub use processes::{ManagedService, ServiceManager};
+pub use processes::{
+    default_log_dir, project_log_path, project_log_path_rolled, read_tail, read_tail_with_backup,
+    safe_project_filename, ManagedService, RollingLogWriter, ServiceManager, MAX_LOG_FILE_BYTES,
+};
 pub use toolchain::{check_catalina_home, resolve_catalina_home, toolchain_env, HostOs, ToolchainError, ToolchainRoots};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

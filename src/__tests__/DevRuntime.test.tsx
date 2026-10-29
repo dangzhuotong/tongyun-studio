@@ -28,6 +28,7 @@ vi.mock('../bridge', () => ({
   importDevCandidates: vi.fn(async () => ({ workspace: { version: 1, projects: [], activeProjectId: null }, added: 1, attached: 0, unchanged: 0 })),
   startDevGroup: vi.fn(async () => [service]),
   stopDevGroup: vi.fn(async () => []),
+  devProjectLogTail: vi.fn(async () => null),
 }));
 
 const project = {

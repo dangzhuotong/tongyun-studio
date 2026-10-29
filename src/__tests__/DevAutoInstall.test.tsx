@@ -59,6 +59,7 @@ vi.mock('../bridge', () => ({
   importDevCandidates: vi.fn(),
   startDevGroup: vi.fn(),
   stopDevGroup: vi.fn(),
+  devProjectLogTail: vi.fn(async () => null),
   updateProjectDev: vi.fn(async () => ({ version: 1, projects: [], activeProjectId: null })),
 }));
 

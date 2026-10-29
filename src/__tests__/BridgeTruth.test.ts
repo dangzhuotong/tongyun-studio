@@ -24,6 +24,7 @@ describe('browser preview never invents local results', () => {
       () => bridge.scanDevDirectory('/tmp/synthetic', 2), () => bridge.importDevCandidates([]),
       () => bridge.startDevGroup('demo'), () => bridge.stopDevGroup('demo'),
       () => bridge.devServiceLogTail('p', 's', 20),
+      () => bridge.devProjectLogTail('p', 20),
       () => bridge.openUrl('http://localhost:1234'),
     ];
     for (const call of calls) await expect(call()).rejects.toThrow('桌面版');
