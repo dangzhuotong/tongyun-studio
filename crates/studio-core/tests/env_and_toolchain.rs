@@ -231,6 +231,7 @@ fn test_env_presets_profile_selection_and_merging() {
             port: Some(8081),
             health_url: None,
             env: dev_env,
+            ..Default::default()
         },
     );
 
@@ -246,6 +247,7 @@ fn test_env_presets_profile_selection_and_merging() {
             port: Some(9091),
             health_url: None,
             env: test_env,
+            ..Default::default()
         },
     );
 

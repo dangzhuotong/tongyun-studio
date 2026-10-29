@@ -5,7 +5,7 @@ use studio_core::agent_http::ServerHandle;
 use studio_core::{
     AiProjectContext, DbColumnInfo, DbTableInfo, DevCandidate, DevImportOutcome, ExecutionResult,
     ExistingProject, FileEntry, GitFileChange, HttpResponse, ListeningPort, ManagedService,
-    PaginatedData, ProjectInspection, ServiceManager, SqlQueryResult, Workspace, WorkspaceStore,
+    PaginatedData, Project, ProjectInspection, ServiceManager, SqlQueryResult, Workspace, WorkspaceStore,
 };
 use tauri::Manager;
 
@@ -396,6 +396,19 @@ fn restart_project_service(
 }
 
 #[tauri::command]
+fn update_project_auto_restart(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    auto_restart: bool,
+    max_restarts: Option<u32>,
+    restart_interval_secs: Option<u64>,
+) -> Result<Project, String> {
+    state
+        .store
+        .update_project_auto_restart(&id, auto_restart, max_restarts, restart_interval_secs)
+}
+
+#[tauri::command]
 fn scan_dev_directory(
     state: tauri::State<'_, AppState>,
     path: String,
@@ -564,6 +577,7 @@ pub fn run() {
             list_project_services,
             stop_project_service,
             restart_project_service,
+            update_project_auto_restart,
             scan_dev_directory,
             import_dev_candidates,
             start_dev_group,

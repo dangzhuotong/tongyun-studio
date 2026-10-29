@@ -30,6 +30,7 @@ Dev 面板继承的是运行契约，不是把 tongyun-dev 仓库嵌进来，也
 - Tomcat WAR 与 catalina 部署：识别到 Tomcat WAR（Maven packaging 为 war）的项目可配 CATALINA_HOME，按 catalina run 启停并部署 WAR 到 webapps；就绪判定沿用端口探活（默认 8080）；无 Tomcat 时启动前一句话提示。
 - 首次启动自动检测并安装依赖：Node 项目缺 `node_modules` 时按锁文件（`pnpm-lock.yaml` → `pnpm`、`yarn.lock` → `yarn`、`package-lock.json` 或无锁文件 → `npm`）自动安装依赖；Maven/Gradle 项目首启可选先拉依赖（`./mvnw dependency:resolve` / `./gradlew dependencies`）；安装过程中状态为 `installing`（安装中），输出追加进日志尾部；安装失败状态标 `failed` 并给出退出码原因；支持可在设置中关掉自动安装（`auto_install = false`），关掉后缺失依赖直接拒绝启动并报「依赖未安装（缺 node_modules）」；支持手动点击「安装依赖」或通过 Agent HTTP `POST /api/projects/:id/install` 独立安装依赖。
 - 对齐 tongyun-dev 的 Agent HTTP 契约与自动拉起：App 启动时在 127.0.0.1 自动拉起 Agent HTTP 服务（端口可配，默认 9100，环境变量 TONGYUN_STUDIO_AGENT_PORT，递增避让，不与 tongyun-dev 的 9099 冲突），提供项目清单与状态（GET /api/projects、GET /api/projects/:id）、启停与重启（POST /api/projects/:id/start、POST /api/projects/:id/stop、POST /api/projects/:id/restart）、依赖安装（POST /api/projects/:id/install）、日志尾部（GET /api/projects/:id/logs）以及同组启停（POST /api/groups/:key/start、POST /api/groups/:key/stop）。内置 DNS rebinding 与 CSRF 防护。
+- 异常退出自动重启策略（可关）：托管进程非主动停止而退出时，按项目配置可选自动重启（默认关闭以免掩盖崩溃；可配置次数上限 max_restarts 与稳定窗口/间隔上限 restart_interval_secs）；用户主动停止不触发重启；每次重启在 stderr / 日志尾部清晰记录重启次数；达到重启上限后停止重启并标为 failed，记录失败原因。提供项目级开关更新指令（桌面 update_project_auto_restart、Agent HTTP POST /api/projects/:id/auto_restart）。
 
 仍未接入：
 

@@ -1,5 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import type { Workspace, ProjectInspection, FileEntry, GitFileChange, ExecutionResult, HttpResponse, SqlQueryResult, DbTableInfo, DbColumnInfo, PaginatedData, ListeningPort, AiProjectContext, ManagedService, AgentSessionState, DevScanReport, DevCandidate, DevImportResult, AgentHttpInfo } from './contracts';
+import type { Project, Workspace, ProjectInspection, FileEntry, GitFileChange, ExecutionResult, HttpResponse, SqlQueryResult, DbTableInfo, DbColumnInfo, PaginatedData, ListeningPort, AiProjectContext, ManagedService, AgentSessionState, DevScanReport, DevCandidate, DevImportResult, AgentHttpInfo } from './contracts';
 
 export const isDesktop = isTauri();
 function native<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -47,6 +47,7 @@ export const startProjectService = (id: string, command: string, profile?: strin
 export const listProjectServices = (id: string) => native<ManagedService[]>('list_project_services', { id });
 export const stopProjectService = (id: string, serviceId: string) => native<ManagedService>('stop_project_service', { id, serviceId });
 export const restartProjectService = (id: string, serviceId: string) => native<ManagedService>('restart_project_service', { id, serviceId });
+export const updateProjectAutoRestart = (id: string, autoRestart: boolean, maxRestarts?: number | null, restartIntervalSecs?: number | null) => native<Project>('update_project_auto_restart', { id, autoRestart, maxRestarts: maxRestarts ?? null, restartIntervalSecs: restartIntervalSecs ?? null });
 export const scanDevDirectory = (path: string, depth?: number) => native<DevScanReport>('scan_dev_directory', { path, depth: depth ?? null });
 export const getAgentHttpInfo = () => native<AgentHttpInfo>('agent_http_info');
 export const importDevCandidates = (candidates: DevCandidate[]) => native<DevImportResult>('import_dev_candidates', { candidates });

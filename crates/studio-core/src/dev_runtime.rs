@@ -230,6 +230,12 @@ pub struct EnvPreset {
     pub health_url: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub env: std::collections::BTreeMap<String, String>,
+    #[serde(default, alias = "auto_restart", alias = "autoRestart", skip_serializing_if = "Option::is_none")]
+    pub auto_restart: Option<bool>,
+    #[serde(default, alias = "max_restarts", alias = "maxRestarts", alias = "restart_limit", skip_serializing_if = "Option::is_none")]
+    pub max_restarts: Option<u32>,
+    #[serde(default, alias = "restart_interval_secs", alias = "restartIntervalSecs", alias = "restart_interval", skip_serializing_if = "Option::is_none")]
+    pub restart_interval_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -298,6 +304,12 @@ pub struct DevProfile {
         skip_serializing_if = "Option::is_none"
     )]
     pub deps_installed: Option<bool>,
+    #[serde(default, alias = "auto_restart", alias = "autoRestart", skip_serializing_if = "Option::is_none")]
+    pub auto_restart: Option<bool>,
+    #[serde(default, alias = "max_restarts", alias = "maxRestarts", alias = "restart_limit", skip_serializing_if = "Option::is_none")]
+    pub max_restarts: Option<u32>,
+    #[serde(default, alias = "restart_interval_secs", alias = "restartIntervalSecs", alias = "restart_interval", skip_serializing_if = "Option::is_none")]
+    pub restart_interval_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -365,6 +377,12 @@ pub struct DevCandidate {
         skip_serializing_if = "Option::is_none"
     )]
     pub pull_deps_first: Option<bool>,
+    #[serde(default, alias = "auto_restart", alias = "autoRestart", skip_serializing_if = "Option::is_none")]
+    pub auto_restart: Option<bool>,
+    #[serde(default, alias = "max_restarts", alias = "maxRestarts", alias = "restart_limit", skip_serializing_if = "Option::is_none")]
+    pub max_restarts: Option<u32>,
+    #[serde(default, alias = "restart_interval_secs", alias = "restartIntervalSecs", alias = "restart_interval", skip_serializing_if = "Option::is_none")]
+    pub restart_interval_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -572,6 +590,9 @@ pub fn prepare_import(candidate: &DevCandidate) -> Result<PreparedImport> {
             auto_install: candidate.auto_install,
             pull_deps_first: candidate.pull_deps_first,
             deps_installed: None,
+            auto_restart: candidate.auto_restart,
+            max_restarts: candidate.max_restarts,
+            restart_interval_secs: candidate.restart_interval_secs,
         },
     })
 }
@@ -1309,6 +1330,9 @@ fn candidate(
         profiles: BTreeMap::new(),
         auto_install: Some(true),
         pull_deps_first: Some(false),
+        auto_restart: None,
+        max_restarts: None,
+        restart_interval_secs: None,
     }
 }
 
@@ -2074,6 +2098,9 @@ pub fn suggest_spring_profiles(dir: &Path) -> BTreeMap<String, EnvPreset> {
                 port,
                 health_url: None,
                 env,
+                auto_restart: None,
+                max_restarts: None,
+                restart_interval_secs: None,
             },
         );
     }
