@@ -1013,8 +1013,19 @@ pub fn switch_git_branch(project: &Project, branch: &str) -> Result<String> {
 
 pub fn execute_project_script(project: &Project, command: &str) -> Result<ExecutionResult> {
     let start = Instant::now();
-    let mut cmd = Command::new("/bin/sh");
-    cmd.arg("-c").arg(command).current_dir(&project.path);
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = Command::new("cmd.exe");
+        c.arg("/C").arg(command);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = Command::new("/bin/sh");
+        c.arg("-c").arg(command);
+        c
+    };
+    cmd.current_dir(&project.path);
     let output = run_bounded(&mut cmd, Duration::from_secs(30))?;
     let duration_ms = start.elapsed().as_millis() as u64;
     Ok(ExecutionResult {
@@ -1347,6 +1358,7 @@ pub fn get_table_data(
     })
 }
 
+#[allow(dead_code)]
 fn is_dev_port(port: u16, proc_name: &str) -> bool {
     if port < 80 || port >= 32768 {
         return false;
@@ -1384,6 +1396,7 @@ fn is_dev_port(port: u16, proc_name: &str) -> bool {
 }
 
 pub fn detect_listening_ports() -> Vec<ListeningPort> {
+    #[allow(unused_mut)]
     let mut ports = Vec::new();
     #[cfg(target_os = "macos")]
     {
@@ -1510,11 +1523,11 @@ pub fn open_in_terminal(project: &Project) -> Result<()> {
 }
 
 pub fn open_project_file(project: &Project, relative_path: &str) -> Result<()> {
-    let full = safe_project_path(project, Some(relative_path))?;
+    let _full = safe_project_path(project, Some(relative_path))?;
     #[cfg(target_os = "macos")]
     {
         let output = run_bounded(
-            Command::new("/usr/bin/open").arg("--").arg(full.to_string_lossy().as_ref()),
+            Command::new("/usr/bin/open").arg("--").arg(_full.to_string_lossy().as_ref()),
             Duration::from_secs(5),
         )?;
         if !output.success {
@@ -1755,7 +1768,7 @@ mod tests {
         let content = read_project_file_content(&project, "src/main.rs").unwrap();
         assert_eq!(content, "fn main() {}");
 
-        let script_res = execute_project_script(&project, "echo 'hello from script'").unwrap();
+        let script_res = execute_project_script(&project, "echo hello from script").unwrap();
         assert_eq!(script_res.exit_code, 0);
         assert!(script_res.stdout.contains("hello from script"));
     }
@@ -1769,6 +1782,7 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(1));
     }
 
+    #[cfg(unix)]
     #[test]
     fn project_file_writing_and_appending_enforces_sandbox() {
         let dir = tempfile::tempdir().unwrap();
@@ -1794,6 +1808,22 @@ mod tests {
         // Reject directory traversal attempts
         assert!(write_project_file(&project, "../outside.txt", "evil").is_err());
         assert!(append_project_file(&project, "../../outside.txt", "evil").is_err());
+        assert!(open_url("ftp://example.com").is_err());
+        assert!(open_url("javascript:alert(1)").is_err());
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn project_file_writing_and_appending_enforces_sandbox() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project {
+            id: "sandbox-test".into(),
+            name: "sandbox-test".into(),
+            path: dir.path().to_string_lossy().into_owned(),
+            created_at: "".into(),
+            dev: None,
+        };
+        assert!(write_project_file(&project, ".tongyun/agent-session.json", "{}").is_err());
         assert!(open_url("ftp://example.com").is_err());
         assert!(open_url("javascript:alert(1)").is_err());
     }
