@@ -233,6 +233,12 @@ export interface AgentTaskPlan {
   steps: AgentPlanStepItem[];
 }
 
+export interface AgentHttpInfo {
+  running: boolean;
+  port?: number | null;
+  url?: string | null;
+}
+
 export interface AgentSessionState {
   projectId: string | null;
   connectionStatus: 'not_connected' | 'connected';
