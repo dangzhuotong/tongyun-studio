@@ -337,6 +337,37 @@ impl ServiceManager {
                     .map_err(|e| e.to_string())?;
                 env_vars.extend(tc_env);
             }
+
+            let needs_tomcat = d.kind == "tomcat-war"
+                || d.catalina_home.is_some()
+                || command.contains("catalina")
+                || command.contains("{{tomcat}}")
+                || command.contains("{{catalina_home}}");
+            if needs_tomcat {
+                let explicit_ch = d.catalina_home.as_deref()
+                    .or_else(|| d.env.get("CATALINA_HOME").map(String::as_str))
+                    .or_else(|| preset.and_then(|p| p.env.get("CATALINA_HOME")).map(String::as_str))
+                    .map(Path::new);
+                let ch = toolchain::resolve_catalina_home(explicit_ch, &roots)
+                    .map_err(|e| e.to_string())?;
+                let ch_str = ch.to_string_lossy().into_owned();
+                env_vars.push(("CATALINA_HOME".into(), ch_str.clone()));
+                env_vars.push(("CATALINA_BASE".into(), ch_str.clone()));
+
+                let bin = ch.join("bin");
+                let sep = if roots.os == toolchain::HostOs::Windows { ";" } else { ":" };
+                if let Some((_, existing_path)) = env_vars.iter_mut().find(|(k, _)| k == "PATH") {
+                    *existing_path = format!("{}{sep}{existing_path}", bin.display());
+                } else {
+                    let base_path = &roots.base_path;
+                    let new_path = if base_path.is_empty() {
+                        bin.display().to_string()
+                    } else {
+                        format!("{}{sep}{base_path}", bin.display())
+                    };
+                    env_vars.push(("PATH".into(), new_path));
+                }
+            }
             for (k, v) in &d.env {
                 env_vars.push((k.clone(), v.clone()));
             }
@@ -720,8 +751,17 @@ fn read_output(reader: impl Read + Send + 'static, output: Arc<Mutex<Output>>) {
 fn spawn_entry(id: String, project_id: &str, directory: &str, command: &str, binding: Binding) -> Result<Entry> {
     use std::os::unix::process::CommandExt;
     if !Path::new(directory).is_dir() { return Err("项目目录不存在或不可访问。".into()); }
+    let exec_command = if command.contains("{{tomcat}}") || command.contains("{{catalina_home}}") {
+        if let Some((_, ch)) = binding.env.iter().find(|(k, _)| k == "CATALINA_HOME") {
+            command.replace("{{tomcat}}", ch).replace("{{catalina_home}}", ch)
+        } else {
+            command.to_string()
+        }
+    } else {
+        command.to_string()
+    };
     let mut cmd = Command::new("/bin/sh");
-    cmd.args(["-c", command]).current_dir(directory)
+    cmd.args(["-c", &exec_command]).current_dir(directory)
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
         .process_group(0);
     for (k, v) in &binding.env {

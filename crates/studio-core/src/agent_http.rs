@@ -414,6 +414,7 @@ fn project_overview(project: &Project, services: &ServiceManager) -> Value {
         "profiles": dev.map(|d| d.profiles.clone()).unwrap_or_default(),
         "java": dev.and_then(|d| d.java.clone()),
         "java_home": dev.and_then(|d| d.java_home.clone()),
+        "catalina_home": dev.and_then(|d| d.catalina_home.clone()),
         "node": dev.and_then(|d| d.node.clone()),
         "node_home": dev.and_then(|d| d.node_home.clone()),
         "created_at": project.created_at,

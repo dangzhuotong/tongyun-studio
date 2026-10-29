@@ -197,6 +197,7 @@ fn test_toolchain_env_injection_with_mock_roots() {
         base_path: "/usr/bin:/bin".into(),
         common_dirs: Some(Vec::new()),
         mac_jvm_dir: None,
+        catalina_home: None,
     };
 
     let env = toolchain_env(
@@ -268,4 +269,81 @@ fn test_env_presets_profile_selection_and_merging() {
     assert_eq!(dev.profiles.len(), 2);
     assert_eq!(dev.profiles["dev"].port, Some(8081));
     assert_eq!(dev.profiles["test"].port, Some(9091));
+}
+
+#[test]
+fn test_toolchain_preflight_missing_tomcat_reports_readable_error() {
+    let temp = tempfile::tempdir().unwrap();
+    let services = ServiceManager::new();
+    let project = Project {
+        id: "legacy-war-proj".into(),
+        name: "Legacy WAR Project".into(),
+        path: temp.path().to_string_lossy().into(),
+        created_at: "2026-10-29T00:00:00Z".into(),
+        dev: Some(DevProfile {
+            command: "catalina run".into(),
+            kind: "tomcat-war".into(),
+            ..Default::default()
+        }),
+    };
+
+    let err = services
+        .start(&project, "catalina run")
+        .expect_err("start must fail upfront when Tomcat is missing");
+    assert!(
+        err.contains("缺 Tomcat：未配置 CATALINA_HOME，请指定 Tomcat 安装目录。"),
+        "Expected missing Tomcat error, got: {err}"
+    );
+}
+
+#[test]
+fn test_toolchain_preflight_invalid_catalina_home_reports_readable_error() {
+    let temp = tempfile::tempdir().unwrap();
+    let services = ServiceManager::new();
+    let project = Project {
+        id: "legacy-war-proj".into(),
+        name: "Legacy WAR Project".into(),
+        path: temp.path().to_string_lossy().into(),
+        created_at: "2026-10-29T00:00:00Z".into(),
+        dev: Some(DevProfile {
+            command: "catalina run".into(),
+            kind: "tomcat-war".into(),
+            catalina_home: Some("/non/existent/path/to/tomcat".into()),
+            ..Default::default()
+        }),
+    };
+
+    let err = services
+        .start(&project, "catalina run")
+        .expect_err("start must fail upfront when catalina_home is invalid");
+    assert!(
+        err.contains("指定的 CATALINA_HOME 无效"),
+        "Expected invalid catalina_home error, got: {err}"
+    );
+}
+
+#[test]
+fn test_toolchain_preflight_valid_catalina_home_passes_and_replaces_templates() {
+    let temp = tempfile::tempdir().unwrap();
+    let tomcat = temp.path().join("mock-tomcat");
+    std::fs::create_dir_all(tomcat.join("bin")).unwrap();
+    std::fs::write(tomcat.join("bin/catalina.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+
+    let roots = ToolchainRoots {
+        os: HostOs::Linux,
+        home: None,
+        sdkman_dir: None,
+        fnm_dir: None,
+        nvm_dir: None,
+        program_files: Vec::new(),
+        appdata: None,
+        nvm_home: None,
+        base_path: "/usr/bin".into(),
+        common_dirs: None,
+        mac_jvm_dir: None,
+        catalina_home: None,
+    };
+
+    let resolved = studio_core::resolve_catalina_home(Some(&tomcat), &roots).unwrap();
+    assert_eq!(resolved, tomcat);
 }

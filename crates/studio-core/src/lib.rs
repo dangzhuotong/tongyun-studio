@@ -24,7 +24,7 @@ pub use dev_runtime::{
     PreparedImport,
 };
 pub use processes::{ManagedService, ServiceManager};
-pub use toolchain::{toolchain_env, HostOs, ToolchainError, ToolchainRoots};
+pub use toolchain::{check_catalina_home, resolve_catalina_home, toolchain_env, HostOs, ToolchainError, ToolchainRoots};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

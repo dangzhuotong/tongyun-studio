@@ -352,10 +352,11 @@ export default function DevPanel({
             ))}
           </div>
         )}
-        {(profile.java || profile.node || profile.javaHome || profile.nodeHome) && (
+        {(profile.java || profile.node || profile.javaHome || profile.nodeHome || profile.catalinaHome) && (
           <div className="toolchain-info-row" style={{ margin: '6px 0', fontSize: '12px', color: 'var(--text-muted, #888)' }}>
             {profile.java && <span style={{ marginRight: '12px' }}>Java: {profile.java}</span>}
             {profile.javaHome && <span style={{ marginRight: '12px' }}>JAVA_HOME: {profile.javaHome}</span>}
+            {profile.catalinaHome && <span style={{ marginRight: '12px' }}>CATALINA_HOME: {profile.catalinaHome}</span>}
             {profile.node && <span style={{ marginRight: '12px' }}>Node: {profile.node}</span>}
             {profile.nodeHome && <span>Node Home: {profile.nodeHome}</span>}
           </div>
