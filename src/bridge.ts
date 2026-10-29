@@ -43,7 +43,7 @@ export const chooseProjectDirectory = () => native<string | null>('choose_projec
 export const openUrl = (url: string) => native<void>('open_url', { url });
 export const writeProjectFile = (id: string, relativePath: string, content: string) => native<void>('write_project_file', { id, relativePath, content });
 export const appendProjectFile = (id: string, relativePath: string, content: string) => native<void>('append_project_file', { id, relativePath, content });
-export const startProjectService = (id: string, command: string) => native<ManagedService>('start_project_service', { id, command });
+export const startProjectService = (id: string, command: string, profile?: string | null) => native<ManagedService>('start_project_service', profile ? { id, command, profile } : { id, command });
 export const listProjectServices = (id: string) => native<ManagedService[]>('list_project_services', { id });
 export const stopProjectService = (id: string, serviceId: string) => native<ManagedService>('stop_project_service', { id, serviceId });
 export const restartProjectService = (id: string, serviceId: string) => native<ManagedService>('restart_project_service', { id, serviceId });

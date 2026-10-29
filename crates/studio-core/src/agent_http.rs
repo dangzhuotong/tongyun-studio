@@ -364,7 +364,7 @@ fn project_overview(project: &Project, services: &ServiceManager) -> Value {
         .find(|s| s.status == "running")
         .or_else(|| service_list.first());
 
-    let (running, state, elapsed_secs, timeout_secs, failure, pid, port_open, reachable) =
+    let (running, state, elapsed_secs, timeout_secs, failure, pid, port_open, reachable, active_profile) =
         match active {
             Some(s) => (
                 s.status == "running",
@@ -375,6 +375,7 @@ fn project_overview(project: &Project, services: &ServiceManager) -> Value {
                 s.pid,
                 s.port_open,
                 s.reachable,
+                s.active_profile.clone(),
             ),
             None => (
                 false,
@@ -385,6 +386,7 @@ fn project_overview(project: &Project, services: &ServiceManager) -> Value {
                 None,
                 false,
                 false,
+                None,
             ),
         };
 
@@ -407,6 +409,13 @@ fn project_overview(project: &Project, services: &ServiceManager) -> Value {
         "configured": configured,
         "group": group,
         "start_command": start_command,
+        "active_profile": active_profile,
+        "default_profile": dev.and_then(|d| d.default_profile.clone()),
+        "profiles": dev.map(|d| d.profiles.clone()).unwrap_or_default(),
+        "java": dev.and_then(|d| d.java.clone()),
+        "java_home": dev.and_then(|d| d.java_home.clone()),
+        "node": dev.and_then(|d| d.node.clone()),
+        "node_home": dev.and_then(|d| d.node_home.clone()),
         "created_at": project.created_at,
         "deps_missing": false,
         "install_command": "",
@@ -549,22 +558,16 @@ fn route(req: &Request, store: &WorkspaceStore, services: &ServiceManager) -> (u
             let cmd_from_body = body_val
                 .as_ref()
                 .and_then(|v| v.get("command").and_then(|c| c.as_str()));
+            let profile_from_body = body_val
+                .as_ref()
+                .and_then(|v| v.get("profile").and_then(|p| p.as_str()));
             let command = match cmd_from_body
                 .or_else(|| project.dev.as_ref().map(|d| d.command.as_str()))
             {
                 Some(c) if !c.trim().is_empty() => c,
-                _ => {
-                    return (
-                        200,
-                        json!({
-                            "ok": false,
-                            "error": format!("项目 {} 尚未配置启动命令", project.name),
-                            "status": project_overview(project, services)
-                        }),
-                    );
-                }
+                _ => "",
             };
-            return match services.start(project, command) {
+            return match services.start_with_profile(project, command, profile_from_body) {
                 Ok(_) => (
                     200,
                     json!({"ok": true, "status": project_overview(project, services)}),
@@ -626,40 +629,47 @@ fn route(req: &Request, store: &WorkspaceStore, services: &ServiceManager) -> (u
             else {
                 return (404, json!({"ok": false, "error": format!("项目不存在：{id}")}));
             };
+            let body_val: Option<Value> = serde_json::from_slice(&req.body).ok();
+            let cmd_from_body = body_val
+                .as_ref()
+                .and_then(|v| v.get("command").and_then(|c| c.as_str()));
+            let profile_from_body = body_val
+                .as_ref()
+                .and_then(|v| v.get("profile").and_then(|p| p.as_str()));
+
             let s_list = services.list(&project.id).unwrap_or_default();
             let running = s_list.into_iter().find(|s| s.status == "running");
             return match running {
-                Some(svc) => match services.restart(&project.id, &svc.id) {
-                    Ok(_) => (
-                        200,
-                        json!({"ok": true, "status": project_overview(project, services)}),
-                    ),
-                    Err(e) => (
-                        200,
-                        json!({"ok": false, "error": e, "status": project_overview(project, services)}),
-                    ),
-                },
-                None => {
-                    let body_val: Option<Value> = serde_json::from_slice(&req.body).ok();
-                    let cmd_from_body = body_val
-                        .as_ref()
-                        .and_then(|v| v.get("command").and_then(|c| c.as_str()));
-                    let command = match cmd_from_body
-                        .or_else(|| project.dev.as_ref().map(|d| d.command.as_str()))
-                    {
-                        Some(c) if !c.trim().is_empty() => c,
-                        _ => {
-                            return (
+                Some(svc) => {
+                    if profile_from_body.is_some() || cmd_from_body.is_some() {
+                        let _ = services.stop(&project.id, &svc.id);
+                        let cmd = cmd_from_body.unwrap_or("");
+                        match services.start_with_profile(project, cmd, profile_from_body) {
+                            Ok(_) => (
                                 200,
-                                json!({
-                                    "ok": false,
-                                    "error": format!("项目 {} 尚未配置启动命令", project.name),
-                                    "status": project_overview(project, services)
-                                }),
-                            );
+                                json!({"ok": true, "status": project_overview(project, services)}),
+                            ),
+                            Err(e) => (
+                                200,
+                                json!({"ok": false, "error": e, "status": project_overview(project, services)}),
+                            ),
                         }
-                    };
-                    match services.start(project, command) {
+                    } else {
+                        match services.restart(&project.id, &svc.id) {
+                            Ok(_) => (
+                                200,
+                                json!({"ok": true, "status": project_overview(project, services)}),
+                            ),
+                            Err(e) => (
+                                200,
+                                json!({"ok": false, "error": e, "status": project_overview(project, services)}),
+                            ),
+                        }
+                    }
+                }
+                None => {
+                    let cmd = cmd_from_body.unwrap_or("");
+                    match services.start_with_profile(project, cmd, profile_from_body) {
                         Ok(_) => (
                             200,
                             json!({"ok": true, "status": project_overview(project, services)}),

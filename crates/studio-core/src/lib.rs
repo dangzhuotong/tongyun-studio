@@ -14,15 +14,17 @@ pub type Result<T> = std::result::Result<T, String>;
 pub mod agent_http;
 pub mod dev_runtime;
 pub mod processes;
+pub mod toolchain;
 pub use agent_http::{
     bind_from, is_studio_server, resolve_agent_port, start_agent_server, AgentHttpInfo,
     ServerHandle, DEFAULT_AGENT_PORT, DEFAULT_STUDIO_AGENT_PORT,
 };
 pub use dev_runtime::{
-    scan_dev_directory, DevCandidate, DevProfile, DevScanReport, ExistingProject, LifeState,
+    scan_dev_directory, DevCandidate, DevProfile, DevScanReport, EnvPreset, ExistingProject, LifeState,
     PreparedImport,
 };
 pub use processes::{ManagedService, ServiceManager};
+pub use toolchain::{toolchain_env, HostOs, ToolchainError, ToolchainRoots};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -20,6 +20,7 @@ fn make_project(id: &str, name: &str, group: &str, depends_on: &[&str]) -> Proje
             confidence: Some("high".into()),
             depends_on: depends_on.iter().map(|s| s.to_string()).collect(),
             ready_timeout_secs: Some(5),
+            ..Default::default()
         }),
     }
 }

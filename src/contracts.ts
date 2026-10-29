@@ -10,6 +10,13 @@ export interface Project {
   dev?: DevProfile | null;
 }
 
+export interface EnvPreset {
+  label: string;
+  command?: string | null;
+  port?: number | null;
+  env?: Record<string, string>;
+}
+
 export interface DevProfile {
   command: string;
   port?: number | null;
@@ -20,6 +27,14 @@ export interface DevProfile {
   confidence?: string | null;
   dependsOn?: string[];
   readyTimeoutSecs?: number | null;
+  java?: string | null;
+  javaHome?: string | null;
+  node?: string | null;
+  nodeHome?: string | null;
+  env?: Record<string, string>;
+  defaultProfile?: string | null;
+  selectedProfile?: string | null;
+  profiles?: Record<string, EnvPreset>;
 }
 
 export interface DevCandidate {
@@ -38,6 +53,14 @@ export interface DevCandidate {
   existingHasDev?: boolean;
   group?: string | null;
   dependsOn?: string[];
+  java?: string | null;
+  javaHome?: string | null;
+  node?: string | null;
+  nodeHome?: string | null;
+  env?: Record<string, string>;
+  defaultProfile?: string | null;
+  selectedProfile?: string | null;
+  profiles?: Record<string, EnvPreset>;
 }
 
 export interface DevScanReport {
@@ -199,6 +222,7 @@ export interface ManagedService {
   logTail: string;
   readyTimeoutSecs: number;
   reachable: boolean;
+  activeProfile?: string | null;
 }
 
 export type AgentActionKind = 'terminal' | 'edit' | 'git' | 'sql' | 'http' | 'inspect' | 'plan';

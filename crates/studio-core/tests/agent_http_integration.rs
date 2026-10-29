@@ -79,6 +79,7 @@ fn setup_workspace(dir: &std::path::Path) -> (Arc<WorkspaceStore>, Arc<ServiceMa
                 confidence: Some("high".into()),
                 depends_on: vec![],
                 ready_timeout_secs: None,
+                ..Default::default()
             });
         }
     }

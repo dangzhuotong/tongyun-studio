@@ -128,6 +128,7 @@ fn test_agent_http_projects_listing_and_detail() {
         confidence: Some("high".into()),
         depends_on: vec![],
         ready_timeout_secs: None,
+        ..Default::default()
     };
 
     let p1 = ctx.add_dummy_project("api-service", Some(dev_profile));
@@ -193,6 +194,7 @@ fn test_agent_http_start_stop_restart_and_logs() {
         confidence: None,
         depends_on: vec![],
         ready_timeout_secs: None,
+        ..Default::default()
     };
     let p = ctx.add_dummy_project("worker-app", Some(dev_profile));
 
