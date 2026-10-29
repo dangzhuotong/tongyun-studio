@@ -1,44 +1,27 @@
-# 项目 skill
+# 项目技能入口与实际安装状态
 
-本项目的 agent skill 是**项目级文件**，跟代码一起提交，谁 clone 下来都能直接用。
+2026-10-29 核对：本项目 .agents/skills/ 为空；.claude/skills 和 .cursor/skills 指向它。软链存在不代表技能已安装。CLAUDE.md 若指向 AGENTS.md，继承同一套项目引导。
 
-## 目录
+## 本项目的查找顺序
 
-```text
-.agents/skills/
-  tong-project/  tong-product/  tong-ui-design/  tong-api/
-  tong-test/     tong-code-review/  tong-deploy/      # Coding 套装（同步来的；pro 版名字带 -pro）
-  <项目名>-xxx/                                        # 本项目自己的 skill
-  SOURCES.md                                           # edition + 来源仓 + commit SHA
-.claude/skills -> ../.agents/skills    # Claude Code
-.cursor/skills -> ../.agents/skills    # Cursor（Codex 直接读 .agents/skills）
-CLAUDE.md -> AGENTS.md
-.agents/notes/{proposed,implemented,rejected,archived}/        # 设计记录
-```
+1. 宿主当前列出的可用技能：按对应提供位置读取实际 SKILL.md。
+2. 项目 .agents/skills/<name>/SKILL.md：仅文件真实存在时使用。
+3. 已登记的技能仓（如 tongyun-skills）：读取该仓 skills/<name>/SKILL.md。由工作区清单定位，不写死机器绝对路径，不要求每个使用者都有同样的兄弟目录。
+4. 找不到所需技能时报告缺项。用户授权安装后才同步或安装，不虚构“已加载”。
 
-什么时候用哪个 skill，写在 [AGENTS.md](../AGENTS.md) 对应步骤里，不在这里另列一张表。
+| 场景 | 技能 |
+| --- | --- |
+| 工作流需求与范围 | tongyun-product |
+| 工作台界面设计 | tongyun-ui-design，先读根 DESIGN.md |
+| 代码验证与审查 | tongyun-test、tongyun-code-review |
+| 工人注册、通知、抢单与回写 | tongyun-pipeline；与实际 runner 版本一起核对 |
+| 查询团队、任务、执行与规矩 | tongyun-team-context；读写权限遵守该技能和用户授权 |
+| 默认可读交付文档 | tongyun-document，输出离线单文件 HTML |
 
-## 同步 Coding 套装
+引导见 [agent-start.md](agent-start.md)。文档出稿、工人执行和 UI 设计分别使用相应技能，不因为名字相似就混用。Skill 不携带真实凭据。
 
-`tong-*` 复制成真实文件（不是软链），有两个版本：
+## 历史同步脚本
 
-- **lite**（默认）：开源 MIT 精简版 `tong-xxx`，不需要任何权限；
-- **pro**：商业完整版 `tong-xxx-pro`，来自私有仓 tongyun-skills-plus，需要访问权限。
+scripts/sync-skills.sh 为脚手架遗留的 Coding 套装同步工具，lite/pro 来源、旧 tong-* 名称与当前 tongyun-* 技能目录可能不同。先检查脚本和来源，再决定是否使用；不能把文档中有命令当成已经同步成功。
 
-```bash
-bash scripts/sync-skills.sh                   # 按 SOURCES.md 里记的版本刷新
-bash scripts/sync-skills.sh --edition pro     # 切到 pro
-bash scripts/sync-skills.sh --edition lite    # 切回 lite
-```
-
-- 版本顺序：`--edition` → 环境变量 `TONGYUN_SKILLS_EDITION` → `SOURCES.md` 里上次的版本 → lite。
-- 来源：lite 用 `TONGYUN_SKILLS_LITE`（本地路径）→ `~/.cache/tongyun-skills-lite` → clone `TONGYUN_SKILLS_LITE_GIT`；pro 用 `TONGYUN_SKILLS_PLUS` → `~/.cache/tongyun-skills-plus` → SSH clone。
-- 切换版本会删掉另一版本的 7 个目录，并把 AGENTS.md 里点名的链接改成新名字；项目自己的 skill 不受影响。
-- 重跑即原地更新，并重写 `.agents/skills/SOURCES.md`；`tong-*` 的本地改动会被覆盖。
-- 只写本项目 `.agents/skills/`，不碰 `~/.cursor`、`~/.codex`、`~/.workbuddy` 等全局目录。
-- 更新后看一眼 `git diff .agents/skills AGENTS.md` 再提交。
-
-## 注意
-
-- `.agents/skills` 不能写进 `.gitignore`，它就是要提交的。
-- pro 版来自私有、商业许可的 tongyun-skills-plus。**用 pro 版的项目若改成公开，这些 skill 正文也会跟着公开**；公开前先切回 lite：`bash scripts/sync-skills.sh --edition lite`。
+本轮仅更新引导，没有运行同步器、安装全局技能、复制商业技能正文或修改用户的全局配置。

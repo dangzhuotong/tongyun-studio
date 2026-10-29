@@ -8,7 +8,7 @@
 
 ## 核心设计与内嵌工作台
 
-遵循橦云设计令牌规范（`src/styles/tongyun-tokens.css`）：暖奶茶背景（`#f6f1e9`）、抹茶绿主色（`#4d7c5d`）、蜜桃红强调（`#c2593f`），并原生支持深色主题。
+设计约定见 [DESIGN.md](DESIGN.md)：当前以桌面深色、暖色文字和芽绿主操作为基调。实际令牌及界面以源码为准。
 
 ```
 Tongyun Studio
@@ -69,9 +69,6 @@ npm install
 # 运行前端测试与类型检查
 npm run check
 
-# 启动网页端开发服务器 (仅界面预览，本机操作需桌面版)
-npm run dev
-
 # 运行 Rust 核心单元测试
 cargo test -p studio-core
 
@@ -87,3 +84,9 @@ npm run tauri build
 Agent 面板可读取项目里的 `.tongyun/agent-session.json`（备用 `.agent/session.json`），展示经格式校验的文件快照。不会生成示例执行、心跳或模型用量，也不宣称文件记录代表工人在线。没有消息消费与回执协议时，投递和暂停按钮保持不可用。
 
 当前尚未接入共享数据库记忆、跨机器 worker 调度和四个独立工具的完整后端协议。开发命令、Git 和数据库测试使用隔离夹具；最新证据见 [验收记录](docs/testing/acceptance-tests.md)。
+
+## Agent 从这里开始
+
+先读 [AGENTS.md](AGENTS.md) 与 [接入和交付引导](docs/agent-start.md)，再按 [技能入口](docs/skills.md) 读取实际 Skill。默认 HTML 报告使用 tongyun-document。
+
+TiDB 注册、抢单和现有 runner 已有基础；新 HTML 交付表已核实存在。Studio 的数据库交付与人工验收界面仍是[整合设计](docs/design/agent-workflow/report.html)，尚未接通真实接口。项目服务启动统一走受管入口，见 [开发说明](docs/development.md)。

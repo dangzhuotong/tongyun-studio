@@ -13,3 +13,23 @@
 - [`app-icon-concept-c.svg`](app-icon-concept-c.svg)：方案 C · 极简云芽工台（Minimalist Studio Mark）
 - [`app-icon-dark.svg`](app-icon-dark.svg)：方案 D · 暗夜控制舱（Studio Dark Console Edition）
 - [`studio-3d-render.jpg`](studio-3d-render.jpg)：方案 E · 3D 拟态质感渲染图
+
+## 云芽全产品图标与提示词
+
+- [设计提示词手册](tongyun-icons-v2/PROMPTS.md)：风格母版、18 款产品指令、输出模板和修正指南。
+- [完整提示词 JSON](tongyun-icons-v2/prompts.json)：18 条独立提示词及包内参考路径。
+- [离线预览](tongyun-icons-v2/index.html)：整套图标、圆形头像与封面。
+- [资源说明](tongyun-icons-v2/README.md)：SVG / PNG 规格与正式主标边界。
+
+本套为设计资源与候选方案，不更换工作台正式应用图标。
+
+## 卓橦个人品牌
+
+- [个人品牌约定](zhuotong-personal-brand.md)：已确认的名字体系、个人简介、主页文案、精神落款与云芽视觉边界，供后续个人内容和产品设计复用。
+
+## Agent 工作流整合设计
+
+- [设计说明 HTML](agent-workflow/report.html)：接入、抢单、入库交付、独立验收、恢复与缺项。
+- [深色交互原型](agent-workflow/prototype.html)：五视图与 HTML 交付验收演示，未接真实接口。
+- [实现契约 Markdown](agent-workflow/design.md)：接口、事务顺序、权限与里程碑。
+- [审核表 SQL 草案](agent-workflow/reviews.proposed.sql)：仅设计草案，未执行。

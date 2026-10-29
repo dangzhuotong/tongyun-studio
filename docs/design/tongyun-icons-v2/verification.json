@@ -1,0 +1,13 @@
+{
+  "identities": 18,
+  "png_files": 144,
+  "dimensions": "pass",
+  "responsive_widths": [
+    375,
+    768,
+    1500
+  ],
+  "all_preview_images_loaded": true,
+  "runtime": "local file; no project server",
+  "installed_to_product_repos": false
+}

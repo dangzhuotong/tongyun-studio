@@ -1,0 +1,16 @@
+{
+  "database": "tongyun_pipeline",
+  "table": "task_deliveries",
+  "created": false,
+  "verified": true,
+  "checked_at": "2026-10-29",
+  "exists": true,
+  "created_by_this_agent": false,
+  "columns_verified": 13,
+  "unique_indexes_verified": [
+    "task_id,version",
+    "task_id,request_id"
+  ],
+  "source": "live SHOW COLUMNS / SHOW INDEX",
+  "previous_attempt_error_code": 1142
+}

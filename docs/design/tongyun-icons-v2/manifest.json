@@ -1,0 +1,151 @@
+{
+  "version": "2.0",
+  "date": "2026-10-29",
+  "status": "design-assets-not-installed",
+  "products": [
+    {
+      "id": "planner",
+      "name": "橦云手帐",
+      "en": "Planner",
+      "motif": "云上叶芽",
+      "category": "效率",
+      "color": "#FFD1A9"
+    },
+    {
+      "id": "api",
+      "name": "橦云接口",
+      "en": "API",
+      "motif": "接口请求",
+      "category": "开发",
+      "color": "#F4E5CB"
+    },
+    {
+      "id": "git",
+      "name": "橦云版本",
+      "en": "Git",
+      "motif": "分支汇合",
+      "category": "开发",
+      "color": "#DCE8C2"
+    },
+    {
+      "id": "dev",
+      "name": "橦云运行",
+      "en": "Dev",
+      "motif": "终端光标",
+      "category": "开发",
+      "color": "#D6E7E8"
+    },
+    {
+      "id": "database",
+      "name": "橦云数据",
+      "en": "Database",
+      "motif": "数据层叠",
+      "category": "开发",
+      "color": "#D7E8D8"
+    },
+    {
+      "id": "studio",
+      "name": "橦云工作台",
+      "en": "Studio",
+      "motif": "工作空间",
+      "category": "开发",
+      "color": "#F2CEBA"
+    },
+    {
+      "id": "learn",
+      "name": "橦云学习",
+      "en": "Learn",
+      "motif": "展开的书页",
+      "category": "学习",
+      "color": "#E4E8C4"
+    },
+    {
+      "id": "verse",
+      "name": "橦云宇宙",
+      "en": "Verse",
+      "motif": "灵感轨道",
+      "category": "创作",
+      "color": "#D5DFD2"
+    },
+    {
+      "id": "hub",
+      "name": "橦云分发",
+      "en": "Hub",
+      "motif": "中心与渠道",
+      "category": "创作",
+      "color": "#E9DCC1"
+    },
+    {
+      "id": "image",
+      "name": "橦云形象",
+      "en": "Image",
+      "motif": "人像与取景",
+      "category": "创作",
+      "color": "#F0D8CC"
+    },
+    {
+      "id": "scaffold",
+      "name": "橦云脚手架",
+      "en": "Scaffold",
+      "motif": "搭建积木",
+      "category": "开发",
+      "color": "#E7DECD"
+    },
+    {
+      "id": "skills",
+      "name": "橦云技能",
+      "en": "Skills",
+      "motif": "能力拼图",
+      "category": "工具",
+      "color": "#E3E7CE"
+    },
+    {
+      "id": "planner-pro",
+      "name": "橦云手帐 Pro",
+      "en": "Planner Pro",
+      "motif": "叶芽与双叶",
+      "category": "效率",
+      "color": "#F4D0A4"
+    },
+    {
+      "id": "brand",
+      "name": "橦云",
+      "en": "Tongyun",
+      "motif": "品牌主标",
+      "category": "品牌",
+      "color": "#FDC89C"
+    },
+    {
+      "id": "website",
+      "name": "橦云官网",
+      "en": "Website",
+      "motif": "云芽门户",
+      "category": "品牌",
+      "color": "#FDC89C"
+    },
+    {
+      "id": "cli",
+      "name": "橦云命令行",
+      "en": "CLI",
+      "motif": "指令与闪光",
+      "category": "工具",
+      "color": "#D2E1D7"
+    },
+    {
+      "id": "wechat",
+      "name": "橦云微信",
+      "en": "WeChat Local",
+      "motif": "本地对话记录",
+      "category": "工具",
+      "color": "#D6E8C8"
+    },
+    {
+      "id": "work",
+      "name": "橦云工人机",
+      "en": "Work",
+      "motif": "有序任务队列",
+      "category": "基础设施",
+      "color": "#DBE4DB"
+    }
+  ]
+}

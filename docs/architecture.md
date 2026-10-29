@@ -43,3 +43,9 @@ Dev 面板继承的是运行契约，不是把 tongyun-dev 仓库嵌进来，也
 ## 集成限制
 
 API、Database、Git、Agent 面板仍是 Studio 自己的本地能力，没有复用另外三个独立产品的完整后端协议，也没有统一数据库或跨机器记忆。界面入口不能当成已经接入的证据。
+
+## Agent 整合增量与新会话入口
+
+共享 TiDB / 工人 runner 的自注册与公共池抢单已存在，不能从 Studio 本地快照能力推断整个团队没有调度。task_deliveries 已核实建好，Studio 尚未接通对应提交、预览和审核服务。不得用原型或新表存在代替能力证据。
+
+新会话读[接入与交付引导](agent-start.md)；实现计划见[工作流设计](design/agent-workflow/design.md)。HTML 默认按 tongyun-document 出稿，未入库阶段按引导保留原稿、记录真实可访问性和现有 runner 回写结果。

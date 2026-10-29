@@ -9,6 +9,12 @@
 - Agent 开发与验收不连接生产数据库、不自动启动用户业务项目；临时夹具可测试命令、SQL 和 Git。仅在用户要求时提交或推送产品仓。
 - 项目移除只移除登记，不删除磁盘文件。无隐式 git pull、commit 或 push。
 
+## Agent 引导与交付
+
+- 首次接入或恢复会话先读 [Agent 接入与交付引导](docs/agent-start.md)。共享任务仍使用现有 TiDB 与已核验 runner，不在工作台另写抢单逻辑。
+- 默认按可用的 tongyun-document Skill 生成 HTML 交付报告，保留原始成果与真实验证证据。新交付表已存在，但 Studio 提交／预览／人工验收 API 尚未实现；未入库须明确报告，不调用原型里的设计接口。
+- 自命名不等于注册成功；注册不等于排程安装；手动心跳不等于自动唤醒。初始化复用已有身份和单一排程入口，不停用其他客户端。
+
 ## 修改入口
 - 界面先读 DESIGN.md；需求见 docs/prd.md；架构见 docs/architecture.md。
 - 命令以 package.json、Cargo.toml 和 docs/development.md 为准。
@@ -18,7 +24,7 @@
 
 ## 技能
 项目由 tongyun-scaffold 初始化。默认 lite 技能源不可访问，项目级技能未安装。
-宿主可用时使用 tongyun-product（含 project 工种）、tongyun-ui-design、tongyun-test、tongyun-code-review；读取实际技能再执行，不把未安装写成可用。
+按 [技能入口与安装现状](docs/skills.md) 查找并读取真实技能；工人流程用 tongyun-pipeline，可读交付用 tongyun-document，不把未安装写成可用。
 
 ## 边界
 - 真实路径、私有项目清单与连接凭据不进示例和仓库；运行数据放应用配置目录。

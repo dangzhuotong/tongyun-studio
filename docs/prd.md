@@ -12,6 +12,10 @@
 | R-06 | SQLite 查询 | 只读连接，拒绝写入/DDL/ATTACH/多语句，限制执行时间和结果大小 |
 | R-07 | Agent 文件快照 | 不生成虚构工人、模型、Token、心跳、任务或执行结果；校验格式、隔离项目 |
 
-尚未接入：跨机器 worker 数据库、共享持久化记忆、真实 Agent 指令消费与回执、暂停控制、tongyun-dev 的独立 CLI / :9099、工具链注入、依赖自动安装、环境预设和跨产品完整协议。文件快照不证明在线或执行结果可信。Dev 面板的生命周期只说明本工作台托管的进程，不表示 tongyun-dev 进程已接上。
+尚未接入：跨机器 worker 数据库、共享持久化记忆、真实 Agent 指令消费与回执、暂停控制、tongyun-dev 的独立 CLI / :9099、依赖自动安装和跨产品完整协议。文件快照不证明在线或执行结果可信。Dev 面板的生命周期只说明本工作台托管的进程，不表示 tongyun-dev 进程已接上。
 
 早期 R-04 的“只拉起独立工具”设计已被内嵌面板替代。当前功能与测试证据见 [验收记录](testing/acceptance-tests.md)。
+
+## Agent 交付增量（待实现）
+
+基于现有 TiDB/runner 与已创建的 task_deliveries，新增接入状态、HTML 写入和隔离预览、版本关联与独立人工验收。细节见[工作流设计](design/agent-workflow/design.md)，现状引导见[agent-start.md](agent-start.md)。设计与建表不计为前后端功能验收通过。

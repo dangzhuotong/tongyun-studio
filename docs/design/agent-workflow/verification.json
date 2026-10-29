@@ -1,0 +1,39 @@
+{
+  "date": "2026-10-29",
+  "scope": "design artifacts and live schema read-only checks",
+  "task_deliveries_exists": true,
+  "auto_random_id": true,
+  "columns_verified": 13,
+  "unique_constraints": [
+    "task_id+version",
+    "task_id+request_id"
+  ],
+  "review_table_exists": false,
+  "lease_table_exists": false,
+  "delivery_insert_privilege_observed": false,
+  "writes_tested": false,
+  "preview_widths": [
+    375,
+    860,
+    1440
+  ],
+  "report_widths": [
+    375,
+    768,
+    1440
+  ],
+  "page_overflow": false,
+  "prototype_checks": [
+    "history read-only",
+    "changes require comment",
+    "review locks duplicate action",
+    "review event tied to V2",
+    "reset demo",
+    "invalid onboarding identity",
+    "manual schedule disclosure"
+  ],
+  "report_anchors": "pass",
+  "report_print_css": "navigation hidden; no page overflow",
+  "runtime": "local file only; no project service",
+  "deployed": false
+}
