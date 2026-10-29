@@ -75,6 +75,7 @@ export default function DevPanel({
   const [copied, setCopied] = useState<string | null>(null);
   const [hints, setHints] = useState(false);
   const [scanPath, setScanPath] = useState('');
+  const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
   const [scanDepth, setScanDepth] = useState('3');
   const [scanBusy, setScanBusy] = useState(false);
   const [report, setReport] = useState<DevScanReport | null>(null);
@@ -122,7 +123,7 @@ export default function DevPanel({
   useEffect(() => {
     mounted.current = true;
     requestSequence.current++;
-    setServices([]); setListeningPorts([]); errorSource.current = null; setError(null); setBusy(null); setCustomCommand(''); setCopied(null); setHints(false);
+    setServices([]); setListeningPorts([]); setSelectedProfile(null); errorSource.current = null; setError(null); setBusy(null); setCustomCommand(''); setCopied(null); setHints(false);
     if (!projectId || !isDesktop) { setLoading(false); return; }
     setLoading(true);
     void readServices(projectId);
@@ -149,7 +150,7 @@ export default function DevPanel({
       if (mounted.current && currentProject.current === id) { setBusy(null); setLoading(false); }
     }
   }
-  function run(command: string) { if (command.trim()) void mutate(`start:${command}`, id => startProjectService(id, command.trim())); }
+  function run(command: string, profileKey?: string | null) { if (command.trim()) void mutate(`start:${command}`, id => profileKey ? startProjectService(id, command.trim(), profileKey) : startProjectService(id, command.trim())); }
   function submit(event: FormEvent) { event.preventDefault(); run(customCommand); }
 
   async function scanDirectory() {
@@ -253,7 +254,11 @@ export default function DevPanel({
   });
 
   const agentTerminalActions = (session?.actions ?? []).filter(a => a.kind === 'terminal');
-  const registeredCommand = profile?.command.trim() ?? '';
+  const activeProfileKey = selectedProfile ?? profile?.defaultProfile ?? (profile?.profiles ? Object.keys(profile.profiles)[0] : null);
+  const activePreset = (activeProfileKey && profile?.profiles) ? profile.profiles[activeProfileKey] : null;
+  const effectiveCommand = (activePreset?.command?.trim()) || (profile?.command.trim() ?? '');
+  const effectivePort = activePreset?.port ?? profile?.port;
+  const registeredCommand = effectiveCommand;
   const registeredRunning = registeredCommand ? services.some(service => service.command === registeredCommand && service.status === 'running') : false;
 
   return <div className="feature-panel-layout" aria-labelledby="dev-title">
@@ -331,7 +336,31 @@ export default function DevPanel({
         )}
       </div>
       {profile && <section className="panel-subcard"><div className="section-heading"><div className="subcard-title"><Play size={15}/><h3>登记的运行配置</h3></div><span className="meta">{profile.label}{group ? ` · 分组 ${group}` : ''}</span></div>
-        {registeredCommand ? <div className="script-run-card"><div className="script-run-info"><div className="script-title-row"><span className="script-run-name">{profile.label}</span>{registeredRunning && <span className="mini-running-tag">进程运行中</span>}</div><code className="script-run-cmd" title={registeredCommand}>{registeredCommand}</code><span className="meta">{profile.port ? `就绪端口 ${profile.port}${profile.healthUrl ? ` · 探针 ${profile.healthUrl}` : ' · 端口可连接即就绪'}` : '未配置端口，进程存活不会标成就绪'}</span></div><button className="secondary-button-sm" disabled={!isDesktop || !!busy || loading || registeredRunning} onClick={() => run(registeredCommand)}>{busy === `start:${registeredCommand}` ? <LoaderCircle size={13} className="spin"/> : <Play size={13}/>}<span>{registeredRunning ? '已启动' : '按登记启动'}</span></button></div> : <p className="subcard-empty">这条登记没有启动命令，不能从这里启动。</p>}
+        {profile.profiles && Object.keys(profile.profiles).length > 0 && (
+          <div className="profile-presets-row" style={{ display: 'flex', gap: '8px', alignItems: 'center', margin: '8px 0' }}>
+            <span className="toolbar-label">环境预设：</span>
+            {Object.entries(profile.profiles).map(([key, p]) => (
+              <button
+                key={key}
+                type="button"
+                className={`secondary-button-sm ${activeProfileKey === key ? 'active-profile' : ''}`}
+                style={activeProfileKey === key ? { borderColor: 'var(--accent, #3b82f6)', fontWeight: 'bold' } : {}}
+                onClick={() => setSelectedProfile(key)}
+              >
+                {p.label || key}
+              </button>
+            ))}
+          </div>
+        )}
+        {(profile.java || profile.node || profile.javaHome || profile.nodeHome) && (
+          <div className="toolchain-info-row" style={{ margin: '6px 0', fontSize: '12px', color: 'var(--text-muted, #888)' }}>
+            {profile.java && <span style={{ marginRight: '12px' }}>Java: {profile.java}</span>}
+            {profile.javaHome && <span style={{ marginRight: '12px' }}>JAVA_HOME: {profile.javaHome}</span>}
+            {profile.node && <span style={{ marginRight: '12px' }}>Node: {profile.node}</span>}
+            {profile.nodeHome && <span>Node Home: {profile.nodeHome}</span>}
+          </div>
+        )}
+        {registeredCommand ? <div className="script-run-card"><div className="script-run-info"><div className="script-title-row"><span className="script-run-name">{profile.label}</span>{registeredRunning && <span className="mini-running-tag">进程运行中</span>}</div><code className="script-run-cmd" title={registeredCommand}>{registeredCommand}</code><span className="meta">{effectivePort ? `就绪端口 ${effectivePort}${profile.healthUrl ? ` · 探针 ${profile.healthUrl}` : ' · 端口可连接即就绪'}` : '未配置端口，进程存活不会标成就绪'}</span></div><button className="secondary-button-sm" disabled={!isDesktop || !!busy || loading || registeredRunning} onClick={() => run(registeredCommand, activeProfileKey)}>{busy === `start:${registeredCommand}` ? <LoaderCircle size={13} className="spin"/> : <Play size={13}/>}<span>{registeredRunning ? '已启动' : '按登记启动'}</span></button></div> : <p className="subcard-empty">这条登记没有启动命令，不能从这里启动。</p>}
         {members.length > 1 && <div className="script-actions-pair"><span className="meta">同组 {members.length} 个：{members.map(item => item.name).join('、')}</span><button className="secondary-button-sm" disabled={!isDesktop || !!busy} onClick={() => void runGroup('start')}>{busy === 'group-start' ? <LoaderCircle size={13} className="spin"/> : <Play size={13}/>}启动同组</button><button className="secondary-button-sm" disabled={!isDesktop || !!busy} onClick={() => void runGroup('stop')}><Square size={13}/>{busy === 'group-stop' ? '停止中…' : '停止同组'}</button></div>}
       </section>}
       {agentTerminalActions.length > 0 && (
@@ -370,7 +399,7 @@ export default function DevPanel({
           const label = primaryStatus(service);
           const detail = secondaryStatus(service);
           const dot = service.lifecycle === 'failed' || service.status === 'failed' ? 'error' : service.lifecycle === 'ready' ? 'available' : service.status === 'running' ? 'active-pulse' : '';
-          return <div key={service.id} className="service-card"><div className="service-header"><div className="service-title-info"><span className={`status-dot ${dot}`}/><span className="service-name">{label}</span>{detail && <span className="meta">{detail}</span>}<code className="service-cmd">{service.command}</code></div><div className="service-actions"><button className="service-btn" disabled={!isDesktop || !!busy} onClick={() => void mutate(`restart:${service.id}`, id => restartProjectService(id, service.id))}><RotateCw size={13}/>{busy === `restart:${service.id}` ? '重启中…' : '重启'}</button><button className="service-btn stop" disabled={!isDesktop || !!busy || service.status !== 'running'} onClick={() => void mutate(`stop:${service.id}`, id => stopProjectService(id, service.id))}><Square size={13}/>{busy === `stop:${service.id}` ? '停止中…' : '停止'}</button></div></div><div className="service-footer"><span className="meta">{service.pid ? `进程组 ${service.pid}` : `退出码 ${service.exitCode ?? '无（信号终止）'}`}</span><span className="meta">{service.port ? `端口 ${service.port}${service.portOpen ? ' 已通' : ' 未通'}` : '无就绪端口'}</span><span className="meta">启动于 {new Date(service.startedAt).toLocaleString()}</span></div>{service.failure && <p className="meta">{service.failure}</p>}</div>;
+          return <div key={service.id} className="service-card"><div className="service-header"><div className="service-title-info"><span className={`status-dot ${dot}`}/><span className="service-name">{label}</span>{service.activeProfile && <span className="mini-running-tag">预设: {service.activeProfile}</span>}{detail && <span className="meta">{detail}</span>}<code className="service-cmd">{service.command}</code></div><div className="service-actions"><button className="service-btn" disabled={!isDesktop || !!busy} onClick={() => void mutate(`restart:${service.id}`, id => restartProjectService(id, service.id))}><RotateCw size={13}/>{busy === `restart:${service.id}` ? '重启中…' : '重启'}</button><button className="service-btn stop" disabled={!isDesktop || !!busy || service.status !== 'running'} onClick={() => void mutate(`stop:${service.id}`, id => stopProjectService(id, service.id))}><Square size={13}/>{busy === `stop:${service.id}` ? '停止中…' : '停止'}</button></div></div><div className="service-footer"><span className="meta">{service.pid ? `进程组 ${service.pid}` : `退出码 ${service.exitCode ?? '无（信号终止）'}`}</span><span className="meta">{service.port ? `端口 ${service.port}${service.portOpen ? ' 已通' : ' 未通'}` : '无就绪端口'}</span><span className="meta">启动于 {new Date(service.startedAt).toLocaleString()}</span></div>{service.failure && <p className="meta">{service.failure}</p>}</div>;
         })}</div>}
       </section>
       <section className="terminal-console-card"><div className="terminal-console-header"><div className="terminal-title"><Terminal size={14}/><span>日志尾部</span></div><button className="terminal-btn" onClick={() => setHints(value => !value)}>{hints ? '收起排查提示' : '本地排查提示'}</button></div>

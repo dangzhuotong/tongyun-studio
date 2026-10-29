@@ -1,5 +1,6 @@
 //! App-owned, non-detached command processes. Dropping the manager stops its process groups.
 //! Service records survive tab/project navigation, but are intentionally not restored after App exit.
+use crate::toolchain;
 use crate::dev_runtime::{
     self, derive_state, LifeState, StateInput, LOG_TAIL_LINES, READY_TIMEOUT_SECS,
 };
@@ -45,35 +46,57 @@ pub struct ManagedService {
     pub ready_timeout_secs: u64,
     /// True only for `ready` and `port_open`. A live process is not enough.
     pub reachable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_profile: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 #[allow(dead_code)]
 struct Binding {
     expects_port: bool,
     port: Option<u16>,
     health_url: Option<String>,
     ready_timeout_secs: u64,
+    active_profile: Option<String>,
+    env: Vec<(String, String)>,
 }
 
 impl Binding {
     fn none() -> Self {
-        Self { expects_port: false, port: None, health_url: None, ready_timeout_secs: 0 }
+        Self {
+            expects_port: false,
+            port: None,
+            health_url: None,
+            ready_timeout_secs: 0,
+            active_profile: None,
+            env: Vec::new(),
+        }
     }
 
     fn for_project(project: &Project, command: &str) -> Self {
         let Some(dev) = project.dev.as_ref() else { return Self::none() };
-        if dev.command.trim() != command.trim() {
+        let matching_profile = dev.profiles.iter().find(|(_, p)| {
+            p.command.as_deref().map(str::trim) == Some(command.trim())
+        });
+        if dev.command.trim() != command.trim() && matching_profile.is_none() {
             return Self::none();
         }
-        let port = dev.port.filter(|port| *port > 0);
-        let health_url = dev.health_url.clone().filter(|url| !url.trim().is_empty());
+        let port = matching_profile
+            .and_then(|(_, p)| p.port)
+            .or(dev.port)
+            .filter(|port| *port > 0);
+        let health_url = matching_profile
+            .and_then(|(_, p)| p.health_url.clone())
+            .or_else(|| dev.health_url.clone())
+            .filter(|url| !url.trim().is_empty());
         let ready_timeout_secs = dev.ready_timeout_secs.unwrap_or(if port.is_some() { READY_TIMEOUT_SECS } else { 0 });
         Self {
             expects_port: port.is_some(),
             port,
             health_url,
             ready_timeout_secs,
+            active_profile: matching_profile.map(|(name, _)| name.clone()),
+            env: Vec::new(),
         }
     }
 }
@@ -102,6 +125,7 @@ struct Entry {
     port: Option<u16>,
     health_url: Option<String>,
     ready_timeout_secs: u64,
+    binding_env: Vec<(String, String)>,
     started: Instant,
     user_stopped: bool,
     port_cache: Option<(Instant, bool)>,
@@ -249,6 +273,8 @@ impl Entry {
             port: self.port,
             health_url: self.health_url.clone(),
             ready_timeout_secs: self.ready_timeout_secs,
+            active_profile: self.snapshot.active_profile.clone(),
+            env: self.binding_env.clone(),
         }
     }
 }
@@ -265,9 +291,75 @@ pub struct ServiceManager { registry: Mutex<Registry> }
 impl ServiceManager {
     pub fn new() -> Self { Self::default() }
     pub fn start(&self, project: &Project, command: &str) -> Result<ManagedService> {
-        let command = command.trim();
-        if command.is_empty() || command.len() > 8192 || command.contains('\0') { return Err("命令为空、过长或包含无效字符。".into()); }
-        let binding = Binding::for_project(project, command);
+        self.start_with_profile(project, command, None)
+    }
+
+    pub fn start_with_profile(
+        &self,
+        project: &Project,
+        command: &str,
+        profile_name: Option<&str>,
+    ) -> Result<ManagedService> {
+        let mut command = command.trim();
+        let dev = project.dev.as_ref();
+        let effective_profile_name = profile_name
+            .or_else(|| dev.and_then(|d| d.default_profile.as_deref()));
+        let preset = effective_profile_name
+            .and_then(|name| dev.and_then(|d| d.profiles.get(name)));
+
+        // If command is empty or matches dev.command, apply profile command override if present
+        if let Some(p) = preset {
+            if let Some(ref c) = p.command {
+                if command.is_empty() || dev.is_some_and(|d| command == d.command.trim()) {
+                    command = c.trim();
+                }
+            }
+        }
+        if command.is_empty() {
+            if let Some(d) = dev {
+                command = d.command.trim();
+            }
+        }
+        if command.is_empty() || command.len() > 8192 || command.contains('\0') {
+            return Err("命令为空、过长或包含无效字符。".into());
+        }
+
+        // Toolchain pre-flight check and environment assembly
+        let mut env_vars = Vec::new();
+        if let Some(d) = dev {
+            let roots = toolchain::ToolchainRoots::from_env();
+            let java = d.java.as_deref();
+            let java_home = d.java_home.as_deref().map(Path::new);
+            let node = d.node.as_deref();
+            let node_home = d.node_home.as_deref().map(Path::new);
+            if java.is_some() || java_home.is_some() || node.is_some() || node_home.is_some() {
+                let tc_env = toolchain::toolchain_env(java, java_home, node, node_home, &roots)
+                    .map_err(|e| e.to_string())?;
+                env_vars.extend(tc_env);
+            }
+            for (k, v) in &d.env {
+                env_vars.push((k.clone(), v.clone()));
+            }
+        }
+        if let Some(p) = preset {
+            for (k, v) in &p.env {
+                env_vars.push((k.clone(), v.clone()));
+            }
+        }
+
+        let mut binding = Binding::for_project(project, command);
+        if let Some(p) = preset {
+            if let Some(port) = p.port.filter(|port| *port > 0) {
+                binding.port = Some(port);
+                binding.expects_port = true;
+            }
+            if let Some(ref h) = p.health_url {
+                binding.health_url = Some(h.clone());
+            }
+            binding.active_profile = effective_profile_name.map(str::to_string);
+        }
+        binding.env = env_vars;
+
         let mut registry = self.registry.lock().map_err(|_| "服务记录锁不可用")?;
         if registry.shutting_down { return Err("工作台正在退出，不能启动服务。".into()); }
         for entry in registry.entries.values_mut() {
@@ -361,6 +453,7 @@ impl ServiceManager {
             log_tail: format!("--- 跳过启动 ---\n{reason}"),
             ready_timeout_secs,
             reachable: false,
+            active_profile: None,
         };
         let entry = Entry {
             snapshot: snapshot.clone(),
@@ -374,6 +467,7 @@ impl ServiceManager {
             port,
             health_url: dev.and_then(|d| d.health_url.clone()),
             ready_timeout_secs,
+            binding_env: Vec::new(),
             started: Instant::now(),
             user_stopped: false,
             port_cache: None,
@@ -626,9 +720,14 @@ fn read_output(reader: impl Read + Send + 'static, output: Arc<Mutex<Output>>) {
 fn spawn_entry(id: String, project_id: &str, directory: &str, command: &str, binding: Binding) -> Result<Entry> {
     use std::os::unix::process::CommandExt;
     if !Path::new(directory).is_dir() { return Err("项目目录不存在或不可访问。".into()); }
-    let mut child = Command::new("/bin/sh").args(["-c", command]).current_dir(directory)
+    let mut cmd = Command::new("/bin/sh");
+    cmd.args(["-c", command]).current_dir(directory)
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
-        .process_group(0).spawn().map_err(|e| format!("启动服务失败：{e}"))?;
+        .process_group(0);
+    for (k, v) in &binding.env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("启动服务失败：{e}"))?;
     let pgid = child.id();
     let stdout = Arc::new(Mutex::new(Output::default()));
     let stderr = Arc::new(Mutex::new(Output::default()));
@@ -658,6 +757,7 @@ fn spawn_entry(id: String, project_id: &str, directory: &str, command: &str, bin
             log_tail: String::new(),
             ready_timeout_secs,
             reachable: false,
+            active_profile: binding.active_profile.clone(),
         },
         directory: directory.into(),
         child: Some(child),
@@ -669,6 +769,7 @@ fn spawn_entry(id: String, project_id: &str, directory: &str, command: &str, bin
         port,
         health_url,
         ready_timeout_secs,
+        binding_env: binding.env,
         started: Instant::now(),
         user_stopped: false,
         port_cache: None,
@@ -722,6 +823,7 @@ mod tests {
                 confidence: Some("high".into()),
                 depends_on: Vec::new(),
                 ready_timeout_secs: None,
+                ..Default::default()
             }),
         }
     }

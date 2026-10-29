@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fs,
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
@@ -128,7 +128,22 @@ pub fn derive_state(input: StateInput) -> (LifeState, Option<String>) {
     (LifeState::Stopped, None)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvPreset {
+    #[serde(default)]
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_url: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct DevProfile {
     pub command: String,
@@ -146,6 +161,22 @@ pub struct DevProfile {
     pub depends_on: Vec<String>,
     #[serde(default, alias = "ready_timeout_secs", skip_serializing_if = "Option::is_none")]
     pub ready_timeout_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub java: Option<String>,
+    #[serde(default, alias = "java_home", skip_serializing_if = "Option::is_none")]
+    pub java_home: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    #[serde(default, alias = "node_home", skip_serializing_if = "Option::is_none")]
+    pub node_home: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
+    #[serde(default, alias = "default_profile", skip_serializing_if = "Option::is_none")]
+    pub default_profile: Option<String>,
+    #[serde(default, alias = "selected_profile", skip_serializing_if = "Option::is_none")]
+    pub selected_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub profiles: std::collections::BTreeMap<String, EnvPreset>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,6 +206,22 @@ pub struct DevCandidate {
     pub group: Option<String>,
     #[serde(default, alias = "depends_on", skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub java: Option<String>,
+    #[serde(default, alias = "java_home", skip_serializing_if = "Option::is_none")]
+    pub java_home: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    #[serde(default, alias = "node_home", skip_serializing_if = "Option::is_none")]
+    pub node_home: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
+    #[serde(default, alias = "default_profile", skip_serializing_if = "Option::is_none")]
+    pub default_profile: Option<String>,
+    #[serde(default, alias = "selected_profile", skip_serializing_if = "Option::is_none")]
+    pub selected_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub profiles: std::collections::BTreeMap<String, EnvPreset>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -350,6 +397,14 @@ pub fn prepare_import(candidate: &DevCandidate) -> Result<PreparedImport> {
             confidence,
             depends_on: candidate.depends_on.clone(),
             ready_timeout_secs: None,
+            java: candidate.java.clone(),
+            java_home: candidate.java_home.clone(),
+            node: candidate.node.clone(),
+            node_home: candidate.node_home.clone(),
+            env: candidate.env.clone(),
+            default_profile: candidate.default_profile.clone(),
+            selected_profile: candidate.selected_profile.clone(),
+            profiles: candidate.profiles.clone(),
         },
     })
 }
@@ -483,9 +538,25 @@ fn inspect_maven(dir: &Path) -> Option<DirHit> {
         } else {
             why.push(format!("端口来自 application 配置：{port}。"));
         }
+        let mut cand = candidate(dir, "spring-boot-maven", "Spring Boot（Maven）", "high", command, Some(port), guessed, why);
+        let profiles = suggest_spring_profiles(dir);
+        if !profiles.is_empty() {
+            if profiles.contains_key("dev") {
+                cand.default_profile = Some("dev".into());
+                cand.why.push("检测到 Spring 环境预设：默认 dev。".into());
+            } else if let Some(first) = profiles.keys().next() {
+                cand.default_profile = Some(first.clone());
+                cand.why.push("检测到 Spring 环境预设。".into());
+            }
+            cand.profiles = profiles;
+        }
+        if let Some(jv) = pom_java_version(&pom) {
+            cand.why.push(format!("Java 版本要求：{jv}。"));
+            cand.java = Some(jv);
+        }
         return Some(DirHit {
             container: modules,
-            candidate: Some(candidate(dir, "spring-boot-maven", "Spring Boot（Maven）", "high", command, Some(port), guessed, why)),
+            candidate: Some(cand),
         });
     }
     if packaging.as_deref() == Some("war") {
@@ -529,9 +600,21 @@ fn inspect_gradle(dir: &Path) -> Option<DirHit> {
         } else {
             why.push(format!("端口来自 application 配置：{port}。"));
         }
+        let mut cand = candidate(dir, "spring-boot-gradle", "Spring Boot（Gradle）", "high", command, Some(port), guessed, why);
+        let profiles = suggest_spring_profiles(dir);
+        if !profiles.is_empty() {
+            if profiles.contains_key("dev") {
+                cand.default_profile = Some("dev".into());
+                cand.why.push("检测到 Spring 环境预设：默认 dev。".into());
+            } else if let Some(first) = profiles.keys().next() {
+                cand.default_profile = Some(first.clone());
+                cand.why.push("检测到 Spring 环境预设。".into());
+            }
+            cand.profiles = profiles;
+        }
         return Some(DirHit {
             container: multi,
-            candidate: Some(candidate(dir, "spring-boot-gradle", "Spring Boot（Gradle）", "high", command, Some(port), guessed, why)),
+            candidate: Some(cand),
         });
     }
     None
@@ -590,9 +673,14 @@ fn inspect_node(dir: &Path) -> Option<DirHit> {
         why.push("没有写明端口，启动后不会把进程存活当成就绪。".into());
         (None, false)
     };
+    let mut cand = candidate(dir, kind, label, confidence, &command, port, guessed, why);
+    if let Some(nv) = node_version_from_package(&value) {
+        cand.why.push(format!("Node 版本要求：{nv}。"));
+        cand.node = Some(nv);
+    }
     Some(DirHit {
         container: false,
-        candidate: Some(candidate(dir, kind, label, confidence, &command, port, guessed, why)),
+        candidate: Some(cand),
     })
 }
 
@@ -686,6 +774,14 @@ fn candidate(
         existing_has_dev: false,
         group: None,
         depends_on: Vec::new(),
+        java: None,
+        java_home: None,
+        node: None,
+        node_home: None,
+        env: BTreeMap::new(),
+        default_profile: None,
+        selected_profile: None,
+        profiles: BTreeMap::new(),
     }
 }
 
@@ -1026,4 +1122,129 @@ mod tests {
         assert!(report.candidates.iter().all(|item| item.path != fs::canonicalize(root.path()).unwrap().to_string_lossy()));
         assert!(report.candidates.iter().any(|item| item.path.ends_with("/suite/child") || item.path.ends_with("\\suite\\child") || item.kind == "spring-boot-maven" && item.name == "child"));
     }
+}
+
+pub fn spring_profile_from_filename(name: &str) -> Option<String> {
+    let rest = name.strip_prefix("application-")?;
+    let stem = rest
+        .strip_suffix(".yml")
+        .or_else(|| rest.strip_suffix(".yaml"))
+        .or_else(|| rest.strip_suffix(".properties"))?;
+    if stem.is_empty()
+        || stem.contains('.')
+        || stem.contains('/')
+        || stem.contains('\\')
+        || !stem
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return None;
+    }
+    Some(stem.to_string())
+}
+
+pub fn suggest_spring_profiles(dir: &Path) -> BTreeMap<String, EnvPreset> {
+    let res = dir.join("src/main/resources");
+    let Ok(rd) = fs::read_dir(&res) else {
+        return BTreeMap::new();
+    };
+    let mut names: Vec<String> = rd
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    let mut out = BTreeMap::new();
+    for name in names {
+        let Some(profile) = spring_profile_from_filename(&name) else {
+            continue;
+        };
+        let text = read_limited(&res.join(&name), 256 * 1024).unwrap_or_default();
+        let port = server_port(&text);
+        let mut env = BTreeMap::new();
+        env.insert("SPRING_PROFILES_ACTIVE".into(), profile.clone());
+        let start = if dir.join("mvnw").is_file() {
+            Some(format!(
+                "./mvnw spring-boot:run -Dspring-boot.run.profiles={profile}"
+            ))
+        } else if dir.join("gradlew").is_file() {
+            Some(format!(
+                "./gradlew bootRun --args='--spring.profiles.active={profile}'"
+            ))
+        } else if dir.join("build.gradle").is_file() || dir.join("build.gradle.kts").is_file() {
+            Some(format!(
+                "gradle bootRun --args='--spring.profiles.active={profile}'"
+            ))
+        } else if dir.join("pom.xml").is_file() {
+            Some(format!(
+                "mvn spring-boot:run -Dspring-boot.run.profiles={profile}"
+            ))
+        } else {
+            Some(format!(
+                "mvn spring-boot:run -Dspring-boot.run.profiles={profile}"
+            ))
+        };
+        out.insert(
+            profile.clone(),
+            EnvPreset {
+                label: profile,
+                command: start,
+                port,
+                health_url: None,
+                env,
+            },
+        );
+    }
+    out
+}
+
+pub fn normalize_java_version(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    if t.is_empty() || t.starts_with('$') {
+        return None;
+    }
+    if t == "1.8" || t == "8" {
+        return Some("8".into());
+    }
+    let digits: String = t.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let first = digits.split('.').next().unwrap_or("");
+    if let Ok(n) = first.parse::<u32>() {
+        if (8..=30).contains(&n) {
+            return Some(n.to_string());
+        }
+    }
+    None
+}
+
+pub fn pom_java_version(pom: &str) -> Option<String> {
+    for tag in [
+        "java.version",
+        "maven.compiler.source",
+        "maven.compiler.target",
+        "maven.compiler.release",
+    ] {
+        let open = format!("<{tag}>");
+        let close = format!("</{tag}>");
+        if let Some(start) = pom.find(&open) {
+            let after = &pom[start + open.len()..];
+            if let Some(end) = after.find(&close) {
+                if let Some(norm) = normalize_java_version(&after[..end]) {
+                    return Some(norm);
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn node_version_from_package(value: &serde_json::Value) -> Option<String> {
+    let engines = value.get("engines").and_then(|v| v.as_object())?;
+    let node_val = engines.get("node").and_then(|v| v.as_str())?;
+    for part in node_val.split(|c: char| !c.is_ascii_digit()) {
+        if let Ok(n) = part.parse::<u32>() {
+            if (12..=30).contains(&n) {
+                return Some(n.to_string());
+            }
+        }
+    }
+    None
 }

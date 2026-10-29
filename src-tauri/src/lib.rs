@@ -326,9 +326,10 @@ fn start_project_service(
     state: tauri::State<'_, AppState>,
     id: String,
     command: String,
+    profile: Option<String>,
 ) -> Result<ManagedService, String> {
     let project = state.store.project(&id)?;
-    state.services.start(&project, &command)
+    state.services.start_with_profile(&project, &command, profile.as_deref())
 }
 
 #[tauri::command]
