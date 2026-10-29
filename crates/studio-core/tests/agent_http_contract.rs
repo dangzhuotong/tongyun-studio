@@ -169,6 +169,25 @@ fn test_agent_http_projects_listing_and_detail() {
     assert_eq!(item1["port"], 8080);
     assert_eq!(item1["group"], "backend");
     assert_eq!(item1["start_command"], "echo backend-running");
+    assert_eq!(item1["auto_restart"], false);
+    assert_eq!(item1["max_restarts"], 3);
+    assert_eq!(item1["restart_interval_secs"], 60);
+    assert_eq!(item1["restart_count"], 0);
+
+    // Verify updating auto_restart via HTTP POST
+    let (status_ar, resp_ar) = http_request(
+        ctx.port,
+        "POST",
+        &format!("/api/projects/{}/auto_restart", p1.id),
+        Some(r#"{"auto_restart": true, "max_restarts": 5, "restart_interval_secs": 15}"#),
+        None,
+        None,
+    );
+    assert_eq!(status_ar, 200);
+    assert_eq!(resp_ar["ok"], true);
+    assert_eq!(resp_ar["status"]["auto_restart"], true);
+    assert_eq!(resp_ar["status"]["max_restarts"], 5);
+    assert_eq!(resp_ar["status"]["restart_interval_secs"], 15);
 
     let item2 = arr.iter().find(|x| x["id"] == p2.id).unwrap();
     assert_eq!(item2["name"], "docs-site");

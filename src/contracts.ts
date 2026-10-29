@@ -15,6 +15,9 @@ export interface EnvPreset {
   command?: string | null;
   port?: number | null;
   env?: Record<string, string>;
+  autoRestart?: boolean | null;
+  maxRestarts?: number | null;
+  restartIntervalSecs?: number | null;
 }
 
 export interface DevProfile {
@@ -39,6 +42,9 @@ export interface DevProfile {
   autoInstall?: boolean | null;
   pullDepsFirst?: boolean | null;
   depsInstalled?: boolean | null;
+  autoRestart?: boolean | null;
+  maxRestarts?: number | null;
+  restartIntervalSecs?: number | null;
 }
 
 export interface DevCandidate {
@@ -68,6 +74,9 @@ export interface DevCandidate {
   profiles?: Record<string, EnvPreset>;
   autoInstall?: boolean | null;
   pullDepsFirst?: boolean | null;
+  autoRestart?: boolean | null;
+  maxRestarts?: number | null;
+  restartIntervalSecs?: number | null;
 }
 
 export interface DevScanReport {
@@ -232,6 +241,9 @@ export interface ManagedService {
   readyTimeoutSecs: number;
   reachable: boolean;
   activeProfile?: string | null;
+  restartCount?: number;
+  autoRestart?: boolean | null;
+  maxRestarts?: number | null;
 }
 
 export type AgentActionKind = 'terminal' | 'edit' | 'git' | 'sql' | 'http' | 'inspect' | 'plan';

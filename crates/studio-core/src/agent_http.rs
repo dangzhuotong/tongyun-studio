@@ -452,6 +452,10 @@ fn project_overview(project: &Project, services: &ServiceManager) -> Value {
         "pull_deps_first": dev.and_then(|d| d.pull_deps_first).unwrap_or(false),
         "port_conflict": port_conflict,
         "port_holder": port_holder,
+        "auto_restart": dev.and_then(|d| d.auto_restart).unwrap_or(false),
+        "max_restarts": dev.and_then(|d| d.max_restarts).unwrap_or(3),
+        "restart_interval_secs": dev.and_then(|d| d.restart_interval_secs).unwrap_or(60),
+        "restart_count": active.map(|s| s.restart_count).unwrap_or(0),
     })
 }
 
@@ -668,6 +672,34 @@ fn route(req: &Request, store: &WorkspaceStore, services: &ServiceManager) -> (u
             return (
                 200,
                 json!({"ok": true, "status": project_overview(project, services)}),
+            );
+        }
+
+        if let Some(raw_id) = project_route(path, "auto_restart") {
+            let id = url_decode(raw_id);
+            let body_val: Option<Value> = serde_json::from_slice(&req.body).ok();
+            let auto_restart = body_val
+                .as_ref()
+                .and_then(|v| v.get("auto_restart").or_else(|| v.get("autoRestart")))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let max_restarts = body_val
+                .as_ref()
+                .and_then(|v| v.get("max_restarts").or_else(|| v.get("maxRestarts")))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32);
+            let restart_interval_secs = body_val
+                .as_ref()
+                .and_then(|v| v.get("restart_interval_secs").or_else(|| v.get("restartIntervalSecs")))
+                .and_then(|v| v.as_u64());
+
+            let updated_project = match store.update_project_auto_restart(&id, auto_restart, max_restarts, restart_interval_secs) {
+                Ok(p) => p,
+                Err(e) => return (400, json!({"ok": false, "error": e})),
+            };
+            return (
+                200,
+                json!({"ok": true, "status": project_overview(&updated_project, services)}),
             );
         }
 

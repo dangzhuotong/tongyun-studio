@@ -224,6 +224,12 @@ pub struct ManagedService {
     pub reachable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_profile: Option<String>,
+    #[serde(default)]
+    pub restart_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_restart: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_restarts: Option<u32>,
 }
 
 #[derive(Clone, Default)]
@@ -238,6 +244,9 @@ struct Binding {
     auto_install: bool,
     pull_deps_first: bool,
     deps_installed: bool,
+    auto_restart: bool,
+    max_restarts: u32,
+    restart_interval_secs: u64,
 }
 
 impl Binding {
@@ -252,6 +261,9 @@ impl Binding {
             auto_install: true,
             pull_deps_first: false,
             deps_installed: false,
+            auto_restart: false,
+            max_restarts: 3,
+            restart_interval_secs: 60,
         }
     }
 
@@ -282,6 +294,18 @@ impl Binding {
         let auto_install = dev.auto_install.unwrap_or(true);
         let pull_deps_first = dev.pull_deps_first.unwrap_or(false);
         let deps_installed = dev.deps_installed.unwrap_or(false);
+        let auto_restart = matching_profile
+            .and_then(|(_, p)| p.auto_restart)
+            .or(dev.auto_restart)
+            .unwrap_or(false);
+        let max_restarts = matching_profile
+            .and_then(|(_, p)| p.max_restarts)
+            .or(dev.max_restarts)
+            .unwrap_or(3);
+        let restart_interval_secs = matching_profile
+            .and_then(|(_, p)| p.restart_interval_secs)
+            .or(dev.restart_interval_secs)
+            .unwrap_or(60);
         Self {
             expects_port: port.is_some(),
             port,
@@ -292,6 +316,9 @@ impl Binding {
             auto_install,
             pull_deps_first,
             deps_installed,
+            auto_restart,
+            max_restarts,
+            restart_interval_secs,
         }
     }
 }
@@ -333,6 +360,11 @@ struct Entry {
     #[allow(dead_code)]
     service_command: String,
     log_writer: Option<RollingLogWriter>,
+    auto_restart: bool,
+    max_restarts: u32,
+    restart_interval_secs: u64,
+    restart_count: u32,
+    last_crash_at: Option<Instant>,
 }
 impl Entry {
     fn refresh(&mut self) -> Result<()> {
@@ -453,14 +485,74 @@ impl Entry {
             }
             if self.reaped && !group_alive(self.pgid)? {
                 self.snapshot.pid = None;
-                self.snapshot.status = if self.user_stopped {
-                    "stopped"
-                } else if self.expects_port || self.snapshot.exit_code != Some(0) {
-                    "failed"
+                if self.user_stopped {
+                    self.snapshot.status = "stopped".into();
                 } else {
-                    "exited"
+                    let abnormal = self.expects_port || self.snapshot.exit_code != Some(0);
+                    if !abnormal {
+                        self.snapshot.status = "exited".into();
+                    } else if self.auto_restart {
+                        let now = Instant::now();
+                        if self.restart_interval_secs > 0 {
+                            let reset = match self.last_crash_at {
+                                Some(last) => now.duration_since(last) >= Duration::from_secs(self.restart_interval_secs),
+                                None => self.started.elapsed() >= Duration::from_secs(self.restart_interval_secs),
+                            };
+                            if reset {
+                                self.restart_count = 0;
+                            }
+                        }
+                        self.last_crash_at = Some(now);
+
+                        if self.restart_count >= self.max_restarts {
+                            self.snapshot.status = "failed".into();
+                            let reason = format!(
+                                "已达自动重启上限（{}次），停止重启：{}",
+                                self.max_restarts,
+                                exit_failure(self.snapshot.exit_code)
+                            );
+                            self.snapshot.failure = Some(reason.clone());
+                            let limit_msg = format!("\n[自动重启] {}\n", reason);
+                            if let Ok(mut err) = self.stderr.lock() {
+                                err.append(limit_msg.as_bytes());
+                            }
+                            if let Some(w) = self.log_writer.as_ref() {
+                                w.append(limit_msg.as_bytes());
+                            }
+                        } else {
+                            self.restart_count += 1;
+                            self.snapshot.restart_count = self.restart_count;
+                            let code_str = exit_failure(self.snapshot.exit_code);
+                            let log_msg = format!(
+                                "\n[自动重启] 进程异常退出（{}），正在进行第 {}/{} 次自动重启...\n",
+                                code_str, self.restart_count, self.max_restarts
+                            );
+                            if let Ok(mut err) = self.stderr.lock() {
+                                err.append(log_msg.as_bytes());
+                            }
+                            if let Some(w) = self.log_writer.as_ref() {
+                                w.append(log_msg.as_bytes());
+                            }
+                            match self.respawn() {
+                                Ok(()) => return Ok(()),
+                                Err(e) => {
+                                    self.snapshot.status = "failed".into();
+                                    let reason = format!("自动重启失败：{e}");
+                                    self.snapshot.failure = Some(reason.clone());
+                                    let fail_msg = format!("\n[自动重启] {}\n", reason);
+                                    if let Ok(mut err) = self.stderr.lock() {
+                                        err.append(fail_msg.as_bytes());
+                                    }
+                                    if let Some(w) = self.log_writer.as_ref() {
+                                        w.append(fail_msg.as_bytes());
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        self.snapshot.status = "failed".into();
+                    }
                 }
-                .into();
             }
         }
         Ok(())
@@ -502,7 +594,7 @@ impl Entry {
                 "exited" => (LifeState::Exited, None, false),
                 "failed" => (
                     LifeState::Failed,
-                    Some(exit_failure(snapshot.exit_code)),
+                    self.snapshot.failure.clone().or_else(|| Some(exit_failure(snapshot.exit_code))),
                     false,
                 ),
                 _ => (LifeState::Stopped, None, false),
@@ -517,10 +609,10 @@ impl Entry {
                 // about 3 seconds after a starter script exits, because a detached JVM
                 // may still be coming up. Studio owns the whole group, so that grace
                 // would show "failed" and "starting" at the same time.
-                let failure = match snapshot.exit_code {
+                let failure = self.snapshot.failure.clone().unwrap_or_else(|| match snapshot.exit_code {
                     Some(0) => "进程已退出".to_owned(),
                     _ => exit_failure(snapshot.exit_code),
-                };
+                });
                 (LifeState::Failed, Some(failure), false)
             } else {
                 let (has_probe, probe_ok) = if port_open {
@@ -581,6 +673,7 @@ impl Entry {
         if self.snapshot.status != "running" {
             return Ok(());
         }
+        self.user_stopped = true;
         if self.pgid > 0 {
             signal_group(self.pgid, terminate_signal())?;
             if !self.wait_stopped(Duration::from_millis(1000))? {
@@ -590,7 +683,6 @@ impl Entry {
                 }
             }
         }
-        self.user_stopped = true;
         self.snapshot.pid = None;
         self.snapshot.status = "stopped".into();
         Ok(())
@@ -619,6 +711,9 @@ impl Entry {
             auto_install: true,
             pull_deps_first: false,
             deps_installed: false,
+            auto_restart: self.auto_restart,
+            max_restarts: self.max_restarts,
+            restart_interval_secs: self.restart_interval_secs,
         }
     }
 }
@@ -769,6 +864,15 @@ impl ServiceManager {
             }
             if let Some(ref h) = p.health_url {
                 binding.health_url = Some(h.clone());
+            }
+            if let Some(ar) = p.auto_restart {
+                binding.auto_restart = ar;
+            }
+            if let Some(mr) = p.max_restarts {
+                binding.max_restarts = mr;
+            }
+            if let Some(ris) = p.restart_interval_secs {
+                binding.restart_interval_secs = ris;
             }
             binding.active_profile = effective_profile_name.map(str::to_string);
         }
@@ -992,6 +1096,9 @@ impl ServiceManager {
             ready_timeout_secs,
             reachable: false,
             active_profile: None,
+            restart_count: 0,
+            auto_restart: dev.and_then(|d| d.auto_restart),
+            max_restarts: dev.and_then(|d| d.max_restarts),
         };
         let entry = Entry {
             snapshot: snapshot.clone(),
@@ -1014,6 +1121,11 @@ impl ServiceManager {
             install_command: None,
             service_command: command.to_string(),
             log_writer: None,
+            auto_restart: false,
+            max_restarts: 3,
+            restart_interval_secs: 60,
+            restart_count: 0,
+            last_crash_at: None,
         };
         registry.entries.insert(id, entry);
         Ok(snapshot)
@@ -1325,6 +1437,72 @@ fn read_output(
     });
 }
 #[cfg(unix)]
+fn spawn_child(directory: &str, command: &str, binding_env: &[(String, String)]) -> Result<(Child, u32)> {
+    use std::os::unix::process::CommandExt;
+    if !Path::new(directory).is_dir() {
+        return Err("项目目录不存在或不可访问。".into());
+    }
+    let exec_command = if command.contains("{{tomcat}}") || command.contains("{{catalina_home}}") {
+        if let Some((_, ch)) = binding_env.iter().find(|(k, _)| k == "CATALINA_HOME") {
+            command.replace("{{tomcat}}", ch).replace("{{catalina_home}}", ch)
+        } else {
+            command.to_string()
+        }
+    } else {
+        command.to_string()
+    };
+    let mut cmd = Command::new("/bin/sh");
+    cmd.args(["-c", &exec_command])
+        .current_dir(directory)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    for (k, v) in binding_env {
+        cmd.env(k, v);
+    }
+    let child = cmd.spawn().map_err(|e| format!("启动服务失败：{e}"))?;
+    let pgid = child.id();
+    Ok((child, pgid))
+}
+
+#[cfg(unix)]
+impl Entry {
+    fn respawn(&mut self) -> Result<()> {
+        if let Some(port) = self.port.filter(|_| self.expects_port) {
+            let start = Instant::now();
+            while dev_runtime::tcp_open(port) && start.elapsed() < Duration::from_millis(500) {
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
+        let (mut child, pgid) = spawn_child(&self.directory, &self.service_command, &self.binding_env)?;
+        read_output(child.stdout.take().expect("piped stdout"), self.stdout.clone(), self.log_writer.clone());
+        read_output(child.stderr.take().expect("piped stderr"), self.stderr.clone(), self.log_writer.clone());
+        self.child = Some(child);
+        self.pgid = pgid;
+        self.reaped = false;
+        self.snapshot.pid = Some(pgid);
+        self.snapshot.status = "running".into();
+        self.snapshot.lifecycle = LifeState::Starting.as_str().into();
+        self.snapshot.exit_code = None;
+        self.snapshot.failure = None;
+        self.snapshot.port_open = false;
+        self.snapshot.reachable = false;
+        self.started = Instant::now();
+        self.port_cache = None;
+        self.probe_cache = None;
+        Ok(())
+    }
+}
+
+#[cfg(not(unix))]
+impl Entry {
+    fn respawn(&mut self) -> Result<()> {
+        Err("托管服务目前仅支持 macOS / Unix。".into())
+    }
+}
+
+#[cfg(unix)]
 fn spawn_entry(
     id: String,
     project_id: &str,
@@ -1334,33 +1512,9 @@ fn spawn_entry(
     install_command: Option<String>,
     log_dir: &Path,
 ) -> Result<Entry> {
-    use std::os::unix::process::CommandExt;
-    if !Path::new(directory).is_dir() {
-        return Err("项目目录不存在或不可访问。".into());
-    }
     let is_installing = install_command.is_some();
-    let service_exec_command = if command.contains("{{tomcat}}") || command.contains("{{catalina_home}}") {
-        if let Some((_, ch)) = binding.env.iter().find(|(k, _)| k == "CATALINA_HOME") {
-            command.replace("{{tomcat}}", ch).replace("{{catalina_home}}", ch)
-        } else {
-            command.to_string()
-        }
-    } else {
-        command.to_string()
-    };
-    let exec_cmd = install_command.as_deref().unwrap_or(&service_exec_command);
-    let mut cmd = Command::new("/bin/sh");
-    cmd.args(["-c", exec_cmd])
-        .current_dir(directory)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0);
-    for (k, v) in &binding.env {
-        cmd.env(k, v);
-    }
-    let mut child = cmd.spawn().map_err(|e| format!("启动服务失败：{e}"))?;
-    let pgid = child.id();
+    let exec_cmd = install_command.as_deref().unwrap_or(command);
+    let (mut child, pgid) = spawn_child(directory, exec_cmd, &binding.env)?;
     let stdout = Arc::new(Mutex::new(Output::default()));
     let stderr = Arc::new(Mutex::new(Output::default()));
     let log_writer = RollingLogWriter::for_project(log_dir, project_id);
@@ -1382,6 +1536,9 @@ fn spawn_entry(
     } else {
         LifeState::Starting.as_str().into()
     };
+    let auto_restart = binding.auto_restart;
+    let max_restarts = binding.max_restarts;
+    let restart_interval_secs = binding.restart_interval_secs;
     Ok(Entry {
         snapshot: ManagedService {
             id,
@@ -1403,6 +1560,9 @@ fn spawn_entry(
             ready_timeout_secs,
             reachable: false,
             active_profile: binding.active_profile.clone(),
+            restart_count: 0,
+            auto_restart: Some(auto_restart),
+            max_restarts: Some(max_restarts),
         },
         directory: directory.into(),
         child: Some(child),
@@ -1423,6 +1583,11 @@ fn spawn_entry(
         install_command,
         service_command: command.into(),
         log_writer: Some(log_writer),
+        auto_restart,
+        max_restarts,
+        restart_interval_secs,
+        restart_count: 0,
+        last_crash_at: None,
     })
 }
 #[cfg(not(unix))]
@@ -1853,4 +2018,60 @@ mod tests {
         assert_eq!(safe_project_filename("///"), "project");
     }
 
+    #[test]
+    fn auto_restart_binding_defaults_and_override() {
+        let temp = tempfile::tempdir().unwrap();
+        // 1. Default dev profile has auto_restart = false
+        let p_default = project_dev(temp.path(), "default", "echo 1", None, None, None);
+        let b_default = Binding::for_project(&p_default, "echo 1");
+        assert!(!b_default.auto_restart);
+        assert_eq!(b_default.max_restarts, 3);
+        assert_eq!(b_default.restart_interval_secs, 60);
+
+        // 2. Explicitly configured auto_restart
+        let mut p_custom = project_dev(temp.path(), "custom", "echo 2", None, None, None);
+        if let Some(dev) = p_custom.dev.as_mut() {
+            dev.auto_restart = Some(true);
+            dev.max_restarts = Some(5);
+            dev.restart_interval_secs = Some(30);
+        }
+        let b_custom = Binding::for_project(&p_custom, "echo 2");
+        assert!(b_custom.auto_restart);
+        assert_eq!(b_custom.max_restarts, 5);
+        assert_eq!(b_custom.restart_interval_secs, 30);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn auto_restart_retries_up_to_limit_and_user_stop_prevents_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ServiceManager::new();
+
+        // 1. Crash retries up to limit
+        let mut p_crash = project_dev(temp.path(), "crash-loop", "printf err >&2; exit 2", None, None, None);
+        if let Some(dev) = p_crash.dev.as_mut() {
+            dev.auto_restart = Some(true);
+            dev.max_restarts = Some(2);
+            dev.restart_interval_secs = Some(10);
+        }
+
+        manager.start(&p_crash, "printf err >&2; exit 2").unwrap();
+        let failed = wait_for(&manager, "crash-loop", |s| s.status == "failed");
+        assert_eq!(failed.lifecycle, "failed");
+        assert_eq!(failed.restart_count, 2);
+        assert!(failed.failure.as_deref().unwrap_or("").contains("已达自动重启上限（2次）"));
+        assert!(failed.stderr.contains("[自动重启]"));
+
+        // 2. User stop does not trigger restart
+        let mut p_stop = project_dev(temp.path(), "user-stop", "sleep 60", None, None, None);
+        if let Some(dev) = p_stop.dev.as_mut() {
+            dev.auto_restart = Some(true);
+            dev.max_restarts = Some(3);
+        }
+        let running = manager.start(&p_stop, "sleep 60").unwrap();
+        let stopped = manager.stop("user-stop", &running.id).unwrap();
+        assert_eq!(stopped.status, "stopped");
+        assert_eq!(stopped.lifecycle, "stopped");
+        assert_eq!(stopped.restart_count, 0);
+    }
 }

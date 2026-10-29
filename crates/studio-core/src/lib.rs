@@ -283,6 +283,36 @@ impl WorkspaceStore {
         self.write(&workspace)?;
         Ok(workspace)
     }
+
+    pub fn update_project_auto_restart(
+        &self,
+        id: &str,
+        auto_restart: bool,
+        max_restarts: Option<u32>,
+        restart_interval_secs: Option<u64>,
+    ) -> Result<Project> {
+        let _guard = self.lock.lock().map_err(|_| "项目记录锁不可用")?;
+        let mut workspace = self.read()?;
+        let project = workspace
+            .projects
+            .iter_mut()
+            .find(|p| p.id == id || p.name == id)
+            .ok_or_else(|| format!("项目不存在：{id}"))?;
+        if let Some(dev) = project.dev.as_mut() {
+            dev.auto_restart = Some(auto_restart);
+            if let Some(mr) = max_restarts {
+                dev.max_restarts = Some(mr);
+            }
+            if let Some(ris) = restart_interval_secs {
+                dev.restart_interval_secs = Some(ris);
+            }
+        } else {
+            return Err("项目尚未配置开发登记（dev profile）。".into());
+        }
+        let updated = project.clone();
+        self.write(&workspace)?;
+        Ok(updated)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

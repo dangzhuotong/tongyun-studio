@@ -16,6 +16,8 @@ import {
   updateProjectDev,
   installProjectDependencies,
   devProjectLogTail,
+  updateProjectAutoRestart,
+  loadWorkspace,
 } from '../bridge';
 import { Activity, Bot, Check, Copy, Cpu, FolderOpen, LoaderCircle, Play, RotateCw, Search, Square, Terminal } from '../components/Icons';
 
@@ -427,6 +429,35 @@ export default function DevPanel({
               <span>首启可选先拉依赖（Maven / Gradle）</span>
             </label>
           )}
+          <div className="profile-config-row" style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: '2px 0 0 0', fontSize: '12px' }}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                aria-label="异常退出自动重启"
+                checked={profile.autoRestart ?? false}
+                disabled={!isDesktop || !!busy}
+                onChange={async (e) => {
+                  const checked = e.target.checked;
+                  try {
+                    await updateProjectAutoRestart(project.id, checked, profile.maxRestarts ?? 3, profile.restartIntervalSecs ?? 60);
+                    if (onWorkspace) {
+                      const ws = await loadWorkspace();
+                      onWorkspace(ws);
+                    }
+                    onNotify?.(`已${checked ? '开启' : '关闭'}该项目异常退出自动重启`);
+                  } catch (err) {
+                    setError(String(err));
+                  }
+                }}
+              />
+              <span>异常退出自动重启（默认关闭）</span>
+            </label>
+            {profile.autoRestart && (
+              <span className="meta" style={{ color: 'var(--text-muted, #888)' }}>
+                上限 {profile.maxRestarts ?? 3} 次 · 窗口 {profile.restartIntervalSecs ?? 60}s
+              </span>
+            )}
+          </div>
         </div>
         {registeredCommand ? (
           <div className="script-run-card">
@@ -437,7 +468,10 @@ export default function DevPanel({
                 {inspection?.depsMissing && <span className="mini-running-tag" style={{ color: '#d97706', borderColor: '#d97706' }}>缺 node_modules</span>}
               </div>
               <code className="script-run-cmd" title={registeredCommand}>{registeredCommand}</code>
-              <span className="meta">{effectivePort ? `就绪端口 ${effectivePort}${profile.healthUrl ? ` · 探针 ${profile.healthUrl}` : ' · 端口可连接即就绪'}` : '未配置端口，进程存活不会标成就绪'}</span>
+              <span className="meta">
+                {effectivePort ? `就绪端口 ${effectivePort}${profile.healthUrl ? ` · 探针 ${profile.healthUrl}` : ' · 端口可连接即就绪'}` : '未配置端口，进程存活不会标成就绪'}
+                {profile.autoRestart ? ` · 异常退出自动重启（上限 ${profile.maxRestarts ?? 3} 次）` : ' · 异常自动重启默认关闭'}
+              </span>
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
               {inspection?.installCommand && (
@@ -506,7 +540,7 @@ export default function DevPanel({
           const label = primaryStatus(service);
           const detail = secondaryStatus(service);
           const dot = service.lifecycle === 'failed' || service.status === 'failed' ? 'error' : service.lifecycle === 'ready' ? 'available' : service.lifecycle === 'installing' || service.status === 'running' ? 'active-pulse' : '';
-          return <div key={service.id} className="service-card"><div className="service-header"><div className="service-title-info"><span className={`status-dot ${dot}`}/><span className="service-name">{label}</span>{service.activeProfile && <span className="mini-running-tag">预设: {service.activeProfile}</span>}{detail && <span className="meta">{detail}</span>}<code className="service-cmd">{service.command}</code></div><div className="service-actions"><button className="service-btn" disabled={!isDesktop || !!busy} onClick={() => void mutate(`restart:${service.id}`, id => restartProjectService(id, service.id))}><RotateCw size={13}/>{busy === `restart:${service.id}` ? '重启中…' : '重启'}</button><button className="service-btn stop" disabled={!isDesktop || !!busy || service.status !== 'running'} onClick={() => void mutate(`stop:${service.id}`, id => stopProjectService(id, service.id))}><Square size={13}/>{busy === `stop:${service.id}` ? '停止中…' : '停止'}</button></div></div><div className="service-footer"><span className="meta">{service.pid ? `进程组 ${service.pid}` : `退出码 ${service.exitCode ?? '无（信号终止）'}`}</span><span className="meta">{service.port ? `端口 ${service.port}${service.portOpen ? ' 已通' : ' 未通'}` : '无就绪端口'}</span><span className="meta">启动于 {new Date(service.startedAt).toLocaleString()}</span></div>{service.failure && <p className="meta">{service.failure}</p>}</div>;
+          return <div key={service.id} className="service-card"><div className="service-header"><div className="service-title-info"><span className={`status-dot ${dot}`}/><span className="service-name">{label}</span>{service.activeProfile && <span className="mini-running-tag">预设: {service.activeProfile}</span>}{service.restartCount ? <span className="mini-running-tag">已重启 {service.restartCount} 次</span> : null}{detail && <span className="meta">{detail}</span>}<code className="service-cmd">{service.command}</code></div><div className="service-actions"><button className="service-btn" disabled={!isDesktop || !!busy} onClick={() => void mutate(`restart:${service.id}`, id => restartProjectService(id, service.id))}><RotateCw size={13}/>{busy === `restart:${service.id}` ? '重启中…' : '重启'}</button><button className="service-btn stop" disabled={!isDesktop || !!busy || service.status !== 'running'} onClick={() => void mutate(`stop:${service.id}`, id => stopProjectService(id, service.id))}><Square size={13}/>{busy === `stop:${service.id}` ? '停止中…' : '停止'}</button></div></div><div className="service-footer"><span className="meta">{service.pid ? `进程组 ${service.pid}` : `退出码 ${service.exitCode ?? '无（信号终止）'}`}</span><span className="meta">{service.port ? `端口 ${service.port}${service.portOpen ? ' 已通' : ' 未通'}` : '无就绪端口'}</span><span className="meta">启动于 {new Date(service.startedAt).toLocaleString()}</span>{service.restartCount ? <span className="meta">累计重启 {service.restartCount} 次</span> : null}</div>{service.failure && <p className="meta">{service.failure}</p>}</div>;
         })}</div>}
       </section>
       <section className="terminal-console-card"><div className="terminal-console-header"><div className="terminal-title"><Terminal size={14}/><span>日志尾部</span></div><button className="terminal-btn" onClick={() => setHints(value => !value)}>{hints ? '收起排查提示' : '本地排查提示'}</button></div>
