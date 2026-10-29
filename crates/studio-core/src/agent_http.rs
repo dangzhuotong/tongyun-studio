@@ -365,31 +365,40 @@ fn project_overview(project: &Project, services: &ServiceManager) -> Value {
         .find(|s| s.status == "running")
         .or_else(|| service_list.first());
 
-    let (running, state, elapsed_secs, timeout_secs, failure, pid, port_open, reachable, active_profile) =
-        match active {
-            Some(s) => (
-                s.status == "running",
-                s.lifecycle.clone(),
-                s.elapsed_secs,
-                s.ready_timeout_secs,
-                s.failure.clone(),
-                s.pid,
-                s.port_open,
-                s.reachable,
-                s.active_profile.clone(),
-            ),
-            None => (
-                false,
-                "stopped".to_string(),
-                None,
-                180,
-                None,
-                None,
-                false,
-                false,
-                None,
-            ),
-        };
+    let (
+        running,
+        state,
+        elapsed_secs,
+        timeout_secs,
+        failure,
+        pid,
+        port_open,
+        reachable,
+        active_profile,
+    ) = match active {
+        Some(s) => (
+            s.status == "running",
+            s.lifecycle.clone(),
+            s.elapsed_secs,
+            s.ready_timeout_secs,
+            s.failure.clone(),
+            s.pid,
+            s.port_open,
+            s.reachable,
+            s.active_profile.clone(),
+        ),
+        None => (
+            false,
+            "stopped".to_string(),
+            None,
+            180,
+            None,
+            None,
+            false,
+            false,
+            None,
+        ),
+    };
 
     let (port_conflict, port_holder) = if port > 0 && !running && dev_runtime::tcp_open(port) {
         let occupants = dev_runtime::port_occupants(port);
@@ -437,8 +446,10 @@ fn project_overview(project: &Project, services: &ServiceManager) -> Value {
         "node": dev.and_then(|d| d.node.clone()),
         "node_home": dev.and_then(|d| d.node_home.clone()),
         "created_at": project.created_at,
-        "deps_missing": false,
-        "install_command": "",
+        "deps_missing": crate::dev_runtime::node_deps_missing(std::path::Path::new(&project.path)),
+        "install_command": crate::dev_runtime::detect_install_command(std::path::Path::new(&project.path), dev).unwrap_or_default(),
+        "auto_install": dev.and_then(|d| d.auto_install).unwrap_or(true),
+        "pull_deps_first": dev.and_then(|d| d.pull_deps_first).unwrap_or(false),
         "port_conflict": port_conflict,
         "port_holder": port_holder,
     })
@@ -505,7 +516,10 @@ fn route(req: &Request, store: &WorkspaceStore, services: &ServiceManager) -> (u
                 .iter()
                 .find(|p| p.id == id || p.name == id)
             else {
-                return (404, json!({"ok": false, "error": format!("项目不存在：{id}")}));
+                return (
+                    404,
+                    json!({"ok": false, "error": format!("项目不存在：{id}")}),
+                );
             };
             let lines = parse_lines_param(&req.path).unwrap_or(DEFAULT_LOG_LINES);
             let s_list = services.list(&project.id).unwrap_or_default();
@@ -549,7 +563,10 @@ fn route(req: &Request, store: &WorkspaceStore, services: &ServiceManager) -> (u
                 .iter()
                 .find(|p| p.id == id || p.name == id)
             else {
-                return (404, json!({"ok": false, "error": format!("项目不存在：{id}")}));
+                return (
+                    404,
+                    json!({"ok": false, "error": format!("项目不存在：{id}")}),
+                );
             };
             return (
                 200,
@@ -572,7 +589,10 @@ fn route(req: &Request, store: &WorkspaceStore, services: &ServiceManager) -> (u
                 .iter()
                 .find(|p| p.id == id || p.name == id)
             else {
-                return (404, json!({"ok": false, "error": format!("项目不存在：{id}")}));
+                return (
+                    404,
+                    json!({"ok": false, "error": format!("项目不存在：{id}")}),
+                );
             };
             let body_val: Option<Value> = serde_json::from_slice(&req.body).ok();
             let cmd_from_body = body_val
@@ -581,12 +601,11 @@ fn route(req: &Request, store: &WorkspaceStore, services: &ServiceManager) -> (u
             let profile_from_body = body_val
                 .as_ref()
                 .and_then(|v| v.get("profile").and_then(|p| p.as_str()));
-            let command = match cmd_from_body
-                .or_else(|| project.dev.as_ref().map(|d| d.command.as_str()))
-            {
-                Some(c) if !c.trim().is_empty() => c,
-                _ => "",
-            };
+            let command =
+                match cmd_from_body.or_else(|| project.dev.as_ref().map(|d| d.command.as_str())) {
+                    Some(c) if !c.trim().is_empty() => c,
+                    _ => "",
+                };
             return match services.start_with_profile(project, command, profile_from_body) {
                 Ok(_) => (
                     200,
@@ -610,7 +629,10 @@ fn route(req: &Request, store: &WorkspaceStore, services: &ServiceManager) -> (u
                 .iter()
                 .find(|p| p.id == id || p.name == id)
             else {
-                return (404, json!({"ok": false, "error": format!("项目不存在：{id}")}));
+                return (
+                    404,
+                    json!({"ok": false, "error": format!("项目不存在：{id}")}),
+                );
             };
             let s_list = services.list(&project.id).unwrap_or_default();
             let running_ids: Vec<String> = s_list
@@ -647,7 +669,10 @@ fn route(req: &Request, store: &WorkspaceStore, services: &ServiceManager) -> (u
                 .iter()
                 .find(|p| p.id == id || p.name == id)
             else {
-                return (404, json!({"ok": false, "error": format!("项目不存在：{id}")}));
+                return (
+                    404,
+                    json!({"ok": false, "error": format!("项目不存在：{id}")}),
+                );
             };
             let body_val: Option<Value> = serde_json::from_slice(&req.body).ok();
             let cmd_from_body = body_val
@@ -700,6 +725,34 @@ fn route(req: &Request, store: &WorkspaceStore, services: &ServiceManager) -> (u
                         ),
                     }
                 }
+            };
+        }
+
+        if let Some(raw_id) = project_route(path, "install") {
+            let id = url_decode(raw_id);
+            let workspace = match store.load() {
+                Ok(w) => w,
+                Err(e) => return (500, json!({"ok": false, "error": e})),
+            };
+            let Some(project) = workspace
+                .projects
+                .iter()
+                .find(|p| p.id == id || p.name == id)
+            else {
+                return (
+                    404,
+                    json!({"ok": false, "error": format!("项目不存在：{id}")}),
+                );
+            };
+            return match services.install_deps(project) {
+                Ok(_) => (
+                    200,
+                    json!({"ok": true, "status": project_overview(project, services)}),
+                ),
+                Err(e) => (
+                    200,
+                    json!({"ok": false, "error": e, "status": project_overview(project, services)}),
+                ),
             };
         }
 

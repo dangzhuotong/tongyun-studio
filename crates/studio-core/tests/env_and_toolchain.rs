@@ -1,9 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use studio_core::{
-    dev_runtime::{
-        spring_profile_from_filename, suggest_spring_profiles, DevProfile, EnvPreset,
-    },
+    dev_runtime::{spring_profile_from_filename, suggest_spring_profiles, DevProfile, EnvPreset},
     toolchain::{toolchain_env, HostOs, ToolchainRoots},
     Project, ServiceManager,
 };
@@ -200,19 +198,20 @@ fn test_toolchain_env_injection_with_mock_roots() {
         catalina_home: None,
     };
 
-    let env = toolchain_env(
-        None,
-        Some(&fake_jdk),
-        None,
-        Some(&fake_node),
-        &roots,
-    )
-    .expect("toolchain_env should resolve with valid paths");
+    let env = toolchain_env(None, Some(&fake_jdk), None, Some(&fake_node), &roots)
+        .expect("toolchain_env should resolve with valid paths");
 
-    let java_home = env.iter().find(|(k, _)| k == "JAVA_HOME").map(|(_, v)| v.as_str());
+    let java_home = env
+        .iter()
+        .find(|(k, _)| k == "JAVA_HOME")
+        .map(|(_, v)| v.as_str());
     assert_eq!(java_home, Some(fake_jdk.to_str().unwrap()));
 
-    let path_var = env.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v.as_str()).unwrap();
+    let path_var = env
+        .iter()
+        .find(|(k, _)| k == "PATH")
+        .map(|(_, v)| v.as_str())
+        .unwrap();
     assert!(path_var.contains(fake_jdk_bin.to_str().unwrap()));
     assert!(path_var.contains(fake_node_bin.to_str().unwrap()));
 }

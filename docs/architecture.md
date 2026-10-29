@@ -22,12 +22,13 @@ Dev 面板继承的是运行契约，不是把 tongyun-dev 仓库嵌进来，也
 
 - 扫描目录、预览候选、登记到工作台（或给尚无运行配置的已有登记补上命令和端口）
 - 启停、重启、同组批量启停（支持 depends_on 依赖拓扑排序、就绪等待、环路拦截与依赖失败跳过，批量停止按依赖逆序）
-- 生命周期 `stopped` / `starting` / `port_open` / `ready` / `failed`，以及一次性成功的 `exited`
+- 生命周期 `stopped` / `starting` / `installing` / `port_open` / `ready` / `failed`，以及一次性成功的 `exited`
 - 日志尾部（内存中的末尾行；每个输出流另有 64 KiB 上限）
 - 启动前若登记端口已被监听，则拒绝启动，并标出占用进程的名字和 PID（mac/linux 用 lsof，Windows 用 netstat/Get-NetTCPConnection；无法获取时退化为单句提示已被监听）
 - 环境预设与工具链注入：每个项目支持选择/配置 env 预设（如 dev/test，含 Spring Boot application-*.yml/properties 扫描识别）；支持指定 JAVA_HOME / Node 版本与路径，启动进程前预检工具链可用性，找不到时提前给出单句明确原因并拒绝启动，命中时注入 JAVA_HOME 与 PATH 环境变量。
 - Tomcat WAR 与 catalina 部署：识别到 Tomcat WAR（Maven packaging 为 war）的项目可配 CATALINA_HOME，按 catalina run 启停并部署 WAR 到 webapps；就绪判定沿用端口探活（默认 8080）；无 Tomcat 时启动前一句话提示。
-- 对齐 tongyun-dev 的 Agent HTTP 契约与自动拉起：App 启动时在 127.0.0.1 自动拉起 Agent HTTP 服务（端口可配，默认 9100，环境变量 TONGYUN_STUDIO_AGENT_PORT，递增避让，不与 tongyun-dev 的 9099 冲突），提供项目清单与状态（GET /api/projects、GET /api/projects/:id）、启停与重启（POST /api/projects/:id/start、POST /api/projects/:id/stop、POST /api/projects/:id/restart）、日志尾部（GET /api/projects/:id/logs）以及同组启停（POST /api/groups/:key/start、POST /api/groups/:key/stop）。内置 DNS rebinding 与 CSRF 防护。
+- 首次启动自动检测并安装依赖：Node 项目缺 `node_modules` 时按锁文件（`pnpm-lock.yaml` → `pnpm`、`yarn.lock` → `yarn`、`package-lock.json` 或无锁文件 → `npm`）自动安装依赖；Maven/Gradle 项目首启可选先拉依赖（`./mvnw dependency:resolve` / `./gradlew dependencies`）；安装过程中状态为 `installing`（安装中），输出追加进日志尾部；安装失败状态标 `failed` 并给出退出码原因；支持可在设置中关掉自动安装（`auto_install = false`），关掉后缺失依赖直接拒绝启动并报「依赖未安装（缺 node_modules）」；支持手动点击「安装依赖」或通过 Agent HTTP `POST /api/projects/:id/install` 独立安装依赖。
+- 对齐 tongyun-dev 的 Agent HTTP 契约与自动拉起：App 启动时在 127.0.0.1 自动拉起 Agent HTTP 服务（端口可配，默认 9100，环境变量 TONGYUN_STUDIO_AGENT_PORT，递增避让，不与 tongyun-dev 的 9099 冲突），提供项目清单与状态（GET /api/projects、GET /api/projects/:id）、启停与重启（POST /api/projects/:id/start、POST /api/projects/:id/stop、POST /api/projects/:id/restart）、依赖安装（POST /api/projects/:id/install）、日志尾部（GET /api/projects/:id/logs）以及同组启停（POST /api/groups/:key/start、POST /api/groups/:key/stop）。内置 DNS rebinding 与 CSRF 防护。
 
 仍未接入：
 

@@ -1,7 +1,5 @@
 use studio_core::{
-    dev_runtime::DevProfile,
-    processes::sort_projects_by_dependencies,
-    Project, ServiceManager,
+    dev_runtime::DevProfile, processes::sort_projects_by_dependencies, Project, ServiceManager,
 };
 
 fn make_project(id: &str, name: &str, group: &str, depends_on: &[&str]) -> Project {
@@ -47,7 +45,10 @@ fn test_cycle_detection_direct_cycle() {
     let err = sort_projects_by_dependencies(&projects).unwrap_err();
 
     assert!(err.contains("检测到循环依赖："), "error was: {err}");
-    assert!(err.contains("service-a") && err.contains("service-b"), "error was: {err}");
+    assert!(
+        err.contains("service-a") && err.contains("service-b"),
+        "error was: {err}"
+    );
 }
 
 #[test]
@@ -71,7 +72,10 @@ fn test_cycle_detection_transitive_cycle() {
     let err = sort_projects_by_dependencies(&projects).unwrap_err();
 
     assert!(err.contains("检测到循环依赖："), "error was: {err}");
-    assert!(err.contains("service-a") && err.contains("service-b") && err.contains("service-c"), "error was: {err}");
+    assert!(
+        err.contains("service-a") && err.contains("service-b") && err.contains("service-c"),
+        "error was: {err}"
+    );
 }
 
 #[test]
@@ -87,7 +91,10 @@ fn test_create_skipped_service_marks_failure_and_blocker() {
     assert_eq!(skipped.status, "failed");
     assert_eq!(skipped.lifecycle, "failed");
     assert_eq!(skipped.pid, None);
-    assert_eq!(skipped.failure.as_deref(), Some("被依赖服务 db 挡住，已跳过启动"));
+    assert_eq!(
+        skipped.failure.as_deref(),
+        Some("被依赖服务 db 挡住，已跳过启动")
+    );
     assert!(skipped.log_tail.contains("跳过启动"));
     assert!(skipped.log_tail.contains("被依赖服务 db 挡住"));
 
@@ -96,7 +103,10 @@ fn test_create_skipped_service_marks_failure_and_blocker() {
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].id, skipped.id);
     assert_eq!(list[0].lifecycle, "failed");
-    assert_eq!(list[0].failure.as_deref(), Some("被依赖服务 db 挡住，已跳过启动"));
+    assert_eq!(
+        list[0].failure.as_deref(),
+        Some("被依赖服务 db 挡住，已跳过启动")
+    );
 }
 
 #[test]

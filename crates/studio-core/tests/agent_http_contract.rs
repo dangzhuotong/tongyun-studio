@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use studio_core::{
-    is_studio_server, resolve_agent_port, start_agent_server, DevProfile, Project,
-    ServiceManager, WorkspaceStore, DEFAULT_STUDIO_AGENT_PORT,
+    is_studio_server, resolve_agent_port, start_agent_server, DevProfile, Project, ServiceManager,
+    WorkspaceStore, DEFAULT_STUDIO_AGENT_PORT,
 };
 
 static PORT_COUNTER: AtomicU16 = AtomicU16::new(19200);
@@ -16,19 +16,34 @@ fn next_port() -> u16 {
     PORT_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
-fn http_request(port: u16, method: &str, path: &str, body: Option<&str>, host: Option<&str>, origin: Option<&str>) -> (u16, Value) {
+fn http_request(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    host: Option<&str>,
+    origin: Option<&str>,
+) -> (u16, Value) {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to agent server");
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
 
     let default_host = format!("127.0.0.1:{port}");
     let host_header = host.unwrap_or(&default_host);
-    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {host_header}\r\nConnection: close\r\n");
+    let mut req =
+        format!("{method} {path} HTTP/1.1\r\nHost: {host_header}\r\nConnection: close\r\n");
     if let Some(orig) = origin {
         req.push_str(&format!("Origin: {orig}\r\n"));
     }
     if let Some(b) = body {
-        req.push_str(&format!("Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{b}", b.len()));
+        req.push_str(&format!(
+            "Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{b}",
+            b.len()
+        ));
     } else {
         req.push_str("\r\n");
     }
@@ -69,7 +84,8 @@ impl TestContext {
         let store = Arc::new(WorkspaceStore::new(store_path));
         let services = Arc::new(ServiceManager::new());
         let port = next_port();
-        let server = start_agent_server(Arc::clone(&store), Arc::clone(&services), port).expect("start server");
+        let server = start_agent_server(Arc::clone(&store), Arc::clone(&services), port)
+            .expect("start server");
         Self {
             _dir: dir,
             store,
@@ -84,7 +100,11 @@ impl TestContext {
         fs::create_dir_all(&proj_dir).unwrap();
         let _ = self.store.add(&proj_dir.to_string_lossy()).unwrap();
         let mut workspace = self.store.load().unwrap();
-        let proj = workspace.projects.iter_mut().find(|p| p.name == name).unwrap();
+        let proj = workspace
+            .projects
+            .iter_mut()
+            .find(|p| p.name == name)
+            .unwrap();
         proj.dev = dev;
         let p_clone = proj.clone();
         // save updated workspace
@@ -156,19 +176,40 @@ fn test_agent_http_projects_listing_and_detail() {
     assert_eq!(item2["port"], 0);
 
     // 2. GET /api/projects/:id (by ID)
-    let (status, detail1) = http_request(ctx.port, "GET", &format!("/api/projects/{}", p1.id), None, None, None);
+    let (status, detail1) = http_request(
+        ctx.port,
+        "GET",
+        &format!("/api/projects/{}", p1.id),
+        None,
+        None,
+        None,
+    );
     assert_eq!(status, 200);
     assert_eq!(detail1["ok"], true);
     assert_eq!(detail1["project"]["name"], "api-service");
 
     // 3. GET /api/projects/:id (by name)
-    let (status, detail_by_name) = http_request(ctx.port, "GET", "/api/projects/api-service", None, None, None);
+    let (status, detail_by_name) = http_request(
+        ctx.port,
+        "GET",
+        "/api/projects/api-service",
+        None,
+        None,
+        None,
+    );
     assert_eq!(status, 200);
     assert_eq!(detail_by_name["ok"], true);
     assert_eq!(detail_by_name["project"]["id"], p1.id);
 
     // 4. GET /api/projects/:id (not found)
-    let (status, not_found) = http_request(ctx.port, "GET", "/api/projects/non-existent-id", None, None, None);
+    let (status, not_found) = http_request(
+        ctx.port,
+        "GET",
+        "/api/projects/non-existent-id",
+        None,
+        None,
+        None,
+    );
     assert_eq!(status, 404);
     assert_eq!(not_found["ok"], false);
 
@@ -199,13 +240,27 @@ fn test_agent_http_start_stop_restart_and_logs() {
     let p = ctx.add_dummy_project("worker-app", Some(dev_profile));
 
     // 1. Logs before running
-    let (status, logs_empty) = http_request(ctx.port, "GET", &format!("/api/projects/{}/logs", p.id), None, None, None);
+    let (status, logs_empty) = http_request(
+        ctx.port,
+        "GET",
+        &format!("/api/projects/{}/logs", p.id),
+        None,
+        None,
+        None,
+    );
     assert_eq!(status, 200);
     assert_eq!(logs_empty["ok"], true);
     assert_eq!(logs_empty["missing"], true);
 
     // 2. POST /api/projects/:id/start
-    let (status, start_resp) = http_request(ctx.port, "POST", &format!("/api/projects/{}/start", p.id), Some("{}"), None, None);
+    let (status, start_resp) = http_request(
+        ctx.port,
+        "POST",
+        &format!("/api/projects/{}/start", p.id),
+        Some("{}"),
+        None,
+        None,
+    );
     assert_eq!(status, 200);
     #[cfg(unix)]
     {
@@ -213,19 +268,40 @@ fn test_agent_http_start_stop_restart_and_logs() {
 
         // 3. Read logs after start
         std::thread::sleep(Duration::from_millis(100));
-        let (status, logs_resp) = http_request(ctx.port, "GET", &format!("/api/projects/{}/logs", p.id), None, None, None);
+        let (status, logs_resp) = http_request(
+            ctx.port,
+            "GET",
+            &format!("/api/projects/{}/logs", p.id),
+            None,
+            None,
+            None,
+        );
         assert_eq!(status, 200);
         assert_eq!(logs_resp["ok"], true);
         assert_eq!(logs_resp["missing"], false);
 
         // 4. POST /api/projects/:id/stop
-        let (status, stop_resp) = http_request(ctx.port, "POST", &format!("/api/projects/{}/stop", p.id), None, None, None);
+        let (status, stop_resp) = http_request(
+            ctx.port,
+            "POST",
+            &format!("/api/projects/{}/stop", p.id),
+            None,
+            None,
+            None,
+        );
         assert_eq!(status, 200);
         assert_eq!(stop_resp["ok"], true);
         assert_eq!(stop_resp["status"]["running"], false);
 
         // 5. POST /api/projects/:id/restart
-        let (status, restart_resp) = http_request(ctx.port, "POST", &format!("/api/projects/{}/restart", p.id), None, None, None);
+        let (status, restart_resp) = http_request(
+            ctx.port,
+            "POST",
+            &format!("/api/projects/{}/restart", p.id),
+            None,
+            None,
+            None,
+        );
         assert_eq!(status, 200);
         assert_eq!(restart_resp["ok"], true);
     }
@@ -233,7 +309,10 @@ fn test_agent_http_start_stop_restart_and_logs() {
     {
         // ServiceManager process groups are Unix-only as documented in architecture.md
         assert_eq!(start_resp["ok"], false);
-        assert!(start_resp["error"].as_str().unwrap().contains("macOS / Unix"));
+        assert!(start_resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("macOS / Unix"));
     }
 }
 
@@ -243,7 +322,14 @@ fn test_agent_http_security_dns_rebinding_and_csrf() {
     let p = ctx.add_dummy_project("sec-proj", None);
 
     // 1. Reject foreign Host (DNS rebinding)
-    let (status, _) = http_request(ctx.port, "GET", "/api/projects", None, Some("evil.example.com"), None);
+    let (status, _) = http_request(
+        ctx.port,
+        "GET",
+        "/api/projects",
+        None,
+        Some("evil.example.com"),
+        None,
+    );
     assert_eq!(status, 403);
 
     // 2. Reject foreign Origin on state-changing POST (CSRF)

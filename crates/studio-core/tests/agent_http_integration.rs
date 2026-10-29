@@ -13,10 +13,20 @@ fn free_port() -> u16 {
     listener.local_addr().unwrap().port()
 }
 
-fn http_req(port: u16, method: &str, path: &str, body: Option<&str>, host: Option<&str>) -> (u16, Value) {
+fn http_req(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    host: Option<&str>,
+) -> (u16, Value) {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
 
     let default_host = format!("127.0.0.1:{port}");
     let host_header = host.unwrap_or(&default_host);
@@ -83,7 +93,11 @@ fn setup_workspace(dir: &std::path::Path) -> (Arc<WorkspaceStore>, Arc<ServiceMa
             });
         }
     }
-    fs::write(dir.join("workspace.json"), serde_json::to_vec(&loaded).unwrap()).unwrap();
+    fs::write(
+        dir.join("workspace.json"),
+        serde_json::to_vec(&loaded).unwrap(),
+    )
+    .unwrap();
 
     let services = Arc::new(ServiceManager::new());
     (store, services)
@@ -118,7 +132,13 @@ fn test_agent_http_full_contract() {
     assert_eq!(p["group"], "frontend");
 
     // 3. GET /api/projects/:id
-    let (status, detail) = http_req(port, "GET", &format!("/api/projects/{project_id}"), None, None);
+    let (status, detail) = http_req(
+        port,
+        "GET",
+        &format!("/api/projects/{project_id}"),
+        None,
+        None,
+    );
     assert_eq!(status, 200);
     assert_eq!(detail["ok"], true);
     assert_eq!(detail["project"]["id"], project_id);
@@ -131,26 +151,47 @@ fn test_agent_http_full_contract() {
     assert!(grps.iter().any(|g| g["key"] == "frontend"));
 
     // 5. POST /api/projects/:id/start
-    let (status, start_res) = http_req(port, "POST", &format!("/api/projects/{project_id}/start"), None, None);
+    let (status, start_res) = http_req(
+        port,
+        "POST",
+        &format!("/api/projects/{project_id}/start"),
+        None,
+        None,
+    );
     assert_eq!(status, 200);
     #[cfg(unix)]
     assert_eq!(start_res["ok"], true);
     #[cfg(not(unix))]
     {
         assert_eq!(start_res["ok"], false);
-        assert!(start_res["error"].as_str().unwrap().contains("macOS / Unix"));
+        assert!(start_res["error"]
+            .as_str()
+            .unwrap()
+            .contains("macOS / Unix"));
     }
 
     // Give process a moment to execute
     thread::sleep(Duration::from_millis(200));
 
     // 6. GET /api/projects/:id/logs
-    let (status, logs_res) = http_req(port, "GET", &format!("/api/projects/{project_id}/logs?lines=10"), None, None);
+    let (status, logs_res) = http_req(
+        port,
+        "GET",
+        &format!("/api/projects/{project_id}/logs?lines=10"),
+        None,
+        None,
+    );
     assert_eq!(status, 200);
     assert_eq!(logs_res["ok"], true);
 
     // 7. POST /api/projects/:id/stop
-    let (status, stop_res) = http_req(port, "POST", &format!("/api/projects/{project_id}/stop"), None, None);
+    let (status, stop_res) = http_req(
+        port,
+        "POST",
+        &format!("/api/projects/{project_id}/stop"),
+        None,
+        None,
+    );
     assert_eq!(status, 200);
     assert_eq!(stop_res["ok"], true);
     assert_eq!(stop_res["status"]["running"], false);

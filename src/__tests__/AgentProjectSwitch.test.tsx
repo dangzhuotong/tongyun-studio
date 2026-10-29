@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within, waitFor } from '@testing-library/react';
 import type { Project, Workspace } from '../contracts';
 import App from '../App';
 import { getInitialAgentSession } from '../bridge';
@@ -36,7 +36,7 @@ describe('Agent session project binding', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Beta/ }));
     expect(await within(cockpit).findByText('当前项目：Beta')).toBeInTheDocument();
-    expect(getInitialAgentSession).toHaveBeenCalledWith('beta');
+    await waitFor(() => expect(getInitialAgentSession).toHaveBeenCalledWith('beta'));
     expect(within(cockpit).queryByText('当前项目：Alpha')).not.toBeInTheDocument();
     expect(within(cockpit).getByText('暂无真实执行记录')).toBeInTheDocument();
     expect(within(cockpit).getByText('模型：未知')).toBeInTheDocument();

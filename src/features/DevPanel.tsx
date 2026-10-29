@@ -13,6 +13,8 @@ import {
   importDevCandidates,
   startDevGroup,
   stopDevGroup,
+  updateProjectDev,
+  installProjectDependencies,
 } from '../bridge';
 import { Activity, Bot, Check, Copy, Cpu, FolderOpen, LoaderCircle, Play, RotateCw, Search, Square, Terminal } from '../components/Icons';
 
@@ -20,6 +22,7 @@ const statusLabel: Record<ManagedService['status'], string> = { running: '进程
 const lifecycleLabel: Record<string, string> = {
   stopped: '已停止',
   starting: '启动中',
+  installing: '安装中',
   port_open: '端口已通',
   ready: '就绪',
   failed: '失败',
@@ -35,6 +38,7 @@ function lifecycleText(value: string | undefined): string {
 /** One label for the card and the log badge. A failed process is never also "starting". */
 function primaryStatus(service: Pick<ManagedService, 'status' | 'lifecycle'>): string {
   if (service.lifecycle === 'failed' || service.status === 'failed') return statusLabel.failed;
+  if (service.lifecycle === 'installing') return lifecycleLabel.installing;
   if (service.lifecycle === 'ready') return lifecycleLabel.ready;
   if (service.lifecycle === 'port_open') return lifecycleLabel.port_open;
   if (service.lifecycle === 'exited' || service.status === 'exited') return statusLabel.exited;
@@ -46,6 +50,7 @@ function primaryStatus(service: Pick<ManagedService, 'status' | 'lifecycle'>): s
 /** Readiness detail that does not contradict the primary label. */
 function secondaryStatus(service: Pick<ManagedService, 'status' | 'lifecycle'>): string {
   if (service.status !== 'running' || service.lifecycle === 'failed') return '';
+  if (service.lifecycle === 'installing') return lifecycleLabel.installing;
   if (service.lifecycle === 'starting') return lifecycleLabel.starting;
   return '';
 }
@@ -243,6 +248,36 @@ export default function DevPanel({
       if (mounted.current && currentProject.current === id) { setCopied(service.id); onNotify?.('已复制日志尾部'); }
     } catch (cause) { if (mounted.current && currentProject.current === id) { errorSource.current = 'action'; setError(`复制失败：${String(cause)}`); } }
   }
+
+  async function handleToggleAutoInstall(enabled: boolean) {
+    if (!project || !profile || !isDesktop || !!busy) return;
+    setBusy('update-setting');
+    try {
+      const nextProfile = { ...profile, autoInstall: enabled };
+      const nextWs = await updateProjectDev(project.id, nextProfile);
+      onWorkspace?.(nextWs);
+      onNotify?.(enabled ? '已开启首启自动检测并安装依赖' : '已关闭自动安装依赖');
+    } catch (cause) {
+      if (mounted.current) { errorSource.current = 'action'; setError(String(cause)); }
+    } finally {
+      if (mounted.current) setBusy(null);
+    }
+  }
+
+  async function handleTogglePullDepsFirst(enabled: boolean) {
+    if (!project || !profile || !isDesktop || !!busy) return;
+    setBusy('update-setting');
+    try {
+      const nextProfile = { ...profile, pullDepsFirst: enabled };
+      const nextWs = await updateProjectDev(project.id, nextProfile);
+      onWorkspace?.(nextWs);
+      onNotify?.(enabled ? '已开启 Maven/Gradle 首启先拉取依赖' : '已关闭首启拉取依赖');
+    } catch (cause) {
+      if (mounted.current) { errorSource.current = 'action'; setError(String(cause)); }
+    } finally {
+      if (mounted.current) setBusy(null);
+    }
+  }
   const running = services.filter(service => service.status === 'running').length;
   const readyCount = services.filter(service => service.lifecycle === 'ready').length;
 
@@ -361,7 +396,70 @@ export default function DevPanel({
             {profile.nodeHome && <span>Node Home: {profile.nodeHome}</span>}
           </div>
         )}
-        {registeredCommand ? <div className="script-run-card"><div className="script-run-info"><div className="script-title-row"><span className="script-run-name">{profile.label}</span>{registeredRunning && <span className="mini-running-tag">进程运行中</span>}</div><code className="script-run-cmd" title={registeredCommand}>{registeredCommand}</code><span className="meta">{effectivePort ? `就绪端口 ${effectivePort}${profile.healthUrl ? ` · 探针 ${profile.healthUrl}` : ' · 端口可连接即就绪'}` : '未配置端口，进程存活不会标成就绪'}</span></div><button className="secondary-button-sm" disabled={!isDesktop || !!busy || loading || registeredRunning} onClick={() => run(registeredCommand, activeProfileKey)}>{busy === `start:${registeredCommand}` ? <LoaderCircle size={13} className="spin"/> : <Play size={13}/>}<span>{registeredRunning ? '已启动' : '按登记启动'}</span></button></div> : <p className="subcard-empty">这条登记没有启动命令，不能从这里启动。</p>}
+        <div className="dev-settings-row" style={{ margin: '8px 0', display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '13px' }}>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              aria-label="首次启动自动检测并安装依赖"
+              checked={profile.autoInstall !== false}
+              disabled={!isDesktop || !!busy}
+              onChange={e => void handleToggleAutoInstall(e.target.checked)}
+            />
+            <span>首启自动检测并安装依赖{profile.autoInstall === false ? '（已关）' : ''}</span>
+          </label>
+          {(profile.kind.includes('maven') || profile.kind.includes('gradle')) && (
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                aria-label="Maven/Gradle 首启先拉取依赖"
+                checked={!!profile.pullDepsFirst}
+                disabled={!isDesktop || !!busy}
+                onChange={e => void handleTogglePullDepsFirst(e.target.checked)}
+              />
+              <span>首启可选先拉依赖（Maven / Gradle）</span>
+            </label>
+          )}
+        </div>
+        {registeredCommand ? (
+          <div className="script-run-card">
+            <div className="script-run-info">
+              <div className="script-title-row">
+                <span className="script-run-name">{profile.label}</span>
+                {registeredRunning && <span className="mini-running-tag">进程运行中</span>}
+                {inspection?.depsMissing && <span className="mini-running-tag" style={{ color: '#d97706', borderColor: '#d97706' }}>缺 node_modules</span>}
+              </div>
+              <code className="script-run-cmd" title={registeredCommand}>{registeredCommand}</code>
+              <span className="meta">{effectivePort ? `就绪端口 ${effectivePort}${profile.healthUrl ? ` · 探针 ${profile.healthUrl}` : ' · 端口可连接即就绪'}` : '未配置端口，进程存活不会标成就绪'}</span>
+            </div>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              {inspection?.installCommand && (
+                <button
+                  type="button"
+                  className="secondary-button-sm"
+                  disabled={!isDesktop || !!busy || loading}
+                  title={`在项目目录执行 ${inspection.installCommand}`}
+                  onClick={() => {
+                    if (project?.id) {
+                      void mutate(`install:${project.id}`, id => installProjectDependencies(id));
+                    }
+                  }}
+                >
+                  {busy === `install:${project.id}` ? <LoaderCircle size={13} className="spin" /> : <RotateCw size={13} />}
+                  <span>安装依赖</span>
+                </button>
+              )}
+              <button
+                type="button"
+                className="secondary-button-sm"
+                disabled={!isDesktop || !!busy || loading || registeredRunning}
+                onClick={() => run(registeredCommand, activeProfileKey)}
+              >
+                {busy === `start:${registeredCommand}` ? <LoaderCircle size={13} className="spin" /> : <Play size={13} />}
+                <span>{registeredRunning ? '已启动' : '按登记启动'}</span>
+              </button>
+            </div>
+          </div>
+        ) : <p className="subcard-empty">这条登记没有启动命令，不能从这里启动。</p>}
         {members.length > 1 && <div className="script-actions-pair"><span className="meta">同组 {members.length} 个：{members.map(item => item.name).join('、')}</span><button className="secondary-button-sm" disabled={!isDesktop || !!busy} onClick={() => void runGroup('start')}>{busy === 'group-start' ? <LoaderCircle size={13} className="spin"/> : <Play size={13}/>}启动同组</button><button className="secondary-button-sm" disabled={!isDesktop || !!busy} onClick={() => void runGroup('stop')}><Square size={13}/>{busy === 'group-stop' ? '停止中…' : '停止同组'}</button></div>}
       </section>}
       {agentTerminalActions.length > 0 && (
@@ -399,7 +497,7 @@ export default function DevPanel({
         {loading ? <p role="status">正在读取托管进程…</p> : services.length === 0 ? <p className="subcard-empty">这个项目还没有执行记录。运行后可在这里查看状态、停止、重启和读取日志。</p> : <div className="services-grid">{services.map(service => {
           const label = primaryStatus(service);
           const detail = secondaryStatus(service);
-          const dot = service.lifecycle === 'failed' || service.status === 'failed' ? 'error' : service.lifecycle === 'ready' ? 'available' : service.status === 'running' ? 'active-pulse' : '';
+          const dot = service.lifecycle === 'failed' || service.status === 'failed' ? 'error' : service.lifecycle === 'ready' ? 'available' : service.lifecycle === 'installing' || service.status === 'running' ? 'active-pulse' : '';
           return <div key={service.id} className="service-card"><div className="service-header"><div className="service-title-info"><span className={`status-dot ${dot}`}/><span className="service-name">{label}</span>{service.activeProfile && <span className="mini-running-tag">预设: {service.activeProfile}</span>}{detail && <span className="meta">{detail}</span>}<code className="service-cmd">{service.command}</code></div><div className="service-actions"><button className="service-btn" disabled={!isDesktop || !!busy} onClick={() => void mutate(`restart:${service.id}`, id => restartProjectService(id, service.id))}><RotateCw size={13}/>{busy === `restart:${service.id}` ? '重启中…' : '重启'}</button><button className="service-btn stop" disabled={!isDesktop || !!busy || service.status !== 'running'} onClick={() => void mutate(`stop:${service.id}`, id => stopProjectService(id, service.id))}><Square size={13}/>{busy === `stop:${service.id}` ? '停止中…' : '停止'}</button></div></div><div className="service-footer"><span className="meta">{service.pid ? `进程组 ${service.pid}` : `退出码 ${service.exitCode ?? '无（信号终止）'}`}</span><span className="meta">{service.port ? `端口 ${service.port}${service.portOpen ? ' 已通' : ' 未通'}` : '无就绪端口'}</span><span className="meta">启动于 {new Date(service.startedAt).toLocaleString()}</span></div>{service.failure && <p className="meta">{service.failure}</p>}</div>;
         })}</div>}
       </section>

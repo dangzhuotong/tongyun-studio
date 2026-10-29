@@ -65,7 +65,45 @@ fn remove_project(state: tauri::State<'_, AppState>, id: String) -> Result<Works
 }
 
 #[tauri::command]
-fn inspect_project(state: tauri::State<'_, AppState>, id: String) -> Result<ProjectInspection, String> {
+fn update_project_dev(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    dev: Option<studio_core::DevProfile>,
+) -> Result<Workspace, String> {
+    state.store.update_project_dev(&id, dev)
+}
+
+#[tauri::command]
+fn update_project_auto_install(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    auto_install: bool,
+) -> Result<Workspace, String> {
+    let workspace = state.store.load()?;
+    let project = workspace
+        .projects
+        .iter()
+        .find(|p| p.id == id)
+        .ok_or("项目不存在")?;
+    let mut dev = project.dev.clone().unwrap_or_default();
+    dev.auto_install = Some(auto_install);
+    state.store.update_project_dev(&id, Some(dev))
+}
+
+#[tauri::command]
+fn install_project_dependencies(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<ManagedService, String> {
+    let project = state.store.project(&id)?;
+    state.services.install_deps(&project)
+}
+
+#[tauri::command]
+fn inspect_project(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<ProjectInspection, String> {
     let project = state.store.project(&id)?;
     Ok(studio_core::inspect_project(&project))
 }
@@ -192,10 +230,7 @@ fn git_remote_sync(
 }
 
 #[tauri::command]
-fn get_git_branches(
-    state: tauri::State<'_, AppState>,
-    id: String,
-) -> Result<Vec<String>, String> {
+fn get_git_branches(state: tauri::State<'_, AppState>, id: String) -> Result<Vec<String>, String> {
     let project = state.store.project(&id)?;
     studio_core::get_git_branches(&project)
 }
@@ -329,7 +364,9 @@ fn start_project_service(
     profile: Option<String>,
 ) -> Result<ManagedService, String> {
     let project = state.store.project(&id)?;
-    state.services.start_with_profile(&project, &command, profile.as_deref())
+    state
+        .services
+        .start_with_profile(&project, &command, profile.as_deref())
 }
 
 #[tauri::command]
@@ -374,7 +411,11 @@ fn scan_dev_directory(
             has_dev: project.dev.is_some(),
         })
         .collect::<Vec<_>>();
-    studio_core::scan_dev_directory(std::path::Path::new(&path), depth.unwrap_or(3) as usize, &existing)
+    studio_core::scan_dev_directory(
+        std::path::Path::new(&path),
+        depth.unwrap_or(3) as usize,
+        &existing,
+    )
 }
 
 #[tauri::command]
@@ -386,13 +427,19 @@ fn import_dev_candidates(
 }
 
 #[tauri::command]
-fn start_dev_group(state: tauri::State<'_, AppState>, group: String) -> Result<Vec<ManagedService>, String> {
+fn start_dev_group(
+    state: tauri::State<'_, AppState>,
+    group: String,
+) -> Result<Vec<ManagedService>, String> {
     let workspace = state.store.load()?;
     state.services.start_group(&workspace.projects, &group)
 }
 
 #[tauri::command]
-fn stop_dev_group(state: tauri::State<'_, AppState>, group: String) -> Result<Vec<ManagedService>, String> {
+fn stop_dev_group(
+    state: tauri::State<'_, AppState>,
+    group: String,
+) -> Result<Vec<ManagedService>, String> {
     let workspace = state.store.load()?;
     state.services.stop_group(&workspace.projects, &group)
 }
@@ -404,7 +451,9 @@ fn dev_service_log_tail(
     service_id: String,
     lines: Option<u32>,
 ) -> Result<String, String> {
-    state.services.log_tail(&id, &service_id, lines.unwrap_or(200) as usize)
+    state
+        .services
+        .log_tail(&id, &service_id, lines.unwrap_or(200) as usize)
 }
 
 #[tauri::command]
@@ -437,7 +486,10 @@ fn append_project_file(
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let config_dir = app.path().app_config_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let config_dir = app
+                .path()
+                .app_config_dir()
+                .unwrap_or_else(|_| PathBuf::from("."));
             let workspace_path = config_dir.join("workspace.json");
             let store = Arc::new(WorkspaceStore::new(workspace_path));
             let services = Arc::new(ServiceManager::new());
@@ -462,10 +514,7 @@ pub fn run() {
                 }
             }
 
-            app.manage(AppState {
-                store,
-                services,
-            });
+            app.manage(AppState { store, services });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -512,6 +561,9 @@ pub fn run() {
             stop_dev_group,
             dev_service_log_tail,
             open_url,
+            update_project_dev,
+            update_project_auto_install,
+            install_project_dependencies,
             write_project_file,
             append_project_file,
         ])

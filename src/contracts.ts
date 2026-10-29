@@ -36,6 +36,9 @@ export interface DevProfile {
   defaultProfile?: string | null;
   selectedProfile?: string | null;
   profiles?: Record<string, EnvPreset>;
+  autoInstall?: boolean | null;
+  pullDepsFirst?: boolean | null;
+  depsInstalled?: boolean | null;
 }
 
 export interface DevCandidate {
@@ -63,6 +66,8 @@ export interface DevCandidate {
   defaultProfile?: string | null;
   selectedProfile?: string | null;
   profiles?: Record<string, EnvPreset>;
+  autoInstall?: boolean | null;
+  pullDepsFirst?: boolean | null;
 }
 
 export interface DevScanReport {
@@ -121,6 +126,8 @@ export interface ProjectInspection {
   techStack: string[];
   scripts: PackageScript[];
   dbArtifacts: DbArtifact[];
+  depsMissing?: boolean;
+  installCommand?: string | null;
 }
 
 export interface FileEntry {
@@ -216,7 +223,7 @@ export interface ManagedService {
   stdout: string;
   stderr: string;
   outputTruncated: boolean;
-  lifecycle: 'stopped' | 'starting' | 'port_open' | 'ready' | 'failed' | 'exited';
+  lifecycle: 'stopped' | 'starting' | 'installing' | 'port_open' | 'ready' | 'failed' | 'exited';
   failure: string | null;
   port: number | null;
   portOpen: boolean;
