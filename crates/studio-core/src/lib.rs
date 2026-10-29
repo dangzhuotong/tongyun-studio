@@ -20,7 +20,8 @@ pub use agent_http::{
     ServerHandle, DEFAULT_AGENT_PORT, DEFAULT_STUDIO_AGENT_PORT,
 };
 pub use dev_runtime::{
-    scan_dev_directory, DevCandidate, DevProfile, DevScanReport, EnvPreset, ExistingProject, LifeState,
+    format_port_occupied_error, port_occupants, port_occupied_error, scan_dev_directory,
+    DevCandidate, DevProfile, DevScanReport, EnvPreset, ExistingProject, LifeState, PortOccupant,
     PreparedImport,
 };
 pub use processes::{ManagedService, ServiceManager};

@@ -12,6 +12,7 @@ use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
     path::Path,
+    process::{Command, Stdio},
     time::Duration,
 };
 
@@ -485,6 +486,262 @@ pub fn probe_loopback(url: &str) -> bool {
     let code = parts.next().and_then(|value| value.parse::<u16>().ok()).unwrap_or(0);
     version.starts_with("HTTP/") && (200..300).contains(&code)
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortOccupant {
+    pub pid: u32,
+    pub name: String,
+}
+
+#[cfg(windows)]
+pub fn listener_pids(port: u16) -> Vec<u32> {
+    if port == 0 {
+        return Vec::new();
+    }
+    let mut pids = Vec::new();
+    if let Ok(out) = Command::new("netstat")
+        .args(["-ano", "-p", "tcp"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+    {
+        if out.status.success() {
+            let text = String::from_utf8_lossy(&out.stdout);
+            let port_suffix = format!(":{port}");
+            for line in text.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 5
+                    && parts[0].eq_ignore_ascii_case("TCP")
+                    && parts[3].eq_ignore_ascii_case("LISTENING")
+                {
+                    let local_addr = parts[1];
+                    if local_addr.ends_with(&port_suffix) {
+                        let local_port_str = local_addr.rsplit(':').next().unwrap_or("");
+                        if let Ok(p) = local_port_str.parse::<u16>() {
+                            if p == port {
+                                if let Ok(pid) = parts[4].parse::<u32>() {
+                                    if pid > 0 && !pids.contains(&pid) {
+                                        pids.push(pid);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Fallback: powershell Get-NetTCPConnection
+    if pids.is_empty() {
+        if let Ok(out) = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!("(Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue).OwningProcess"),
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+        {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout);
+                for line in text.lines() {
+                    if let Ok(pid) = line.trim().parse::<u32>() {
+                        if pid > 0 && !pids.contains(&pid) {
+                            pids.push(pid);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    pids.sort_unstable();
+    pids
+}
+
+#[cfg(windows)]
+pub fn process_name_of(pid: u32) -> Option<String> {
+    if pid == 0 {
+        return None;
+    }
+    if let Ok(out) = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+    {
+        if out.status.success() {
+            let text = String::from_utf8_lossy(&out.stdout);
+            if let Some(first) = text.lines().next() {
+                let trimmed = first.trim();
+                if trimmed.starts_with('"') {
+                    let name = trimmed.split(',').next().unwrap_or("").trim_matches('"').trim();
+                    if !name.is_empty() {
+                        return Some(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    // Fallback: powershell Get-Process
+    if let Ok(out) = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!("(Get-Process -Id {pid} -ErrorAction SilentlyContinue).ProcessName"),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+    {
+        if out.status.success() {
+            let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+pub fn listener_pids(port: u16) -> Vec<u32> {
+    if port == 0 {
+        return Vec::new();
+    }
+    for bin in &["lsof", "/usr/sbin/lsof", "/usr/bin/lsof"] {
+        if let Ok(out) = Command::new(bin)
+            .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-t"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+        {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout);
+                let mut pids = Vec::new();
+                for line in text.lines() {
+                    if let Ok(pid) = line.trim().parse::<u32>() {
+                        if pid > 0 && !pids.contains(&pid) {
+                            pids.push(pid);
+                        }
+                    }
+                }
+                if !pids.is_empty() {
+                    pids.sort_unstable();
+                    return pids;
+                }
+            }
+        }
+    }
+    // Fallback to ss on Linux if lsof is absent or empty
+    if let Ok(out_ss) = Command::new("ss")
+        .args(["-H", "-t", "-l", "-n", "-p", &format!("sport = :{port}")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+    {
+        if out_ss.status.success() {
+            let text = String::from_utf8_lossy(&out_ss.stdout);
+            let mut pids = Vec::new();
+            for line in text.lines() {
+                let mut rest = line;
+                while let Some(idx) = rest.find("pid=") {
+                    rest = &rest[idx + 4..];
+                    let pid_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                    if let Ok(pid) = pid_str.parse::<u32>() {
+                        if pid > 0 && !pids.contains(&pid) {
+                            pids.push(pid);
+                        }
+                    }
+                }
+            }
+            if !pids.is_empty() {
+                pids.sort_unstable();
+                return pids;
+            }
+        }
+    }
+    Vec::new()
+}
+
+#[cfg(not(windows))]
+pub fn process_name_of(pid: u32) -> Option<String> {
+    if pid == 0 {
+        return None;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) {
+            let trimmed = comm.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    if let Ok(out) = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+    {
+        if out.status.success() {
+            let text = String::from_utf8_lossy(&out.stdout);
+            let comm = text.trim();
+            if !comm.is_empty() {
+                let short = comm.rsplit('/').next().unwrap_or(comm).trim();
+                if !short.is_empty() {
+                    return Some(short.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn port_occupants(port: u16) -> Vec<PortOccupant> {
+    if port == 0 {
+        return Vec::new();
+    }
+    let pids = listener_pids(port);
+    let mut occupants = Vec::new();
+    for pid in pids {
+        let name = process_name_of(pid).unwrap_or_default();
+        occupants.push(PortOccupant { pid, name });
+    }
+    occupants
+}
+
+pub fn format_port_occupied_error(port: u16, occupants: &[PortOccupant]) -> String {
+    if occupants.is_empty() {
+        format!("端口 {port} 已有进程监听，未启动。")
+    } else {
+        let details = occupants
+            .iter()
+            .map(|o| {
+                if o.name.is_empty() {
+                    format!("PID {}", o.pid)
+                } else {
+                    format!("{} (PID {})", o.name, o.pid)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("端口 {port} 已有进程监听（{details}），未启动。")
+    }
+}
+
+pub fn port_occupied_error(port: u16) -> String {
+    let occupants = port_occupants(port);
+    format_port_occupied_error(port, &occupants)
+}
+
 
 struct DirHit {
     container: bool,
@@ -1019,6 +1276,51 @@ fn bounded_token(value: &str, label: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_port_occupied_error_handles_variants() {
+        assert_eq!(
+            format_port_occupied_error(8080, &[]),
+            "端口 8080 已有进程监听，未启动。"
+        );
+        assert_eq!(
+            format_port_occupied_error(8080, &[PortOccupant { pid: 1234, name: "node".into() }]),
+            "端口 8080 已有进程监听（node (PID 1234)），未启动。"
+        );
+        assert_eq!(
+            format_port_occupied_error(8080, &[PortOccupant { pid: 1234, name: String::new() }]),
+            "端口 8080 已有进程监听（PID 1234），未启动。"
+        );
+        assert_eq!(
+            format_port_occupied_error(
+                8080,
+                &[
+                    PortOccupant { pid: 1234, name: "node".into() },
+                    PortOccupant { pid: 5678, name: "java".into() },
+                ]
+            ),
+            "端口 8080 已有进程监听（node (PID 1234), java (PID 5678)），未启动。"
+        );
+    }
+
+    #[test]
+    fn live_port_occupants_detects_tcp_listener() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let occupants = port_occupants(port);
+        let my_pid = std::process::id();
+        assert!(
+            occupants.iter().any(|o| o.pid == my_pid),
+            "occupants for port {port} ({:?}) should contain current pid {my_pid}",
+            occupants
+        );
+        let err = port_occupied_error(port);
+        assert!(err.contains("已有进程监听"));
+        assert!(err.contains(&port.to_string()));
+        assert!(err.contains(&my_pid.to_string()));
+        drop(listener);
+    }
+
 
     fn input(overrides: StateInput) -> StateInput {
         overrides
