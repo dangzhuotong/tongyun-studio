@@ -8,7 +8,7 @@
     "task_id+version",
     "task_id+request_id"
   ],
-  "review_table_exists": false,
+  "review_table_exists": true,
   "lease_table_exists": false,
   "delivery_insert_privilege_observed": false,
   "writes_tested": false,
@@ -24,16 +24,27 @@
   ],
   "page_overflow": false,
   "prototype_checks": [
+    "default files/code view",
+    "six project development navigation entries",
+    "example test file selection",
+    "project report opens from file tree",
+    "report jumps back to Git",
     "history read-only",
     "changes require comment",
-    "review locks duplicate action",
-    "review event tied to V2",
-    "reset demo",
-    "invalid onboarding identity",
-    "manual schedule disclosure"
+    "feedback is local demo only"
   ],
   "report_anchors": "pass",
   "report_print_css": "navigation hidden; no page overflow",
   "runtime": "local file only; no project service",
-  "deployed": false
+  "deployed": false,
+  "review_columns_verified": 9,
+  "review_unique_constraint_verified": "task_id+request_id",
+  "review_schema_source": "live SHOW COLUMNS / SHOW INDEX on 2026-10-29",
+  "design_version": "2.0",
+  "product_boundary": "project development workbench; client-owned native scheduled tasks",
+  "removed_views": [
+    "global onboarding",
+    "scheduler console",
+    "global worker queue"
+  ]
 }

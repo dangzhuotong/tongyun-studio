@@ -49,3 +49,7 @@ API、Database、Git、Agent 面板仍是 Studio 自己的本地能力，没有�
 共享 TiDB / 工人 runner 的自注册与公共池抢单已存在，不能从 Studio 本地快照能力推断整个团队没有调度。task_deliveries 已核实建好，Studio 尚未接通对应提交、预览和审核服务。不得用原型或新表存在代替能力证据。
 
 新会话读[接入与交付引导](agent-start.md)；实现计划见[工作流设计](design/agent-workflow/design.md)。HTML 默认按 tongyun-document 出稿，未入库阶段按引导保留原稿、记录真实可访问性和现有 runner 回写结果。
+
+## 产品职责更正：开发现场与客户端唤醒
+
+Studio 是开发者和 Agent 操作项目的工作台，主区域保持文件、代码、Git、运行、接口、数据和交付；当前任务与 Agent 执行只是项目上下文。全局注册、任务池治理和各客户端排程不作为本产品主线。各 Agent 使用自身宿主的定时任务机制，醒来后遵守共享协议；脚本 runner 是可选兼容入口。Studio 的项目服务运行管理与 Agent 客户端定时唤醒是两回事。

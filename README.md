@@ -90,3 +90,7 @@ Agent 面板可读取项目里的 `.tongyun/agent-session.json`（备用 `.agent
 先读 [AGENTS.md](AGENTS.md) 与 [接入和交付引导](docs/agent-start.md)，再按 [技能入口](docs/skills.md) 读取实际 Skill。默认 HTML 报告使用 tongyun-document。
 
 TiDB 注册、抢单和现有 runner 已有基础；新 HTML 交付表已核实存在。Studio 的数据库交付与人工验收界面仍是[整合设计](docs/design/agent-workflow/report.html)，尚未接通真实接口。项目服务启动统一走受管入口，见 [开发说明](docs/development.md)。
+
+## 开发工作台与 Agent 客户端的分工
+
+工作台围绕当前项目提供文件、代码、Git、运行、接口、数据与交付阅读，供人和 Agent 共同开发。注册与接单遵循已有共享协议；各 Agent 按自身客户端支持的方式创建定时任务，工作台不统一守护、唤醒或调度这些客户端。原生定时唤醒可能在查队列前已调用模型，不承诺所有方式都能做到无单零模型消耗。

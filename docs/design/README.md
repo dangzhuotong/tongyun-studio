@@ -29,7 +29,11 @@
 
 ## Agent 工作流整合设计
 
-- [设计说明 HTML](agent-workflow/report.html)：接入、抢单、入库交付、独立验收、恢复与缺项。
-- [深色交互原型](agent-workflow/prototype.html)：五视图与 HTML 交付验收演示，未接真实接口。
+- [设计说明 HTML](agent-workflow/report.html)：开发工作台边界、客户端原生定时任务、入库交付、反馈与缺项。
+- [深色交互原型](agent-workflow/prototype.html)：项目文件、Git、运行、接口、数据与交付六视图演示，未接真实接口。
 - [实现契约 Markdown](agent-workflow/design.md)：接口、事务顺序、权限与里程碑。
 - [审核表 SQL 草案](agent-workflow/reviews.proposed.sql)：仅设计草案，未执行。
+
+## 全流程评审交付
+
+- [Agent 工作流全景与缺口评审 HTML](../deliveries/agent-workflow-review-20261029.html)：初始化至人工验收的十章流程、八项补漏与可导出评审意见；已核实交付与审核两张表存在。
