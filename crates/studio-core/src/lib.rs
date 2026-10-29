@@ -11,8 +11,13 @@ use std::{
 
 pub type Result<T> = std::result::Result<T, String>;
 
+pub mod agent_http;
 pub mod dev_runtime;
 pub mod processes;
+pub use agent_http::{
+    bind_from, is_studio_server, resolve_agent_port, start_agent_server, AgentHttpInfo,
+    ServerHandle, DEFAULT_AGENT_PORT, DEFAULT_STUDIO_AGENT_PORT,
+};
 pub use dev_runtime::{
     scan_dev_directory, DevCandidate, DevProfile, DevScanReport, ExistingProject, LifeState,
     PreparedImport,
@@ -1043,6 +1048,9 @@ pub fn send_http_request(
     body: Option<&str>,
 ) -> Result<HttpResponse> {
     let start = Instant::now();
+    #[cfg(windows)]
+    let mut cmd = Command::new("curl");
+    #[cfg(not(windows))]
     let mut cmd = Command::new("/usr/bin/curl");
     cmd.args(["-s", "-i", "-X", method, "--max-time", "15", url]);
     for (k, v) in headers {
@@ -1710,6 +1718,11 @@ mod tests {
     #[test]
     fn git_handles_empty_repo_changes_and_non_repo() {
         let dir = tempfile::tempdir().unwrap();
+        let _guard = dir.path().parent().map(|p| {
+            let prev = std::env::var("GIT_CEILING_DIRECTORIES").ok();
+            std::env::set_var("GIT_CEILING_DIRECTORIES", p);
+            prev
+        });
         assert!(!inspect_git(dir.path()).is_repository);
         assert!(Command::new("git").args(["init", "-q"]).arg(dir.path()).status().unwrap().success());
         let empty = inspect_git(dir.path());
@@ -1824,6 +1837,7 @@ mod tests {
             dev: None,
         };
         assert!(write_project_file(&project, ".tongyun/agent-session.json", "{}").is_err());
+        assert!(append_project_file(&project, ".tongyun/agent-session.json", "{}").is_err());
         assert!(open_url("ftp://example.com").is_err());
         assert!(open_url("javascript:alert(1)").is_err());
     }

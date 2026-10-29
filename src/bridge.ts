@@ -1,5 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import type { Workspace, ProjectInspection, FileEntry, GitFileChange, ExecutionResult, HttpResponse, SqlQueryResult, DbTableInfo, DbColumnInfo, PaginatedData, ListeningPort, AiProjectContext, ManagedService, AgentSessionState, DevScanReport, DevCandidate, DevImportResult } from './contracts';
+import type { Workspace, ProjectInspection, FileEntry, GitFileChange, ExecutionResult, HttpResponse, SqlQueryResult, DbTableInfo, DbColumnInfo, PaginatedData, ListeningPort, AiProjectContext, ManagedService, AgentSessionState, DevScanReport, DevCandidate, DevImportResult, AgentHttpInfo } from './contracts';
 
 export const isDesktop = isTauri();
 function native<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -48,6 +48,7 @@ export const listProjectServices = (id: string) => native<ManagedService[]>('lis
 export const stopProjectService = (id: string, serviceId: string) => native<ManagedService>('stop_project_service', { id, serviceId });
 export const restartProjectService = (id: string, serviceId: string) => native<ManagedService>('restart_project_service', { id, serviceId });
 export const scanDevDirectory = (path: string, depth?: number) => native<DevScanReport>('scan_dev_directory', { path, depth: depth ?? null });
+export const getAgentHttpInfo = () => native<AgentHttpInfo>('agent_http_info');
 export const importDevCandidates = (candidates: DevCandidate[]) => native<DevImportResult>('import_dev_candidates', { candidates });
 export const startDevGroup = (group: string) => native<ManagedService[]>('start_dev_group', { group });
 export const stopDevGroup = (group: string) => native<ManagedService[]>('stop_dev_group', { group });

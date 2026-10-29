@@ -1,4 +1,7 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::{Arc, Mutex};
+use studio_core::agent_http::ServerHandle;
 use studio_core::{
     AiProjectContext, DbColumnInfo, DbTableInfo, DevCandidate, DevImportOutcome, ExecutionResult,
     ExistingProject, FileEntry, GitFileChange, HttpResponse, ListeningPort, ManagedService,
@@ -6,9 +9,39 @@ use studio_core::{
 };
 use tauri::Manager;
 
+static SERVER_HANDLE: Mutex<Option<ServerHandle>> = Mutex::new(None);
+static AGENT_PORT: AtomicU16 = AtomicU16::new(0);
+static AGENT_RUNNING: AtomicBool = AtomicBool::new(false);
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentHttpInfo {
+    pub running: bool,
+    pub port: Option<u16>,
+    pub url: Option<String>,
+}
+
+#[tauri::command]
+fn agent_http_info() -> AgentHttpInfo {
+    if AGENT_RUNNING.load(Ordering::Relaxed) {
+        let port = AGENT_PORT.load(Ordering::Relaxed);
+        AgentHttpInfo {
+            running: true,
+            port: Some(port),
+            url: Some(format!("http://127.0.0.1:{port}")),
+        }
+    } else {
+        AgentHttpInfo {
+            running: false,
+            port: None,
+            url: None,
+        }
+    }
+}
+
 pub struct AppState {
-    pub store: WorkspaceStore,
-    pub services: ServiceManager,
+    pub store: Arc<WorkspaceStore>,
+    pub services: Arc<ServiceManager>,
 }
 
 #[tauri::command]
@@ -405,13 +438,37 @@ pub fn run() {
         .setup(|app| {
             let config_dir = app.path().app_config_dir().unwrap_or_else(|_| PathBuf::from("."));
             let workspace_path = config_dir.join("workspace.json");
+            let store = Arc::new(WorkspaceStore::new(workspace_path));
+            let services = Arc::new(ServiceManager::new());
+
+            let initial_port = studio_core::agent_http::resolve_agent_port();
+            match studio_core::agent_http::start_agent_server(
+                Arc::clone(&store),
+                Arc::clone(&services),
+                initial_port,
+            ) {
+                Ok(srv) => {
+                    AGENT_PORT.store(srv.port(), Ordering::Relaxed);
+                    AGENT_RUNNING.store(true, Ordering::Relaxed);
+                    if let Ok(mut lock) = SERVER_HANDLE.lock() {
+                        *lock = Some(srv);
+                    }
+                }
+                Err(err) => {
+                    AGENT_RUNNING.store(false, Ordering::Relaxed);
+                    AGENT_PORT.store(0, Ordering::Relaxed);
+                    eprintln!("Failed to start Studio Agent HTTP server: {err}");
+                }
+            }
+
             app.manage(AppState {
-                store: WorkspaceStore::new(workspace_path),
-                services: ServiceManager::new(),
+                store,
+                services,
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            agent_http_info,
             load_workspace,
             add_project,
             select_project,
@@ -468,10 +525,19 @@ pub fn run() {
                         .set_description(format!("工作台保持打开，请重试停止服务后退出。\n{error}"))
                         .set_level(rfd::MessageLevel::Error)
                         .show();
+                } else {
+                    if let Ok(mut lock) = SERVER_HANDLE.lock() {
+                        if let Some(mut srv) = lock.take() {
+                            srv.stop();
+                        }
+                    }
                 }
             } else if let tauri::RunEvent::Exit = event {
-                // macOS native Quit can deliver Exit without ExitRequested. Tauri
-                // exits the process directly, so AppState::drop is not a fallback.
+                if let Ok(mut lock) = SERVER_HANDLE.lock() {
+                    if let Some(mut srv) = lock.take() {
+                        srv.stop();
+                    }
+                }
                 if let Err(error) = app.state::<AppState>().services.shutdown() {
                     eprintln!("工作台退出时未能清理全部托管进程：{error}");
                 }

@@ -25,10 +25,11 @@ Dev 面板继承的是运行契约，不是把 tongyun-dev 仓库嵌进来，也
 - 生命周期 `stopped` / `starting` / `port_open` / `ready` / `failed`，以及一次性成功的 `exited`
 - 日志尾部（内存中的末尾行；每个输出流另有 64 KiB 上限）
 - 启动前若登记端口已被监听，则拒绝启动
+- 对齐 tongyun-dev 的 Agent HTTP 契约与自动拉起：App 启动时在 127.0.0.1 自动拉起 Agent HTTP 服务（端口可配，默认 9100，环境变量 TONGYUN_STUDIO_AGENT_PORT，递增避让，不与 tongyun-dev 的 9099 冲突），提供项目清单与状态（GET /api/projects、GET /api/projects/:id）、启停与重启（POST /api/projects/:id/start、POST /api/projects/:id/stop、POST /api/projects/:id/restart）、日志尾部（GET /api/projects/:id/logs）以及同组启停（POST /api/groups/:key/start、POST /api/groups/:key/stop）。内置 DNS rebinding 与 CSRF 防护。
 
 仍未接入：
 
-- 独立 CLI、`~/.config/tongyun-dev/projects.toml` 和网页控制台 `:9099`
+- 独立 CLI、`~/.config/tongyun-dev/projects.toml` 和网页控制台 `:9099`（Studio 只在后台启动供外部 Agent 调用的 Agent HTTP 服务，不挂载独立 CLI、独立项目文件或 :9099 网页控制台）
 - 跨产品的完整后端协议、共享数据库、Agent 调度
 - 自动安装依赖（没有 `installing`）、Java/Node 工具链注入、环境预设
 - PTY、自动应答、向进程写入输入
