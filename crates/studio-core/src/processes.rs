@@ -337,6 +337,37 @@ impl ServiceManager {
                     .map_err(|e| e.to_string())?;
                 env_vars.extend(tc_env);
             }
+
+            let needs_tomcat = d.kind == "tomcat-war"
+                || d.catalina_home.is_some()
+                || command.contains("catalina")
+                || command.contains("{{tomcat}}")
+                || command.contains("{{catalina_home}}");
+            if needs_tomcat {
+                let explicit_ch = d.catalina_home.as_deref()
+                    .or_else(|| d.env.get("CATALINA_HOME").map(String::as_str))
+                    .or_else(|| preset.and_then(|p| p.env.get("CATALINA_HOME")).map(String::as_str))
+                    .map(Path::new);
+                let ch = toolchain::resolve_catalina_home(explicit_ch, &roots)
+                    .map_err(|e| e.to_string())?;
+                let ch_str = ch.to_string_lossy().into_owned();
+                env_vars.push(("CATALINA_HOME".into(), ch_str.clone()));
+                env_vars.push(("CATALINA_BASE".into(), ch_str.clone()));
+
+                let bin = ch.join("bin");
+                let sep = if roots.os == toolchain::HostOs::Windows { ";" } else { ":" };
+                if let Some((_, existing_path)) = env_vars.iter_mut().find(|(k, _)| k == "PATH") {
+                    *existing_path = format!("{}{sep}{existing_path}", bin.display());
+                } else {
+                    let base_path = &roots.base_path;
+                    let new_path = if base_path.is_empty() {
+                        bin.display().to_string()
+                    } else {
+                        format!("{}{sep}{base_path}", bin.display())
+                    };
+                    env_vars.push(("PATH".into(), new_path));
+                }
+            }
             for (k, v) in &d.env {
                 env_vars.push((k.clone(), v.clone()));
             }
@@ -370,7 +401,7 @@ impl ServiceManager {
         }
         if let Some(port) = binding.port.filter(|_| binding.expects_port) {
             if dev_runtime::tcp_open(port) {
-                return Err(format!("端口 {port} 已有进程监听，未启动。"));
+                return Err(dev_runtime::port_occupied_error(port));
             }
         }
         // Reuse the same service identity when the same project command is run again.
@@ -419,6 +450,11 @@ impl ServiceManager {
         let directory = old.directory.clone();
         let command = old.snapshot.command.clone();
         old.stop()?; // Never start a replacement before stopping the entire old group.
+        if let Some(port) = binding.port.filter(|_| binding.expects_port) {
+            if dev_runtime::tcp_open(port) {
+                return Err(dev_runtime::port_occupied_error(port));
+            }
+        }
         let mut entry = spawn_entry(service_id.to_owned(), project_id, &directory, &command, binding)?;
         let snapshot = entry.snapshot();
         registry.entries.insert(service_id.to_owned(), entry);
@@ -720,8 +756,17 @@ fn read_output(reader: impl Read + Send + 'static, output: Arc<Mutex<Output>>) {
 fn spawn_entry(id: String, project_id: &str, directory: &str, command: &str, binding: Binding) -> Result<Entry> {
     use std::os::unix::process::CommandExt;
     if !Path::new(directory).is_dir() { return Err("项目目录不存在或不可访问。".into()); }
+    let exec_command = if command.contains("{{tomcat}}") || command.contains("{{catalina_home}}") {
+        if let Some((_, ch)) = binding.env.iter().find(|(k, _)| k == "CATALINA_HOME") {
+            command.replace("{{tomcat}}", ch).replace("{{catalina_home}}", ch)
+        } else {
+            command.to_string()
+        }
+    } else {
+        command.to_string()
+    };
     let mut cmd = Command::new("/bin/sh");
-    cmd.args(["-c", command]).current_dir(directory)
+    cmd.args(["-c", &exec_command]).current_dir(directory)
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
         .process_group(0);
     for (k, v) in &binding.env {
@@ -798,12 +843,13 @@ fn signal_group(pgid: u32, signal: i32) -> Result<()> {
 #[cfg(not(unix))] fn terminate_signal() -> i32 { 0 }
 #[cfg(not(unix))] fn kill_signal() -> i32 { 0 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::dev_runtime::DevProfile;
     use std::net::TcpListener;
 
+    #[allow(dead_code)]
     fn project(directory: &Path) -> Project {
         Project { id: "synthetic-project".into(), name: "synthetic".into(), path: directory.to_str().unwrap().into(), created_at: String::new(), dev: None }
     }
@@ -827,14 +873,17 @@ mod tests {
             }),
         }
     }
+    #[allow(dead_code)]
     fn wait_for(manager: &ServiceManager, id: &str, condition: impl Fn(&ManagedService) -> bool) -> ManagedService {
         let start = Instant::now();
         loop { let item = manager.list(id).unwrap().remove(0); if condition(&item) { return item; } assert!(start.elapsed() < Duration::from_secs(8), "service did not reach expected state: {item:?}"); thread::sleep(Duration::from_millis(20)); }
     }
+    #[allow(dead_code)]
     fn free_port() -> u16 {
         TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
     }
     #[test]
+    #[cfg(unix)]
     fn start_deduplicates_and_stop_terminates_descendants() {
         let temp = tempfile::tempdir().unwrap(); let project = project(temp.path()); let manager = ServiceManager::new();
         let command = "sleep 60 & echo child:$!; wait";
@@ -855,6 +904,7 @@ mod tests {
         manager.stop(&project.id, &first.id).unwrap();
     }
     #[test]
+    #[cfg(unix)]
     fn failures_and_bounded_output_are_truthful() {
         let temp = tempfile::tempdir().unwrap(); let project = project(temp.path()); let manager = ServiceManager::new();
         manager.start(&project, "printf failure >&2; exit 7").unwrap();
@@ -869,6 +919,7 @@ mod tests {
         assert_eq!(output.lifecycle, "exited");
     }
     #[test]
+    #[cfg(unix)]
     fn registry_survives_navigation_and_enforces_project_ownership() {
         let temp = tempfile::tempdir().unwrap(); let project = project(temp.path()); let manager = ServiceManager::new();
         let started = manager.start(&project, "sleep 60").unwrap();
@@ -882,6 +933,7 @@ mod tests {
         assert!(manager.start(&project, "sleep 60").is_err());
     }
     #[test]
+    #[cfg(unix)]
     fn drop_cleans_up_and_stop_escalates_when_term_is_ignored() {
         let temp = tempfile::tempdir().unwrap(); let project = project(temp.path()); let manager = ServiceManager::new();
         let started = manager.start(&project, "trap '' TERM; echo ready; while :; do sleep 1; done").unwrap();
@@ -890,6 +942,7 @@ mod tests {
         assert!(!group_alive(started.pid.unwrap()).unwrap());
     }
     #[test]
+    #[cfg(unix)]
     fn port_ready_failure_tail_and_group_follow_the_dev_contract() {
         let temp = tempfile::tempdir().unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -898,6 +951,7 @@ mod tests {
         let manager = ServiceManager::new();
         let refused = manager.start(&blocked, "sleep 30").unwrap_err();
         assert!(refused.contains("已有进程监听"), "{refused}");
+        assert!(refused.contains(&std::process::id().to_string()), "{refused}");
         drop(listener);
 
         let port = free_port();
@@ -946,6 +1000,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn port_process_that_exits_immediately_is_failed_not_starting() {
         let temp = tempfile::tempdir().unwrap();
         let command = "echo crashed; exit 7";
@@ -968,4 +1023,19 @@ mod tests {
         assert!(failed.failure.as_deref().is_some_and(|text| text.contains("7")));
         assert!(started.elapsed() < Duration::from_secs(3), "failure should not wait out the old starting grace");
     }
+
+    #[test]
+    fn start_refused_on_occupied_port_displays_process_name_and_pid() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ServiceManager::new();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let project = project_dev(temp.path(), "occupied", "echo hi", Some(port), None, None);
+        let error = manager.start(&project, "echo hi").unwrap_err();
+        assert!(error.contains("已有进程监听"), "error: {error}");
+        assert!(error.contains(&port.to_string()), "error: {error}");
+        assert!(error.contains(&std::process::id().to_string()), "error: {error}");
+        drop(listener);
+    }
+
 }

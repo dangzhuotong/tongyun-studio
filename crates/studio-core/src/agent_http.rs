@@ -4,6 +4,7 @@
 //! start/stop/restart dev services, inspect status, and read log tails.
 //! Binds 127.0.0.1:9199 by default (configurable via TONGYUN_STUDIO_AGENT_PORT).
 
+use crate::dev_runtime;
 use crate::processes::ServiceManager;
 use crate::{Project, WorkspaceStore};
 use serde::{Deserialize, Serialize};
@@ -390,6 +391,24 @@ fn project_overview(project: &Project, services: &ServiceManager) -> Value {
             ),
         };
 
+    let (port_conflict, port_holder) = if port > 0 && !running && dev_runtime::tcp_open(port) {
+        let occupants = dev_runtime::port_occupants(port);
+        let holder = occupants
+            .iter()
+            .map(|o| {
+                if o.name.is_empty() {
+                    format!("PID {}", o.pid)
+                } else {
+                    format!("{} (PID {})", o.name, o.pid)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        (true, holder)
+    } else {
+        (false, String::new())
+    };
+
     json!({
         "id": project.id,
         "name": project.name,
@@ -414,13 +433,14 @@ fn project_overview(project: &Project, services: &ServiceManager) -> Value {
         "profiles": dev.map(|d| d.profiles.clone()).unwrap_or_default(),
         "java": dev.and_then(|d| d.java.clone()),
         "java_home": dev.and_then(|d| d.java_home.clone()),
+        "catalina_home": dev.and_then(|d| d.catalina_home.clone()),
         "node": dev.and_then(|d| d.node.clone()),
         "node_home": dev.and_then(|d| d.node_home.clone()),
         "created_at": project.created_at,
         "deps_missing": false,
         "install_command": "",
-        "port_conflict": false,
-        "port_holder": "",
+        "port_conflict": port_conflict,
+        "port_holder": port_holder,
     })
 }
 

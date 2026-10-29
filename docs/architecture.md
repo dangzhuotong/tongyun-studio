@@ -24,8 +24,9 @@ Dev 面板继承的是运行契约，不是把 tongyun-dev 仓库嵌进来，也
 - 启停、重启、同组批量启停（支持 depends_on 依赖拓扑排序、就绪等待、环路拦截与依赖失败跳过，批量停止按依赖逆序）
 - 生命周期 `stopped` / `starting` / `port_open` / `ready` / `failed`，以及一次性成功的 `exited`
 - 日志尾部（内存中的末尾行；每个输出流另有 64 KiB 上限）
-- 启动前若登记端口已被监听，则拒绝启动
+- 启动前若登记端口已被监听，则拒绝启动，并标出占用进程的名字和 PID（mac/linux 用 lsof，Windows 用 netstat/Get-NetTCPConnection；无法获取时退化为单句提示已被监听）
 - 环境预设与工具链注入：每个项目支持选择/配置 env 预设（如 dev/test，含 Spring Boot application-*.yml/properties 扫描识别）；支持指定 JAVA_HOME / Node 版本与路径，启动进程前预检工具链可用性，找不到时提前给出单句明确原因并拒绝启动，命中时注入 JAVA_HOME 与 PATH 环境变量。
+- Tomcat WAR 与 catalina 部署：识别到 Tomcat WAR（Maven packaging 为 war）的项目可配 CATALINA_HOME，按 catalina run 启停并部署 WAR 到 webapps；就绪判定沿用端口探活（默认 8080）；无 Tomcat 时启动前一句话提示。
 - 对齐 tongyun-dev 的 Agent HTTP 契约与自动拉起：App 启动时在 127.0.0.1 自动拉起 Agent HTTP 服务（端口可配，默认 9100，环境变量 TONGYUN_STUDIO_AGENT_PORT，递增避让，不与 tongyun-dev 的 9099 冲突），提供项目清单与状态（GET /api/projects、GET /api/projects/:id）、启停与重启（POST /api/projects/:id/start、POST /api/projects/:id/stop、POST /api/projects/:id/restart）、日志尾部（GET /api/projects/:id/logs）以及同组启停（POST /api/groups/:key/start、POST /api/groups/:key/stop）。内置 DNS rebinding 与 CSRF 防护。
 
 仍未接入：
@@ -34,9 +35,7 @@ Dev 面板继承的是运行契约，不是把 tongyun-dev 仓库嵌进来，也
 - 跨产品的完整后端协议、共享数据库、Agent 调度
 - 自动安装依赖（没有 `installing`）
 - PTY、自动应答、向进程写入输入
-- Tomcat `catalina` 部署；WAR 只登记并提示需要自己写启动命令
 - 日志与 PID 落在 `~/.tongyun-dev/logs`，以及工作台重启后恢复进程
-- 用 `lsof` 指出端口占用者；Studio 只在启动前拒绝已被监听的端口
 
 模块名称不表示已经接通独立应用。浏览器预览不能扫描、登记或启停本机进程。
 

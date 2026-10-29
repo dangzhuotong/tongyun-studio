@@ -34,6 +34,7 @@ pub struct ToolchainRoots {
     pub base_path: String,
     pub common_dirs: Option<Vec<PathBuf>>,
     pub mac_jvm_dir: Option<PathBuf>,
+    pub catalina_home: Option<PathBuf>,
 }
 
 impl ToolchainRoots {
@@ -88,6 +89,12 @@ impl ToolchainRoots {
             .filter(|s| !s.is_empty())
             .map(PathBuf::from);
 
+        let catalina_home = std::env::var("CATALINA_HOME")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from);
+
         let base_path = std::env::var("PATH").unwrap_or_default();
 
         Self {
@@ -102,6 +109,7 @@ impl ToolchainRoots {
             base_path,
             common_dirs: None,
             mac_jvm_dir: None,
+            catalina_home,
         }
     }
 }
@@ -112,6 +120,8 @@ pub enum ToolchainError {
     InvalidJavaHome { path: PathBuf, reason: String },
     MissingNode { version: String, searched: String },
     InvalidNodeHome { path: PathBuf, reason: String },
+    MissingTomcat,
+    InvalidCatalinaHome { path: PathBuf, reason: String },
 }
 
 impl fmt::Display for ToolchainError {
@@ -137,6 +147,12 @@ impl fmt::Display for ToolchainError {
             }
             ToolchainError::InvalidNodeHome { path, reason } => {
                 write!(f, "指定的 node_home 无效（{}）：{reason}", path.display())
+            }
+            ToolchainError::MissingTomcat => {
+                write!(f, "缺 Tomcat：未配置 CATALINA_HOME，请指定 Tomcat 安装目录。")
+            }
+            ToolchainError::InvalidCatalinaHome { path, reason } => {
+                write!(f, "指定的 CATALINA_HOME 无效（{}）：{reason}", path.display())
             }
         }
     }
@@ -615,6 +631,68 @@ pub fn resolve_node_bin(
     }
 }
 
+
+pub fn check_catalina_home(path: &Path) -> Result<(), &'static str> {
+    if !path.is_dir() {
+        return Err("目录不存在");
+    }
+    let bin = path.join("bin");
+    if !bin.is_dir() {
+        return Err("bin 目录不存在");
+    }
+    let catalina_sh = bin.join("catalina.sh");
+    let catalina_bat = bin.join("catalina.bat");
+    if !catalina_sh.is_file() && !catalina_bat.is_file() {
+        return Err("bin/catalina.sh 未找到");
+    }
+    Ok(())
+}
+
+pub fn resolve_catalina_home(
+    explicit_catalina_home: Option<&Path>,
+    roots: &ToolchainRoots,
+) -> Result<PathBuf, ToolchainError> {
+    if let Some(explicit) = explicit_catalina_home {
+        if let Err(reason) = check_catalina_home(explicit) {
+            return Err(ToolchainError::InvalidCatalinaHome {
+                path: explicit.to_path_buf(),
+                reason: reason.to_string(),
+            });
+        }
+        return Ok(explicit.to_path_buf());
+    }
+
+    if let Some(ref env_ch) = roots.catalina_home {
+        if let Err(reason) = check_catalina_home(env_ch) {
+            return Err(ToolchainError::InvalidCatalinaHome {
+                path: env_ch.to_path_buf(),
+                reason: reason.to_string(),
+            });
+        }
+        return Ok(env_ch.to_path_buf());
+    }
+
+    if roots.os != HostOs::Windows {
+        let mut common_candidates = Vec::new();
+        if let Some(ref h) = roots.home {
+            common_candidates.push(h.join("opt/tomcat"));
+            common_candidates.push(h.join("opt/apache-tomcat"));
+        }
+        common_candidates.push(PathBuf::from("/opt/tomcat"));
+        common_candidates.push(PathBuf::from("/opt/homebrew/opt/tomcat"));
+        common_candidates.push(PathBuf::from("/usr/local/opt/tomcat"));
+        common_candidates.push(PathBuf::from("/usr/local/tomcat"));
+
+        for candidate in common_candidates {
+            if check_catalina_home(&candidate).is_ok() {
+                return Ok(candidate);
+            }
+        }
+    }
+
+    Err(ToolchainError::MissingTomcat)
+}
+
 pub fn toolchain_env(
     java: Option<&str>,
     java_home: Option<&Path>,
@@ -816,6 +894,7 @@ mod tests {
             base_path: "/bin".into(),
             common_dirs: None,
             mac_jvm_dir: Some(empty_jvm),
+            catalina_home: None,
         };
 
         // "8" picks 8.0.504+1-zulu
@@ -879,6 +958,7 @@ mod tests {
             base_path: "/bin".into(),
             common_dirs: None,
             mac_jvm_dir: None,
+            catalina_home: None,
         };
 
         let res22 = resolve_node_bin("22", None, &roots).unwrap();
@@ -905,6 +985,7 @@ mod tests {
             base_path: "/bin".into(),
             common_dirs: None,
             mac_jvm_dir: None,
+            catalina_home: None,
         };
         let res_app_support = resolve_node_bin("22", None, &roots2).unwrap();
         assert_eq!(res_app_support, fnm_dir2);
@@ -936,6 +1017,7 @@ mod tests {
             base_path: "/bin".into(),
             common_dirs: None,
             mac_jvm_dir: None,
+            catalina_home: None,
         };
         let res_nvm = resolve_node_bin("20", None, &roots_nvm).unwrap();
         assert_eq!(res_nvm, nvm_bin);
@@ -992,6 +1074,7 @@ mod tests {
             base_path: "C:\\Windows\\System32;C:\\Windows".into(),
             common_dirs: None,
             mac_jvm_dir: None,
+            catalina_home: None,
         };
 
         // Java 17 hits Adoptium
@@ -1047,6 +1130,7 @@ mod tests {
             base_path: "/usr/bin:/bin:/usr/bin".into(),
             common_dirs: Some(vec![brew_bin.clone(), temp.path().join("nonexistent_bin")]),
             mac_jvm_dir: None,
+            catalina_home: None,
         };
 
         let explicit_jdk = temp.path().join("my_jdk");
