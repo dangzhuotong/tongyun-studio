@@ -7,7 +7,7 @@ use crate::toolchain;
 use crate::{Project, Result};
 use serde::Serialize;
 #[allow(unused_imports)]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[allow(unused_imports)]
 use std::process::{Child, Command, Stdio};
 use std::{
@@ -17,6 +17,182 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+pub const MAX_LOG_FILE_BYTES: u64 = 1024 * 1024; // 1 MiB
+
+pub fn default_log_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("TONGYUN_STUDIO_LOG_DIR") {
+        let trimmed = dir.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from);
+    if let Some(h) = home {
+        h.join(".tongyun-studio").join("logs")
+    } else {
+        PathBuf::from(".tongyun-studio").join("logs")
+    }
+}
+
+pub fn safe_project_filename(project_id: &str) -> String {
+    let sanitized: String = project_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    if sanitized.trim_matches('_').is_empty() {
+        "project".to_string()
+    } else {
+        sanitized
+    }
+}
+
+pub fn project_log_path(log_dir: &Path, project_id: &str) -> PathBuf {
+    log_dir.join(format!("{}.log", safe_project_filename(project_id)))
+}
+
+pub fn project_log_path_rolled(log_dir: &Path, project_id: &str) -> PathBuf {
+    log_dir.join(format!("{}.log.1", safe_project_filename(project_id)))
+}
+
+#[derive(Clone)]
+pub struct RollingLogWriter {
+    path: PathBuf,
+    rolled_path: PathBuf,
+    max_bytes: u64,
+    lock: Arc<Mutex<()>>,
+}
+
+impl RollingLogWriter {
+    pub fn new(path: PathBuf, rolled_path: PathBuf, max_bytes: u64) -> Self {
+        Self {
+            path,
+            rolled_path,
+            max_bytes,
+            lock: Arc::new(Mutex::new(())),
+        }
+    }
+
+    pub fn for_project(log_dir: &Path, project_id: &str) -> Self {
+        let path = project_log_path(log_dir, project_id);
+        let rolled_path = project_log_path_rolled(log_dir, project_id);
+        Self::new(path, rolled_path, MAX_LOG_FILE_BYTES)
+    }
+
+    pub fn append(&self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        let Ok(_guard) = self.lock.lock() else {
+            return;
+        };
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(meta) = std::fs::metadata(&self.path) {
+            if meta.len().saturating_add(bytes.len() as u64) > self.max_bytes {
+                let _ = std::fs::remove_file(&self.rolled_path);
+                let _ = std::fs::rename(&self.path, &self.rolled_path);
+            }
+        }
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+        {
+            let _ = f.write_all(bytes);
+            let _ = f.flush();
+        }
+    }
+}
+
+pub fn read_tail(path: &Path, max_lines: usize) -> Result<String> {
+    read_tail_with_backup(path, None, max_lines)
+}
+
+pub fn read_tail_with_backup(
+    path: &Path,
+    backup_path: Option<&Path>,
+    max_lines: usize,
+) -> Result<String> {
+    use std::fs::File;
+    use std::io::{Seek, SeekFrom};
+    let max_lines = max_lines.clamp(1, 500);
+
+    let mut primary_lines = Vec::new();
+    let mut primary_ends_with_nl = false;
+    if path.is_file() {
+        let mut file = File::open(path).map_err(|e| format!("打开日志文件失败: {e}"))?;
+        let len = file.metadata().map_err(|e| format!("读取日志元数据失败: {e}"))?.len();
+        let window = 512 * 1024;
+        let start = len.saturating_sub(window);
+        file.seek(SeekFrom::Start(start)).map_err(|e| format!("定位日志文件失败: {e}"))?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).map_err(|e| format!("读取日志内容失败: {e}"))?;
+        if start > 0 {
+            if let Some(i) = buf.iter().position(|b| *b == b'\n') {
+                buf.drain(..=i);
+            }
+        }
+        let text = String::from_utf8_lossy(&buf);
+        primary_ends_with_nl = text.ends_with('\n');
+        for l in text.lines() {
+            primary_lines.push(l.to_string());
+        }
+    }
+
+    if primary_lines.len() >= max_lines || backup_path.is_none() {
+        let skip = primary_lines.len().saturating_sub(max_lines);
+        let mut out = primary_lines[skip..].join("\n");
+        if primary_ends_with_nl && !out.is_empty() {
+            out.push('\n');
+        }
+        return Ok(out);
+    }
+
+    let backup = backup_path.unwrap();
+    if backup.is_file() {
+        let needed = max_lines - primary_lines.len();
+        if let Ok(mut file) = File::open(backup) {
+            if let Ok(meta) = file.metadata() {
+                let window = 512 * 1024;
+                let start = meta.len().saturating_sub(window);
+                let _ = file.seek(SeekFrom::Start(start));
+                let mut buf = Vec::new();
+                if file.read_to_end(&mut buf).is_ok() {
+                    if start > 0 {
+                        if let Some(i) = buf.iter().position(|b| *b == b'\n') {
+                            buf.drain(..=i);
+                        }
+                    }
+                    let text = String::from_utf8_lossy(&buf);
+                    let b_lines: Vec<&str> = text.lines().collect();
+                    let b_skip = b_lines.len().saturating_sub(needed);
+                    let mut combined: Vec<String> = b_lines[b_skip..].iter().map(|s| s.to_string()).collect();
+                    combined.extend(primary_lines);
+                    let mut out = combined.join("\n");
+                    if primary_ends_with_nl && !out.is_empty() {
+                        out.push('\n');
+                    }
+                    return Ok(out);
+                }
+            }
+        }
+    }
+
+    let skip = primary_lines.len().saturating_sub(max_lines);
+    let mut out = primary_lines[skip..].join("\n");
+    if primary_ends_with_nl && !out.is_empty() {
+        out.push('\n');
+    }
+    Ok(out)
+}
 
 #[allow(dead_code)]
 const OUTPUT_LIMIT: usize = 64 * 1024;
@@ -156,6 +332,7 @@ struct Entry {
     install_command: Option<String>,
     #[allow(dead_code)]
     service_command: String,
+    log_writer: Option<RollingLogWriter>,
 }
 impl Entry {
     fn refresh(&mut self) -> Result<()> {
@@ -230,10 +407,12 @@ impl Entry {
                                 read_output(
                                     s_child.stdout.take().expect("piped stdout"),
                                     self.stdout.clone(),
+                                    self.log_writer.clone(),
                                 );
                                 read_output(
                                     s_child.stderr.take().expect("piped stderr"),
                                     self.stderr.clone(),
+                                    self.log_writer.clone(),
                                 );
                                 self.child = Some(s_child);
                                 self.started = Instant::now();
@@ -450,17 +629,50 @@ fn exit_failure(code: Option<i32>) -> String {
     }
 }
 #[derive(Default)]
-struct Registry {
-    entries: BTreeMap<String, Entry>,
-    shutting_down: bool,
-}
-#[derive(Default)]
+struct Registry { entries: BTreeMap<String, Entry>, shutting_down: bool }
+
 pub struct ServiceManager {
     registry: Mutex<Registry>,
+    log_dir: PathBuf,
 }
+
+impl Default for ServiceManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ServiceManager {
     pub fn new() -> Self {
-        Self::default()
+        Self::with_log_dir(default_log_dir())
+    }
+
+    pub fn with_log_dir(log_dir: PathBuf) -> Self {
+        Self {
+            registry: Mutex::new(Registry::default()),
+            log_dir,
+        }
+    }
+
+    pub fn log_dir(&self) -> &Path {
+        &self.log_dir
+    }
+
+    pub fn project_log_path(&self, project_id: &str) -> PathBuf {
+        project_log_path(&self.log_dir, project_id)
+    }
+
+    pub fn project_log_path_rolled(&self, project_id: &str) -> PathBuf {
+        project_log_path_rolled(&self.log_dir, project_id)
+    }
+
+    pub fn project_log_tail(&self, project_id: &str, lines: usize) -> Result<Option<String>> {
+        let path = self.project_log_path(project_id);
+        let rolled = self.project_log_path_rolled(project_id);
+        if !path.is_file() && !rolled.is_file() {
+            return Ok(None);
+        }
+        read_tail_with_backup(&path, Some(&rolled), lines).map(Some)
     }
     pub fn start(&self, project: &Project, command: &str) -> Result<ManagedService> {
         self.start_with_profile(project, command, None)
@@ -618,6 +830,7 @@ impl ServiceManager {
             command,
             binding,
             install_command,
+            &self.log_dir,
         )?;
         let mut entry = entry;
         let snapshot = entry.snapshot();
@@ -695,6 +908,7 @@ impl ServiceManager {
             &command,
             binding,
             None,
+            &self.log_dir,
         )?;
         let snapshot = entry.snapshot();
         registry.entries.insert(service_id.to_owned(), entry);
@@ -729,6 +943,7 @@ impl ServiceManager {
             &install_cmd,
             binding,
             Some(install_cmd.clone()),
+            &self.log_dir,
         )?;
         let snapshot = entry.snapshot();
         registry.entries.insert(id, entry);
@@ -798,6 +1013,7 @@ impl ServiceManager {
             installing: false,
             install_command: None,
             service_command: command.to_string(),
+            log_writer: None,
         };
         registry.entries.insert(id, entry);
         Ok(snapshot)
@@ -1080,7 +1296,11 @@ pub fn sort_projects_by_dependencies<'a>(projects: &[&'a Project]) -> Result<Vec
 }
 
 #[allow(dead_code)]
-fn read_output(reader: impl Read + Send + 'static, output: Arc<Mutex<Output>>) {
+fn read_output(
+    reader: impl Read + Send + 'static,
+    output: Arc<Mutex<Output>>,
+    log_writer: Option<RollingLogWriter>,
+) {
     thread::spawn(move || {
         let mut reader = reader;
         let mut chunk = [0; 4096];
@@ -1088,8 +1308,12 @@ fn read_output(reader: impl Read + Send + 'static, output: Arc<Mutex<Output>>) {
             match reader.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(size) => {
+                    let bytes = &chunk[..size];
+                    if let Some(ref writer) = log_writer {
+                        writer.append(bytes);
+                    }
                     if let Ok(mut output) = output.lock() {
-                        output.append(&chunk[..size]);
+                        output.append(bytes);
                     } else {
                         break;
                     }
@@ -1108,6 +1332,7 @@ fn spawn_entry(
     command: &str,
     binding: Binding,
     install_command: Option<String>,
+    log_dir: &Path,
 ) -> Result<Entry> {
     use std::os::unix::process::CommandExt;
     if !Path::new(directory).is_dir() {
@@ -1138,13 +1363,16 @@ fn spawn_entry(
     let pgid = child.id();
     let stdout = Arc::new(Mutex::new(Output::default()));
     let stderr = Arc::new(Mutex::new(Output::default()));
+    let log_writer = RollingLogWriter::for_project(log_dir, project_id);
     if is_installing {
+        let msg = format!("[tongyun-studio] 检测到依赖缺失，正在安装依赖：{exec_cmd}（目录 {directory}）\n");
+        log_writer.append(msg.as_bytes());
         if let Ok(mut out) = stdout.lock() {
-            out.append(format!("[tongyun-studio] 检测到依赖缺失，正在安装依赖：{exec_cmd}（目录 {directory}）\n").as_bytes());
+            out.append(msg.as_bytes());
         }
     }
-    read_output(child.stdout.take().expect("piped stdout"), stdout.clone());
-    read_output(child.stderr.take().expect("piped stderr"), stderr.clone());
+    read_output(child.stdout.take().expect("piped stdout"), stdout.clone(), Some(log_writer.clone()));
+    read_output(child.stderr.take().expect("piped stderr"), stderr.clone(), Some(log_writer.clone()));
     let expects_port = binding.expects_port;
     let port = binding.port;
     let health_url = binding.health_url;
@@ -1194,6 +1422,7 @@ fn spawn_entry(
         installing: is_installing,
         install_command,
         service_command: command.into(),
+        log_writer: Some(log_writer),
     })
 }
 #[cfg(not(unix))]
@@ -1204,6 +1433,7 @@ fn spawn_entry(
     _command: &str,
     _binding: Binding,
     _install_command: Option<String>,
+    _log_dir: &Path,
 ) -> Result<Entry> {
     Err("托管服务目前仅支持 macOS / Unix。".into())
 }
@@ -1557,6 +1787,70 @@ mod tests {
         assert!(error.contains(&port.to_string()), "error: {error}");
         assert!(error.contains(&std::process::id().to_string()), "error: {error}");
         drop(listener);
+    }
+
+    #[test]
+    fn rolling_log_writer_rolls_and_reads_tail() {
+        let temp = tempfile::tempdir().unwrap();
+        let log_dir = temp.path().join("logs");
+        let project_id = "test/app-1";
+        let writer = RollingLogWriter::new(
+            project_log_path(&log_dir, project_id),
+            project_log_path_rolled(&log_dir, project_id),
+            50,
+        );
+
+        writer.append(b"line 1: hello world\n");
+        writer.append(b"line 2: second entry\n");
+        assert!(project_log_path(&log_dir, project_id).is_file());
+        assert!(!project_log_path_rolled(&log_dir, project_id).is_file());
+
+        writer.append(b"line 3: rolling triggered now\n");
+        assert!(project_log_path(&log_dir, project_id).is_file());
+        assert!(project_log_path_rolled(&log_dir, project_id).is_file());
+
+        let tail = read_tail_with_backup(
+            &project_log_path(&log_dir, project_id),
+            Some(&project_log_path_rolled(&log_dir, project_id)),
+            5,
+        )
+        .unwrap();
+        assert!(tail.contains("line 1"));
+        assert!(tail.contains("line 2"));
+        assert!(tail.contains("line 3"));
+
+        let short = read_tail_with_backup(
+            &project_log_path(&log_dir, project_id),
+            Some(&project_log_path_rolled(&log_dir, project_id)),
+            1,
+        )
+        .unwrap();
+        assert_eq!(short.trim(), "line 3: rolling triggered now");
+    }
+
+    #[test]
+    fn manager_project_log_tail_handles_missing_and_persisted_logs() {
+        let temp = tempfile::tempdir().unwrap();
+        let log_dir = temp.path().join("logs");
+        let manager = ServiceManager::with_log_dir(log_dir.clone());
+
+        assert_eq!(manager.project_log_tail("no-such-proj", 10).unwrap(), None);
+
+        let writer = RollingLogWriter::for_project(&log_dir, "my-proj");
+        writer.append(b"booting service...\nready on port 8080\n");
+
+        let tail = manager.project_log_tail("my-proj", 10).unwrap();
+        assert!(tail.is_some());
+        let text = tail.unwrap();
+        assert!(text.contains("booting service..."));
+        assert!(text.contains("ready on port 8080"));
+    }
+
+    #[test]
+    fn safe_project_filename_sanitizes_correctly() {
+        assert_eq!(safe_project_filename("demo-1_api"), "demo-1_api");
+        assert_eq!(safe_project_filename("proj/sub:dir"), "proj_sub_dir");
+        assert_eq!(safe_project_filename("///"), "project");
     }
 
 }

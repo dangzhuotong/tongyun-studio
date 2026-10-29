@@ -53,6 +53,7 @@ export const importDevCandidates = (candidates: DevCandidate[]) => native<DevImp
 export const startDevGroup = (group: string) => native<ManagedService[]>('start_dev_group', { group });
 export const stopDevGroup = (group: string) => native<ManagedService[]>('stop_dev_group', { group });
 export const devServiceLogTail = (id: string, serviceId: string, lines?: number) => native<string>('dev_service_log_tail', { id, serviceId, lines: lines ?? null });
+export const devProjectLogTail = (id: string, lines?: number) => native<string | null>('dev_project_log_tail', { id, lines: lines ?? null });
 export const updateProjectDev = (id: string, dev: import('./contracts').DevProfile | null) => native<Workspace>('update_project_dev', { id, dev });
 export const updateProjectAutoInstall = (id: string, autoInstall: boolean) => native<Workspace>('update_project_auto_install', { id, autoInstall });
 export const installProjectDependencies = (id: string) => native<ManagedService>('install_project_dependencies', { id });

@@ -457,6 +457,15 @@ fn dev_service_log_tail(
 }
 
 #[tauri::command]
+fn dev_project_log_tail(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    lines: Option<u32>,
+) -> Result<Option<String>, String> {
+    state.services.project_log_tail(&id, lines.unwrap_or(200) as usize)
+}
+
+#[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
     studio_core::open_url(&url)
 }
@@ -560,6 +569,7 @@ pub fn run() {
             start_dev_group,
             stop_dev_group,
             dev_service_log_tail,
+            dev_project_log_tail,
             open_url,
             update_project_dev,
             update_project_auto_install,

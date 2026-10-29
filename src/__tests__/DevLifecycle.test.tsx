@@ -7,6 +7,7 @@ vi.mock('../bridge', () => ({
   isDesktop:true, listProjectServices:vi.fn(async () => [fixture]), detectListeningPorts:vi.fn(async () => []),
   startProjectService:vi.fn(), restartProjectService:vi.fn(), stopProjectService:vi.fn(), openUrl:vi.fn(),
   chooseProjectDirectory:vi.fn(), scanDevDirectory:vi.fn(), importDevCandidates:vi.fn(), startDevGroup:vi.fn(), stopDevGroup:vi.fn(),
+  devProjectLogTail: vi.fn(async () => null),
 }));
 const project = {id:'p',name:'p',path:'/synthetic',createdAt:''};
 describe('service state comes from the manager', () => {

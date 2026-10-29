@@ -527,28 +527,41 @@ fn route(req: &Request, store: &WorkspaceStore, services: &ServiceManager) -> (u
                 .iter()
                 .find(|s| s.status == "running")
                 .or_else(|| s_list.first());
+            let log_path = services.project_log_path(&project.id);
+            let log_path_str = log_path.to_string_lossy().to_string();
             return match active {
                 Some(s) => match services.log_tail(&project.id, &s.id, lines) {
                     Ok(text) => (
                         200,
                         json!({
                             "ok": true,
-                            "path": "",
+                            "path": log_path_str,
                             "missing": false,
                             "lines": text.lines().map(|l| l.to_string()).collect::<Vec<_>>()
                         }),
                     ),
                     Err(e) => (200, json!({"ok": false, "error": e, "lines": []})),
                 },
-                None => (
-                    200,
-                    json!({
-                        "ok": true,
-                        "path": "",
-                        "missing": true,
-                        "lines": []
-                    }),
-                ),
+                None => match services.project_log_tail(&project.id, lines) {
+                    Ok(Some(text)) => (
+                        200,
+                        json!({
+                            "ok": true,
+                            "path": log_path_str,
+                            "missing": false,
+                            "lines": text.lines().map(|l| l.to_string()).collect::<Vec<_>>()
+                        }),
+                    ),
+                    _ => (
+                        200,
+                        json!({
+                            "ok": true,
+                            "path": log_path_str,
+                            "missing": true,
+                            "lines": []
+                        }),
+                    ),
+                },
             };
         }
 
