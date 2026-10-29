@@ -29,6 +29,7 @@ export interface DevProfile {
   readyTimeoutSecs?: number | null;
   java?: string | null;
   javaHome?: string | null;
+  catalinaHome?: string | null;
   node?: string | null;
   nodeHome?: string | null;
   env?: Record<string, string>;
@@ -55,6 +56,7 @@ export interface DevCandidate {
   dependsOn?: string[];
   java?: string | null;
   javaHome?: string | null;
+  catalinaHome?: string | null;
   node?: string | null;
   nodeHome?: string | null;
   env?: Record<string, string>;

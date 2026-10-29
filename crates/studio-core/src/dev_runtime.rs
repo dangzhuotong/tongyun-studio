@@ -170,6 +170,8 @@ pub struct DevProfile {
     pub node: Option<String>,
     #[serde(default, alias = "node_home", skip_serializing_if = "Option::is_none")]
     pub node_home: Option<String>,
+    #[serde(default, alias = "catalina_home", alias = "tomcat", skip_serializing_if = "Option::is_none")]
+    pub catalina_home: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub env: std::collections::BTreeMap<String, String>,
     #[serde(default, alias = "default_profile", skip_serializing_if = "Option::is_none")]
@@ -215,6 +217,8 @@ pub struct DevCandidate {
     pub node: Option<String>,
     #[serde(default, alias = "node_home", skip_serializing_if = "Option::is_none")]
     pub node_home: Option<String>,
+    #[serde(default, alias = "catalina_home", alias = "tomcat", skip_serializing_if = "Option::is_none")]
+    pub catalina_home: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub env: std::collections::BTreeMap<String, String>,
     #[serde(default, alias = "default_profile", skip_serializing_if = "Option::is_none")]
@@ -402,6 +406,7 @@ pub fn prepare_import(candidate: &DevCandidate) -> Result<PreparedImport> {
             java_home: candidate.java_home.clone(),
             node: candidate.node.clone(),
             node_home: candidate.node_home.clone(),
+            catalina_home: candidate.catalina_home.clone(),
             env: candidate.env.clone(),
             default_profile: candidate.default_profile.clone(),
             selected_profile: candidate.selected_profile.clone(),
@@ -817,18 +822,47 @@ fn inspect_maven(dir: &Path) -> Option<DirHit> {
         });
     }
     if packaging.as_deref() == Some("war") {
+        let wrapper = dir.join("mvnw").is_file();
+        let mvn = if wrapper { "./mvnw" } else { "mvn" };
+        let war_name = xml_artifact_id(&pom).unwrap_or_else(|| {
+            dir.file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "app".into())
+        });
+        let command = format!(
+            "{mvn} -q -DskipTests package && cp target/*.war \"$CATALINA_HOME/webapps/{war_name}.war\" && exec \"$CATALINA_HOME/bin/catalina.sh\" run"
+        );
+        let mut why = vec![
+            "pom.xml packaging 是 war。".into(),
+            "可配置 CATALINA_HOME，按 catalina run 启停并部署 WAR。".into(),
+        ];
+        if wrapper {
+            why.push("启动命令使用 mvnw。".into());
+        }
+        let mut cand = candidate(
+            dir,
+            "tomcat-war",
+            "Tomcat WAR",
+            "medium",
+            &command,
+            Some(8080),
+            true,
+            why,
+        );
+        if let Ok(ch) = std::env::var("CATALINA_HOME") {
+            if !ch.trim().is_empty() {
+                cand.catalina_home = Some(ch);
+                cand.confidence = "high".into();
+                cand.why.push("检测到环境变量 CATALINA_HOME。".into());
+            }
+        }
+        if let Some(jv) = pom_java_version(&pom) {
+            cand.why.push(format!("Java 版本要求：{jv}。"));
+            cand.java = Some(jv);
+        }
         return Some(DirHit {
             container: false,
-            candidate: Some(candidate(
-                dir,
-                "tomcat-war",
-                "Tomcat WAR",
-                "low",
-                "",
-                Some(8080),
-                true,
-                vec!["packaging 是 war。Studio 不代填 Tomcat 目录，登记后需要自己写启动命令。".into()],
-            )),
+            candidate: Some(cand),
         });
     }
     None
@@ -1035,6 +1069,7 @@ fn candidate(
         java_home: None,
         node: None,
         node_home: None,
+        catalina_home: None,
         env: BTreeMap::new(),
         default_profile: None,
         selected_profile: None,
@@ -1194,6 +1229,47 @@ fn server_port(text: &str) -> Option<u16> {
         }
     }
     None
+}
+
+
+fn xml_tag<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = text.find(&open)? + open.len();
+    let end = text[start..].find(&close)? + start;
+    let val = text[start..end].trim();
+    if val.is_empty() || val.contains('$') {
+        None
+    } else {
+        Some(val)
+    }
+}
+
+fn pom_own_section(pom: &str) -> String {
+    let mut s = pom.to_string();
+    for tag in [
+        "parent",
+        "dependencies",
+        "dependencyManagement",
+        "build",
+        "profiles",
+    ] {
+        let open = format!("<{tag}>");
+        let close = format!("</{tag}>");
+        while let (Some(a), Some(b)) = (s.find(&open), s.find(&close)) {
+            if b > a {
+                s.replace_range(a..b + close.len(), "");
+            } else {
+                break;
+            }
+        }
+    }
+    s
+}
+
+fn xml_artifact_id(pom: &str) -> Option<String> {
+    let own = pom_own_section(pom);
+    xml_tag(&own, "artifactId").map(|s| s.to_string())
 }
 
 fn xml_packaging(pom: &str) -> Option<String> {
@@ -1376,6 +1452,39 @@ mod tests {
         assert!(parse_loopback_http("https://127.0.0.1:80/").is_none());
         assert!(parse_loopback_http("http://example.com:80/").is_none());
         assert!(parse_loopback_http("http://user:pass@127.0.0.1:80/").is_none());
+    }
+
+    #[test]
+    fn scan_recognizes_tomcat_war_maven_project() {
+        let root = tempfile::tempdir().unwrap();
+        let war_dir = root.path().join("legacy-war");
+        fs::create_dir_all(&war_dir).unwrap();
+        fs::write(
+            war_dir.join("pom.xml"),
+            r#"<project>
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent-framework</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>demo-portal</artifactId>
+  <packaging>war</packaging>
+  <properties>
+    <java.version>1.8</java.version>
+  </properties>
+</project>"#,
+        ).unwrap();
+
+        let report = scan_dev_directory(root.path(), 2, &[]).unwrap();
+        let cand = report.candidates.iter().find(|c| c.kind == "tomcat-war").expect("tomcat-war detected");
+        assert_eq!(cand.label, "Tomcat WAR");
+        assert_eq!(cand.port, Some(8080));
+        assert!(cand.port_guessed);
+        assert_eq!(cand.confidence, "medium");
+        assert!(cand.command.contains("demo-portal.war"), "command should deploy demo-portal.war: {}", cand.command);
+        assert!(cand.command.contains("catalina.sh") && cand.command.contains("run"));
+        assert_eq!(cand.java.as_deref(), Some("8"));
     }
 
     #[test]

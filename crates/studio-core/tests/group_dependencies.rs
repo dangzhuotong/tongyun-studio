@@ -106,20 +106,24 @@ fn test_project_dev_profile_serde_camel_and_snake() {
         "port": 8080,
         "kind": "rust",
         "label": "API",
-        "dependsOn": ["postgres", "redis"]
+        "dependsOn": ["postgres", "redis"],
+        "catalinaHome": "/opt/tomcat"
     }"#;
 
     let profile: DevProfile = serde_json::from_str(json_camel).unwrap();
     assert_eq!(profile.depends_on, vec!["postgres", "redis"]);
+    assert_eq!(profile.catalina_home.as_deref(), Some("/opt/tomcat"));
 
     let json_snake = r#"{
         "command": "cargo run",
         "port": 8080,
         "kind": "rust",
         "label": "API",
-        "depends_on": ["postgres"]
+        "depends_on": ["postgres"],
+        "catalina_home": "/opt/tomcat"
     }"#;
 
     let profile_snake: DevProfile = serde_json::from_str(json_snake).unwrap();
     assert_eq!(profile_snake.depends_on, vec!["postgres"]);
+    assert_eq!(profile_snake.catalina_home.as_deref(), Some("/opt/tomcat"));
 }
