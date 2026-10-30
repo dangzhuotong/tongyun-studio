@@ -18,8 +18,9 @@ import {
   devProjectLogTail,
   updateProjectAutoRestart,
   loadWorkspace,
+  exportDiagnostics,
 } from '../bridge';
-import { Activity, Bot, Check, Copy, Cpu, FolderOpen, LoaderCircle, Play, RotateCw, Search, Square, Terminal } from '../components/Icons';
+import { Activity, Bot, Check, Copy, Cpu, Download, FolderOpen, LoaderCircle, Play, RotateCw, Search, Square, Terminal } from '../components/Icons';
 
 const statusLabel: Record<ManagedService['status'], string> = { running: '进程运行中', stopped: '已停止', exited: '已完成', failed: '执行失败' };
 const lifecycleLabel: Record<string, string> = {
@@ -147,7 +148,26 @@ export default function DevPanel({
   const [report, setReport] = useState<DevScanReport | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [drafts, setDrafts] = useState<Record<string, { command: string; port: string }>>({});
+  const [exporting, setExporting] = useState(false);
   const projectId = project?.id;
+
+  const handleExportDiagnostics = async () => {
+    if (!isDesktop || exporting) return;
+    setExporting(true);
+    try {
+      const res = await exportDiagnostics();
+      onNotify?.(`诊断包已导出至：${res.filePath}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('取消')) {
+        errorSource.current = 'action';
+        setError(msg);
+        onNotify?.(`导出诊断包失败：${msg}`);
+      }
+    } finally {
+      setExporting(false);
+    }
+  };
   const currentProject = useRef(projectId);
   currentProject.current = projectId;
   const requestSequence = useRef(0);
@@ -619,7 +639,29 @@ export default function DevPanel({
           return <div key={service.id} className="service-card"><div className="service-header"><div className="service-title-info"><span className={`status-dot ${dot}`}/><span className="service-name">{label}</span>{service.activeProfile && <span className="mini-running-tag">预设: {service.activeProfile}</span>}{service.restartCount ? <span className="mini-running-tag">已重启 {service.restartCount} 次</span> : null}{detail && <span className="meta">{detail}</span>}<code className="service-cmd">{service.command}</code></div><div className="service-actions">{failed && <button type="button" className="service-btn copy-error" aria-label="复制报错" title="复制报错摘要到剪贴板" onClick={() => void copyError(service)}>{copied === `error:${service.id}` ? <Check size={13} /> : <Copy size={13} />}<span>{copied === `error:${service.id}` ? '已复制' : '复制报错'}</span></button>}<button className="service-btn" disabled={!isDesktop || !!busy} onClick={() => void mutate(`restart:${service.id}`, id => restartProjectService(id, service.id))}><RotateCw size={13}/>{busy === `restart:${service.id}` ? '重启中…' : '重启'}</button><button className="service-btn stop" disabled={!isDesktop || !!busy || service.status !== 'running'} onClick={() => void mutate(`stop:${service.id}`, id => stopProjectService(id, service.id))}><Square size={13}/>{busy === `stop:${service.id}` ? '停止中…' : '停止'}</button></div></div><div className="service-footer"><span className="meta">{service.pid ? `进程组 ${service.pid}` : `退出码 ${service.exitCode ?? '无（信号终止）'}`}</span><span className="meta">{service.port ? `端口 ${service.port}${service.portOpen ? ' 已通' : ' 未通'}` : '无就绪端口'}</span><span className="meta">启动于 {new Date(service.startedAt).toLocaleString()}</span>{service.restartCount ? <span className="meta">累计重启 {service.restartCount} 次</span> : null}</div>{service.failure && <p className="meta">{service.failure}</p>}</div>;
         })}</div>}
       </section>
-      <section className="terminal-console-card"><div className="terminal-console-header"><div className="terminal-title"><Terminal size={14}/><span>日志尾部</span></div><button className="terminal-btn" onClick={() => setHints(value => !value)}>{hints ? '收起排查提示' : '本地排查提示'}</button></div>
+      <section className="terminal-console-card">
+        <div className="terminal-console-header">
+          <div className="terminal-title">
+            <Terminal size={14}/>
+            <span>日志尾部</span>
+          </div>
+          <div className="terminal-actions" style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <button
+              type="button"
+              className="terminal-btn"
+              aria-label="导出诊断包"
+              title="一键导出诊断包（脱敏日志与项目配置）"
+              disabled={!isDesktop || exporting}
+              onClick={() => void handleExportDiagnostics()}
+            >
+              {exporting ? <LoaderCircle size={13} className="spin" /> : <Download size={13} />}
+              <span>{exporting ? '导出中…' : '导出诊断包'}</span>
+            </button>
+            <button className="terminal-btn" onClick={() => setHints(value => !value)}>
+              {hints ? '收起排查提示' : '本地排查提示'}
+            </button>
+          </div>
+        </div>
         {hints && <div className="ai-diagnostic-banner"><p>以下是固定排查提示，没有调用 AI，也未自动诊断你的项目。</p><ol><li>根据真实退出码和错误日志定位失败步骤。</li><li>核对命令、工作目录、依赖与环境变量。</li><li>仅在日志提示端口冲突时核对端口占用。</li></ol></div>}
         <div className="terminal-body">{services.length === 0 ? (
           recentLog ? (

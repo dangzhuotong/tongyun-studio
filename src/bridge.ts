@@ -1,5 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import type { Project, Workspace, ProjectInspection, FileEntry, GitFileChange, GitHistoryResult, GitCommitDetails, ExecutionResult, HttpResponse, SqlQueryResult, DbTableInfo, DbColumnInfo, PaginatedData, ListeningPort, AiProjectContext, ManagedService, AgentSessionState, DevScanReport, DevCandidate, DevImportResult, AgentHttpInfo } from './contracts';
+import type { Project, Workspace, ProjectInspection, FileEntry, GitFileChange, GitHistoryResult, GitCommitDetails, ExecutionResult, HttpResponse, SqlQueryResult, DbTableInfo, DbColumnInfo, PaginatedData, ListeningPort, AiProjectContext, ManagedService, AgentSessionState, DevScanReport, DevCandidate, DevImportResult, AgentHttpInfo, DiagnosticReport } from './contracts';
 
 export const isDesktop = isTauri();
 function native<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -63,6 +63,7 @@ export const devProjectLogTail = (id: string, lines?: number) => native<string |
 export const updateProjectDev = (id: string, dev: import('./contracts').DevProfile | null) => native<Workspace>('update_project_dev', { id, dev });
 export const updateProjectAutoInstall = (id: string, autoInstall: boolean) => native<Workspace>('update_project_auto_install', { id, autoInstall });
 export const installProjectDependencies = (id: string) => native<ManagedService>('install_project_dependencies', { id });
+export const exportDiagnostics = (destinationPath?: string) => native<DiagnosticReport>('export_diagnostics', { destinationPath: destinationPath ?? null });
 export function getInitialAgentSession(projectId: string | null = null): AgentSessionState {
   return { projectId, connectionStatus: 'not_connected', agentName: null, model: null, mode: null, activeGoal: null, plan: null, actions: [], tokensConsumed: null, filesTouched: null, lastHeartbeat: null };
 }

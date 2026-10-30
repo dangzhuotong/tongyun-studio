@@ -14,6 +14,7 @@ import {
   removeProject,
   selectProject,
   writeProjectFile,
+  exportDiagnostics,
 } from './bridge';
 import {
   ArrowUpRight,
@@ -25,6 +26,7 @@ import {
   Code2,
   Copy,
   Database,
+  Download,
   Folder,
   FolderOpen,
   GitBranch,
@@ -170,6 +172,23 @@ export default function App() {
       notify(`导出失败: ${err}`);
     }
   }, [project, agentSession, notify]);
+
+  const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
+  const handleExportDiagnostics = useCallback(async () => {
+    if (!isDesktop || exportingDiagnostics) return;
+    setExportingDiagnostics(true);
+    try {
+      const res = await exportDiagnostics();
+      notify(`诊断包已导出至：${res.filePath}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('取消')) {
+        notify(`导出诊断包失败：${msg}`);
+      }
+    } finally {
+      setExportingDiagnostics(false);
+    }
+  }, [exportingDiagnostics, notify]);
 
   const openAiContext = async () => {
     if (!project || loadingAi) return;
@@ -679,6 +698,16 @@ export default function App() {
                 >
                   {copiedPath ? <Check size={13} className="accent-color" /> : <Copy size={13} />}
                   <span>{copiedPath ? '已复制' : '复制路径'}</span>
+                </button>
+                <button
+                  className="topbar-action-btn"
+                  onClick={() => void handleExportDiagnostics()}
+                  disabled={!isDesktop || exportingDiagnostics}
+                  title="一键导出诊断包（脱敏日志与项目配置 zip）"
+                  aria-label="导出诊断包"
+                >
+                  {exportingDiagnostics ? <LoaderCircle size={13} className="spin" /> : <Download size={13} />}
+                  <span>{exportingDiagnostics ? '导出中…' : '导出诊断包'}</span>
                 </button>
               </div>
             )}

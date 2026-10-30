@@ -346,3 +346,12 @@ export interface AgentSessionState {
   filesTouched: number | null;
   lastHeartbeat: string | null;
 }
+
+export interface DiagnosticReport {
+  filePath: string;
+  fileSize: number;
+  projectCount: number;
+  logCount: number;
+  exportedAt: string;
+}
+
