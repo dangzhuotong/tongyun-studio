@@ -2901,6 +2901,15 @@ body, html {
   border-color: var(--error);
 }
 
+.service-btn.copy-error {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.service-btn.copy-error:hover {
+  background: rgba(220, 38, 38, 0.08);
+}
+
 .service-footer {
   display: flex;
   align-items: center;

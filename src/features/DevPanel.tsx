@@ -58,6 +58,63 @@ function secondaryStatus(service: Pick<ManagedService, 'status' | 'lifecycle'>):
   return '';
 }
 
+export function isServiceFailed(service: ManagedService): boolean {
+  if (service.status === 'running') return false;
+  return (
+    service.lifecycle === 'failed' ||
+    service.status === 'failed' ||
+    (service.exitCode != null && service.exitCode !== 0) ||
+    Boolean(service.failure)
+  );
+}
+
+export function resolveTaskName(
+  service: ManagedService,
+  scripts?: Array<{ name: string; command: string }>,
+  projectName?: string,
+): string {
+  if (service.activeProfile) return service.activeProfile;
+  const matched = scripts?.find(s => s.command.trim() === service.command.trim());
+  if (matched) return matched.name;
+  if (projectName) return `${projectName} (${service.command})`;
+  return service.command;
+}
+
+export function formatErrorSummary(
+  service: ManagedService,
+  taskName?: string,
+): string {
+  const name = taskName || service.activeProfile || service.command || service.id;
+  const exitCodeStr =
+    service.exitCode != null
+      ? String(service.exitCode)
+      : (service.status === 'failed' ? '异常退出' : '未知');
+
+  const rawLog =
+    service.logTail ||
+    [service.stdout, service.stderr].filter(Boolean).join('\n') ||
+    service.failure ||
+    '';
+  const lines = rawLog ? rawLog.split(/\r?\n/) : [];
+  const tailLines = lines.slice(-80).join('\n').trim();
+
+  const parts: string[] = [
+    `任务名: ${name}`,
+    `命令: ${service.command}`,
+    `Exit Code: ${exitCodeStr}`,
+    `退出码: ${exitCodeStr}`,
+  ];
+
+  if (service.failure) {
+    parts.push(`失败原因: ${service.failure}`);
+  }
+
+  parts.push('末尾日志:');
+  parts.push(tailLines || '(无日志输出)');
+
+  return parts.join('\n');
+}
+
 export default function DevPanel({
   project,
   projects = [],
@@ -287,6 +344,24 @@ export default function DevPanel({
   async function copy(service: ManagedService) {
     const body = service.logTail || `${service.stdout}\n${service.stderr}`;
     await copyText(`$ ${service.command}\n${body}`, service.id);
+  }
+
+  async function copyError(service: ManagedService) {
+    const taskName = resolveTaskName(service, scripts, project?.name);
+    const summary = formatErrorSummary(service, taskName);
+    const id = projectId;
+    try {
+      await navigator.clipboard.writeText(summary);
+      if (mounted.current && currentProject.current === id) {
+        setCopied(`error:${service.id}`);
+        onNotify?.('已复制报错摘要到剪贴板');
+      }
+    } catch (cause) {
+      if (mounted.current && currentProject.current === id) {
+        errorSource.current = 'action';
+        setError(`复制失败：${String(cause)}`);
+      }
+    }
   }
   const running = services.filter(service => service.status === 'running').length;
   const readyCount = services.filter(service => service.lifecycle === 'ready').length;
@@ -540,7 +615,8 @@ export default function DevPanel({
           const label = primaryStatus(service);
           const detail = secondaryStatus(service);
           const dot = service.lifecycle === 'failed' || service.status === 'failed' ? 'error' : service.lifecycle === 'ready' ? 'available' : service.lifecycle === 'installing' || service.status === 'running' ? 'active-pulse' : '';
-          return <div key={service.id} className="service-card"><div className="service-header"><div className="service-title-info"><span className={`status-dot ${dot}`}/><span className="service-name">{label}</span>{service.activeProfile && <span className="mini-running-tag">预设: {service.activeProfile}</span>}{service.restartCount ? <span className="mini-running-tag">已重启 {service.restartCount} 次</span> : null}{detail && <span className="meta">{detail}</span>}<code className="service-cmd">{service.command}</code></div><div className="service-actions"><button className="service-btn" disabled={!isDesktop || !!busy} onClick={() => void mutate(`restart:${service.id}`, id => restartProjectService(id, service.id))}><RotateCw size={13}/>{busy === `restart:${service.id}` ? '重启中…' : '重启'}</button><button className="service-btn stop" disabled={!isDesktop || !!busy || service.status !== 'running'} onClick={() => void mutate(`stop:${service.id}`, id => stopProjectService(id, service.id))}><Square size={13}/>{busy === `stop:${service.id}` ? '停止中…' : '停止'}</button></div></div><div className="service-footer"><span className="meta">{service.pid ? `进程组 ${service.pid}` : `退出码 ${service.exitCode ?? '无（信号终止）'}`}</span><span className="meta">{service.port ? `端口 ${service.port}${service.portOpen ? ' 已通' : ' 未通'}` : '无就绪端口'}</span><span className="meta">启动于 {new Date(service.startedAt).toLocaleString()}</span>{service.restartCount ? <span className="meta">累计重启 {service.restartCount} 次</span> : null}</div>{service.failure && <p className="meta">{service.failure}</p>}</div>;
+          const failed = isServiceFailed(service);
+          return <div key={service.id} className="service-card"><div className="service-header"><div className="service-title-info"><span className={`status-dot ${dot}`}/><span className="service-name">{label}</span>{service.activeProfile && <span className="mini-running-tag">预设: {service.activeProfile}</span>}{service.restartCount ? <span className="mini-running-tag">已重启 {service.restartCount} 次</span> : null}{detail && <span className="meta">{detail}</span>}<code className="service-cmd">{service.command}</code></div><div className="service-actions">{failed && <button type="button" className="service-btn copy-error" aria-label="复制报错" title="复制报错摘要到剪贴板" onClick={() => void copyError(service)}>{copied === `error:${service.id}` ? <Check size={13} /> : <Copy size={13} />}<span>{copied === `error:${service.id}` ? '已复制' : '复制报错'}</span></button>}<button className="service-btn" disabled={!isDesktop || !!busy} onClick={() => void mutate(`restart:${service.id}`, id => restartProjectService(id, service.id))}><RotateCw size={13}/>{busy === `restart:${service.id}` ? '重启中…' : '重启'}</button><button className="service-btn stop" disabled={!isDesktop || !!busy || service.status !== 'running'} onClick={() => void mutate(`stop:${service.id}`, id => stopProjectService(id, service.id))}><Square size={13}/>{busy === `stop:${service.id}` ? '停止中…' : '停止'}</button></div></div><div className="service-footer"><span className="meta">{service.pid ? `进程组 ${service.pid}` : `退出码 ${service.exitCode ?? '无（信号终止）'}`}</span><span className="meta">{service.port ? `端口 ${service.port}${service.portOpen ? ' 已通' : ' 未通'}` : '无就绪端口'}</span><span className="meta">启动于 {new Date(service.startedAt).toLocaleString()}</span>{service.restartCount ? <span className="meta">累计重启 {service.restartCount} 次</span> : null}</div>{service.failure && <p className="meta">{service.failure}</p>}</div>;
         })}</div>}
       </section>
       <section className="terminal-console-card"><div className="terminal-console-header"><div className="terminal-title"><Terminal size={14}/><span>日志尾部</span></div><button className="terminal-btn" onClick={() => setHints(value => !value)}>{hints ? '收起排查提示' : '本地排查提示'}</button></div>
