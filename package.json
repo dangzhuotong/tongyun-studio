@@ -24,7 +24,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "~5.8.3",
     "vite": "^7.0.4",
-    "vitest": "^3.2.0",
+    "vitest": "^4.1.12",
     "@testing-library/react": "^16.2.0",
     "@testing-library/jest-dom": "^6.6.3",
     "jsdom": "^26.0.0"
