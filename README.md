@@ -27,7 +27,14 @@ Tongyun Studio
 - 自动识别项目根目录技术栈与 package 脚本（`npm`, `cargo` 等）
 - 一键执行快捷脚本与自定义 shell 命令，按项目托管 Unix 进程组
 - 停止、重启核验实际进程；切换页签保留记录，正常退出清理进程组；不支持主动脱离进程组的命令
-- 原生内嵌输出面板：支持标准输出/标准错误、退出码与日志复制；每流保留最后 64 KiB
+- 原生内嵌输出面板：支持标准输出/标准错误、退出码与日志复制；内存尾部每流保留最后 64 KiB
+- 日志落盘与重启可查：托管进程输出按项目写入本机日志目录（默认 `~/.tongyun-studio/logs`，可用 `TONGYUN_STUDIO_LOG_DIR` 改路径），单文件 1 MiB 上限并滚动备份 `.log.1`；App 重启后 Dev 面板仍回看历史尾部
+- 首次启动自动装依赖：Node 项目缺 `node_modules` 时按锁文件选择 `pnpm` / `yarn` / `npm`，Maven/Gradle 可选先拉依赖；安装中显示 `installing`，失败标 `failed` 并给退出码原因，可在设置中关闭改为拒绝启动
+- 启动前预检：登记端口已被监听则拒绝启动并标出占用进程名与 PID；`JAVA_HOME`、Node 路径与 `CATALINA_HOME` 未命中时一句话报错，命中后注入 `JAVA_HOME` 与 `PATH`
+- 环境预设与依赖顺序：按项目选择 env 预设（含 Spring Boot `application-*.yml/properties` 识别）；`depends_on` 支持拓扑启动、就绪等待、环路拦截与依赖失败跳过，批量停止按依赖逆序
+- Tomcat WAR 部署：Maven packaging 为 war 的项目可配 `CATALINA_HOME`，按 `catalina run` 启停并把 WAR 部署到 `webapps`，端口探活判就绪
+- 异常退出自动重启：项目级开关（默认关闭以免掩盖崩溃），可配重启次数上限与间隔上限；主动停止不触发重启，每次重启记录在日志，超限后标 `failed`
+- 失败任务支持一键复制报错摘要到剪贴板
 
 ### 2. 接口 · Tongyun API
 - 自动发现项目内的 `.http` / `.rest` 接口测试用例文件，支持载入与预览
@@ -58,30 +65,41 @@ Tongyun Studio
 ## 本地开发与构建
 
 ### 前置要求
-- Node.js 20.19+ 或 22.12+
-- Rust 2021 (Cargo)
+- Node.js 20.19+ 或 22.12+（本次体检在 Node 24.9 / npm 11.6 下跑通）
+- Rust 2021 (Cargo)，桌面端另需系统 WebView 运行时（Windows WebView2 / macOS WKWebView）与 C++ 链接工具链
+- 仓库未配置 lint 脚本，也没有 `.github/workflows`：验收以本地检查为准（见下表）
 
-### 常用命令
+### 干净环境从零跑通
 ```bash
-# 安装依赖
-npm install
+# 1. 安装依赖（首次或换机；README 命令与 package-lock 一致）
+npm install          # 或 npm ci
 
-# 运行前端测试与类型检查
+# 2. 前端全体验证：类型检查 + 单测 + 打包
 npm run check
 
-# 运行 Rust 核心单元测试
+# 3. Rust 核心与桌面宿主
 cargo test -p studio-core
-
-# 检查桌面端宿主
 cargo check -p tongyun-studio
 
-# 构建生产桌面版应用
-npm run tauri build
+# 4. 起应用
+npm run dev              # 仅前端预览：http://127.0.0.1:1438
+npm run tauri dev        # 真实桌面窗口，先编译 src-tauri 宿主
+npm run tauri build      # 生产安装包
 ```
+
+`npm run tauri dev` 启动后，App 会在 `127.0.0.1` 自动拉起 Agent HTTP 服务（默认 9100），无需另跑 CLI；托管项目的运行日志落在 `~/.tongyun-studio/logs`。
 
 ## Agent 与集成边界
 
 Agent 面板可读取项目里的 `.tongyun/agent-session.json`（备用 `.agent/session.json`），展示经格式校验的文件快照。不会生成示例执行、心跳或模型用量，也不宣称文件记录代表工人在线。没有消息消费与回执协议时，投递和暂停按钮保持不可用。
+
+### Agent HTTP 服务（App 启动即拉起，无需另跑 CLI）
+- 监听 `127.0.0.1`，默认端口 9100（`TONGYUN_STUDIO_AGENT_PORT` 可配，被占用时递增避让，不与 tongyun-dev 的 9099 冲突），契约对齐 tongyun-dev
+- 项目与状态：`GET /api/projects`、`GET /api/projects/:id`
+- 生命周期：`POST /api/projects/:id/start`、`/stop`、`/restart`；同组启停 `POST /api/groups/:key/start`、`/stop`
+- 依赖与日志：`POST /api/projects/:id/install`；`GET /api/projects/:id/logs` 返回落盘日志尾部与真实文件路径
+- 重启策略：`POST /api/projects/:id/auto_restart`
+- 内置 DNS rebinding 与 CSRF 防护；只服务本机，不承诺跨机器 worker 调度
 
 当前尚未接入共享数据库记忆、跨机器 worker 调度和四个独立工具的完整后端协议。开发命令、Git 和数据库测试使用隔离夹具；最新证据见 [验收记录](docs/testing/acceptance-tests.md)。
 

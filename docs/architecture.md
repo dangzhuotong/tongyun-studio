@@ -36,7 +36,6 @@ Dev 面板继承的是运行契约，不是把 tongyun-dev 仓库嵌进来，也
 
 - 独立 CLI、`~/.config/tongyun-dev/projects.toml` 和网页控制台 `:9099`（Studio 只在后台启动供外部 Agent 调用的 Agent HTTP 服务，不挂载独立 CLI、独立项目文件或 :9099 网页控制台）
 - 跨产品的完整后端协议、共享数据库、Agent 调度
-- 自动安装依赖（没有 `installing`）
 - PTY、自动应答、向进程写入输入
 - 工作台重启后恢复跨进程托管（Studio 仅持久化日志供重启后回看，不恢复历史进程生命周期）
 
