@@ -17,6 +17,7 @@ fn test_is_sensitive_key() {
     assert!(is_sensitive_key("access_token"));
     assert!(is_sensitive_key("client_secret"));
     assert!(is_sensitive_key("jwt_cookie"));
+    assert!(is_sensitive_key("db_pwd"));
     assert!(is_sensitive_key("bearer_auth"));
 
     assert!(!is_sensitive_key("PORT"));
@@ -59,9 +60,63 @@ fn test_sanitize_text() {
 }
 
 #[test]
+fn test_sanitize_text_covers_header_cli_and_connection_string_secrets() {
+    let cases: &[(&str, &str)] = &[
+        ("request header x-api-key: sk-abcdef123456 sent", "sk-abcdef123456"),
+        ("curl -H x-api-key=sk-live-9f8e7d6c https://api.example.com", "sk-live-9f8e7d6c"),
+        ("Authorization: Basic YWRtaW46czNjcjN0", "YWRtaW46czNjcjN0"),
+        ("authorization=Basic cGFzc3dvcmQ6aHVudGVyMg==", "cGFzc3dvcmQ6aHVudGVyMg=="),
+        ("postgres://app:hunter2@db.internal:5432/main", "hunter2"),
+        (
+            "postgresql://reader%2Bapi:Pa55-w0rd@10.0.0.5/orders",
+            "Pa55-w0rd",
+        ),
+        ("mysql://root:s3cr3t@127.0.0.1:3306/app", "s3cr3t"),
+        ("redis://:r3d1spass@cache.internal:6379/0", "r3d1spass"),
+        (
+            "mongodb+srv://svc:MongoPass9@cluster0.mongodb.net/test",
+            "MongoPass9",
+        ),
+        ("npm run start --key=abcdef0123456 --port 8080", "abcdef0123456"),
+        ("java -jar app.jar --api-key=topsecretvalue --pwd=flagpwd7", "topsecretvalue"),
+        ("jdbc:mysql://127.0.0.1:3306/app?user=root&pwd=jdbcsecretx", "jdbcsecretx"),
+        ("raw token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkFwaSBVc2VyIn0.DpAIngZODxs7h0wvtC3M4BKmHJoK5bLyc2jE3O2p6c8 accepted", "DpAIngZODxs7h0wvtC3M4BKmHJoK5bLyc2jE3O2p6c8"),
+    ];
+
+    for (input, secret) in cases {
+        let sanitized = sanitize_text(input);
+        assert!(
+            !sanitized.contains(secret),
+            "secret leaked: {input}\n      result: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("[REDACTED]"),
+            "nothing redacted: {input}\n      result: {sanitized}"
+        );
+    }
+
+    // The bare JWT loses both header and payload, not only the signature.
+    let jwt_case = "raw token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkFwaSBVc2VyIn0.DpAIngZODxs7h0wvtC3M4BKmHJoK5bLyc2jE3O2p6c8 accepted";
+    let sanitized = sanitize_text(jwt_case);
+    assert!(
+        !sanitized.contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"),
+        "{sanitized}"
+    );
+    assert!(!sanitized.contains("IkFwaSBVc2VyIn0"), "{sanitized}");
+}
+
+#[test]
+fn test_sanitize_text_keeps_ordinary_urls_and_flags() {
+    let benign = "GET https://api.example.com/v1/health?user=reader&limit=50 cd /tmp/pwd-demo npm run dev --host 0.0.0.0 --keyid 7";
+    let sanitized = sanitize_text(benign);
+    assert_eq!(sanitized, benign);
+}
+
+#[test]
 fn test_sanitize_project_and_dev_profile() {
     let mut env = BTreeMap::new();
     env.insert("PORT".to_string(), "8080".to_string());
+    env.insert("DB_PWD".to_string(), "pwd_env_1".to_string());
     env.insert("PRIVATE_KEY".to_string(), "0x12345678".to_string());
 
     let mut preset_env = BTreeMap::new();
@@ -107,11 +162,17 @@ fn test_sanitize_project_and_dev_profile() {
     assert_eq!(s_dev.port, Some(8080));
     assert_eq!(s_dev.env.get("PORT").unwrap(), "8080");
     assert_eq!(s_dev.env.get("PRIVATE_KEY").unwrap(), "[REDACTED]");
+    assert_eq!(s_dev.env.get("DB_PWD").unwrap(), "[REDACTED]");
+    assert_eq!(s_dev.command, "npm run dev --key=[REDACTED]");
 
     let s_preset = s_dev.profiles.get("prod").unwrap();
     assert_eq!(s_preset.port, Some(8080));
     assert_eq!(s_preset.env.get("HOST").unwrap(), "127.0.0.1");
     assert_eq!(s_preset.env.get("PASSWORD").unwrap(), "[REDACTED]");
+    assert_eq!(
+        s_preset.command.as_deref().unwrap(),
+        "npm run start --token=[REDACTED]"
+    );
     assert!(s_preset.health_url.as_ref().unwrap().contains("[REDACTED]"));
 }
 
@@ -209,12 +270,14 @@ fn test_export_diagnostics_creates_valid_zip_with_metadata_and_logs() {
 }
 
 #[test]
+#[cfg(unix)]
 fn test_export_diagnostics_permission_denied_gives_clear_error() {
     let temp_dir = tempfile::tempdir().unwrap();
     let service_mgr = ServiceManager::with_log_dir(temp_dir.path().join("logs"));
     let workspace = Workspace::default();
 
-    // Create a read-only directory
+    // A read-only directory blocks file creation on Unix. Windows ignores the
+    // attribute on directories, so that platform has its own equivalent case.
     let read_only_dir = temp_dir.path().join("readonly");
     std::fs::create_dir_all(&read_only_dir).unwrap();
     let mut perms = std::fs::metadata(&read_only_dir).unwrap().permissions();
@@ -237,4 +300,44 @@ fn test_export_diagnostics_permission_denied_gives_clear_error() {
         "Unexpected error: {err}"
     );
     assert!(err.contains(target_path.to_str().unwrap()) || err.contains(read_only_dir.to_str().unwrap()));
+}
+
+#[test]
+#[cfg(windows)]
+fn test_export_diagnostics_permission_denied_gives_clear_error() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let service_mgr = ServiceManager::with_log_dir(temp_dir.path().join("logs"));
+    let workspace = Workspace::default();
+
+    // The writable-directory path must exist so the failure comes from the file
+    // itself: Windows rejects opening an existing read-only file for writing.
+    let out_dir = temp_dir.path().join("out");
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let target_path = out_dir.join("test_diagnostics.zip");
+    std::fs::write(&target_path, b"placeholder").unwrap();
+    let mut perms = std::fs::metadata(&target_path).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&target_path, perms).unwrap();
+
+    let result = export_diagnostics_to_file(&workspace, &service_mgr, &target_path);
+
+    // Reset permissions for cleanup
+    let mut cleanup_perms = std::fs::metadata(&target_path).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    cleanup_perms.set_readonly(false);
+    let _ = std::fs::set_permissions(&target_path, cleanup_perms);
+
+    assert!(
+        result.is_err(),
+        "expected permission error, got: {result:?}"
+    );
+    let err = result.err().unwrap();
+    assert!(
+        err.contains("Permission denied") || err.contains("权限不足") || err.contains("无法创建"),
+        "Unexpected error: {err}"
+    );
+    assert!(
+        err.contains(target_path.to_str().unwrap()),
+        "error omits path: {err}"
+    );
 }

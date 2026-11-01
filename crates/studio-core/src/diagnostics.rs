@@ -17,6 +17,7 @@ pub const SENSITIVE_KEY_SUBSTRINGS: &[&str] = &[
     "secret",
     "password",
     "passwd",
+    "pwd",
     "auth",
     "credential",
     "private",
@@ -53,21 +54,36 @@ pub fn sanitize_env_map(env: &BTreeMap<String, String>) -> BTreeMap<String, Stri
 
 static URL_CREDENTIAL_RE: OnceLock<Regex> = OnceLock::new();
 static BEARER_TOKEN_RE: OnceLock<Regex> = OnceLock::new();
+static BASIC_AUTH_RE: OnceLock<Regex> = OnceLock::new();
+static BARE_JWT_RE: OnceLock<Regex> = OnceLock::new();
+static CLI_SECRET_RE: OnceLock<Regex> = OnceLock::new();
 static KEY_VALUE_SECRET_RE: OnceLock<Regex> = OnceLock::new();
 
+/// Matches `scheme://user:password@` for any URL scheme, so database connection
+/// strings (postgres, mysql, redis, mongodb, ...) are covered as well as http(s).
+const URL_CREDENTIAL_PATTERN: &str = r"(?i)(\b[a-z][a-z0-9+.\-]{1,19}://[^:/\s@]*:)([^@\s/]+)(@)";
+const BEARER_TOKEN_PATTERN: &str = r"(?i)(bearer\s+)[A-Za-z0-9\-._~+/]+=*";
+const BASIC_AUTH_PATTERN: &str = r"(?i)(authorization\s*[=:]\s*basic\s+)[A-Za-z0-9\-._~+/]+=*";
+const BARE_JWT_PATTERN: &str =
+    r"(?i)\beyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{4,}";
+const CLI_SECRET_PATTERN: &str = r#"(?i)(--(?:x-)?(?:api-?)?(?:key|secret|password|passwd|pwd|token)\s*=\s*)("[^"]*"|'[^']*'|[^\s,;"'&]+)"#;
+const KEY_VALUE_SECRET_PATTERN: &str = r#"(?i)("?(?:password|passwd|pwd|secret|token|api[-_]?key|access[-_]?token|refresh[-_]?token|private[-_]?key|credential)"?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;"'&]+)"#;
+
 pub fn sanitize_text(text: &str) -> String {
-    let url_re = URL_CREDENTIAL_RE
-        .get_or_init(|| Regex::new(r#"(?i)(https?://[^:\s/@]+:)([^@/\s]+)(@)"#).unwrap());
-    let bearer_re = BEARER_TOKEN_RE
-        .get_or_init(|| Regex::new(r#"(?i)(bearer\s+)[A-Za-z0-9\-._~+/]+=*"#).unwrap());
-    let kv_re = KEY_VALUE_SECRET_RE.get_or_init(|| {
-        Regex::new(r#"(?i)("?(?:password|passwd|secret|token|api_key|apiKey|access_token|refresh_token|private_key|credential)"?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;"'&]+)"#).unwrap()
-    });
+    let url_re = URL_CREDENTIAL_RE.get_or_init(|| Regex::new(URL_CREDENTIAL_PATTERN).unwrap());
+    let bearer_re = BEARER_TOKEN_RE.get_or_init(|| Regex::new(BEARER_TOKEN_PATTERN).unwrap());
+    let basic_re = BASIC_AUTH_RE.get_or_init(|| Regex::new(BASIC_AUTH_PATTERN).unwrap());
+    let jwt_re = BARE_JWT_RE.get_or_init(|| Regex::new(BARE_JWT_PATTERN).unwrap());
+    let cli_re = CLI_SECRET_RE.get_or_init(|| Regex::new(CLI_SECRET_PATTERN).unwrap());
+    let kv_re = KEY_VALUE_SECRET_RE.get_or_init(|| Regex::new(KEY_VALUE_SECRET_PATTERN).unwrap());
 
     let s1 = url_re.replace_all(text, "${1}[REDACTED]${3}");
     let s2 = bearer_re.replace_all(&s1, "${1}[REDACTED]");
-    let s3 = kv_re.replace_all(&s2, "${1}[REDACTED]");
-    s3.into_owned()
+    let s3 = basic_re.replace_all(&s2, "${1}[REDACTED]");
+    let s4 = jwt_re.replace_all(&s3, "[REDACTED]");
+    let s5 = cli_re.replace_all(&s4, "${1}[REDACTED]");
+    let s6 = kv_re.replace_all(&s5, "${1}[REDACTED]");
+    s6.into_owned()
 }
 
 pub fn sanitize_dev_profile(dev: &DevProfile) -> DevProfile {
