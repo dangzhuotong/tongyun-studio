@@ -4,7 +4,7 @@
 
 ## 当前范围
 - Tauri 2 + React 19 + TypeScript + Vite；Rust 核心与桌面适配器分离。
-- 当前：本地项目管理、内嵌 Files / Dev / API / SQLite / Git，以及只读 Agent 文件快照。Dev 面板已继承 tongyun-dev 的扫描登记、启停重启、生命周期（含 installing）、日志尾部与本地落盘（单文件 1 MiB 滚动，App 重启后保留 Dev 面板与 HTTP 日志回看，内存 64 KiB 上限不变）、环境预设、Java/Node 工具链注入与 Tomcat WAR catalina 部署启停（启动前预检未命中一句话报错），支持首启自动检测并安装依赖（Node 项目按锁文件安装、Maven/Gradle 可选先拉依赖，输出进日志尾部，失败标 failed，可在设置关闭）；App 启动时自动在 127.0.0.1 拉起 Agent HTTP 服务（默认端口 9100，对齐 tongyun-dev 契约），无需另跑 CLI；支持项目级异常退出可选自动重启策略（默认关闭，主动停止不重启，标明次数上限与日志）；未接入独立 CLI、:9099 网页控制台和跨产品协议。当前边界以 docs/architecture.md 为准。
+- 当前：本地项目管理、内嵌 Files / Dev / API / SQLite / Git，以及只读 Agent 文件快照。Dev 面板已继承 tongyun-dev 的扫描登记、从 tongyun-dev 全局登记文件（projects.toml，按 $TONGYUN_DEV_CONFIG → 记忆路径 → 默认用户配置 → 仓库内 config/projects.toml 顺序查找）读取候选并勾选登记（坏行与指向不存在目录的条目只跳过并注明原因，单批上限 64 个，不自动批量导入）、启停重启、生命周期（含 installing）、日志尾部与本地落盘（单文件 1 MiB 滚动，App 重启后保留 Dev 面板与 HTTP 日志回看，内存 64 KiB 上限不变）、环境预设、Java/Node 工具链注入与 Tomcat WAR catalina 部署启停（启动前预检未命中一句话报错），支持首启自动检测并安装依赖（Node 项目按锁文件安装、Maven/Gradle 可选先拉依赖，输出进日志尾部，失败标 failed，可在设置关闭）；App 启动时自动在 127.0.0.1 拉起 Agent HTTP 服务（默认端口 9100，对齐 tongyun-dev 契约），无需另跑 CLI；支持项目级异常退出可选自动重启策略（默认关闭，主动停止不重启，标明次数上限与日志）；未接入独立 CLI、:9099 网页控制台和跨产品协议。当前边界以 docs/architecture.md 为准。
 - 原有工具保持独立。Studio 没有伪造与 tongyun-dev 进程的联动，也未接入完整协议、共享数据库记忆或 worker 调度。
 - Agent 开发与验收不连接生产数据库、不自动启动用户业务项目；临时夹具可测试命令、SQL 和 Git。仅在用户要求时提交或推送产品仓。
 - 项目移除只移除登记，不删除磁盘文件。无隐式 git pull、commit 或 push。

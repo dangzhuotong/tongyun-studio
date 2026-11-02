@@ -26,6 +26,7 @@ describe('browser preview never invents local results', () => {
       () => bridge.startProjectService('p', 'command'), () => bridge.listProjectServices('p'),
       () => bridge.stopProjectService('p', 's'), () => bridge.restartProjectService('p', 's'),
       () => bridge.scanDevDirectory('/tmp/synthetic', 2), () => bridge.importDevCandidates([]),
+      () => bridge.readTongyunDevRegistry(),
       () => bridge.startDevGroup('demo'), () => bridge.stopDevGroup('demo'),
       () => bridge.devServiceLogTail('p', 's', 20),
       () => bridge.devProjectLogTail('p', 20),
