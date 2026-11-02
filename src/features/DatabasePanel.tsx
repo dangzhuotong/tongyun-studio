@@ -1,5 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Project, ProjectInspection, DbTableInfo, DbColumnInfo, PaginatedData, RowChangePlan, AgentSessionState } from '../contracts';
+import type {
+  Project,
+  ProjectInspection,
+  SqlQueryResult,
+  DbTableInfo,
+  DbColumnInfo,
+  PaginatedData,
+  RowChangePlan,
+  ColumnChange,
+  AgentSessionState,
+  SavedDbConnection,
+  DbConnectionInput,
+  DbEngineKind,
+  DbProbeResult,
+} from '../contracts';
 import {
   executeSqlQuery,
   getDbTables,
@@ -9,6 +23,14 @@ import {
   readProjectFileContent,
   openProjectFile,
   isDesktop,
+  listDbConnections,
+  saveDbConnection,
+  deleteDbConnection,
+  testDbConnection,
+  connectionTables,
+  connectionColumns,
+  connectionRedisKeys,
+  runConnectionQuery,
 } from '../bridge';
 import {
   applyTabResult,
@@ -39,11 +61,47 @@ import {
   Plus,
   RefreshCw,
   ShieldAlert,
+  ShieldCheck,
   Table,
+  Trash2,
   X,
 } from '../components/Icons';
 
 const PAGE_SIZES = [20, 50, 100, 200];
+
+const ENGINE_LABEL: Record<DbEngineKind, string> = {
+  sqlite: 'SQLite',
+  mysql: 'MySQL',
+  postgres: 'PostgreSQL',
+  redis: 'Redis',
+};
+
+const PORT_BY_ENGINE: Record<DbEngineKind, number> = {
+  sqlite: 0,
+  mysql: 3306,
+  postgres: 5432,
+  redis: 6379,
+};
+
+const quoteIdent = (engine: DbEngineKind, name: string) =>
+  engine === 'mysql' ? `\`${name.replace(/`/g, '')}\`` : `"${name.replace(/"/g, '')}"`;
+
+const unsafeIdent = (name: string) => /["`;]/.test(name) || /\s/.test(name);
+
+// 已保存记录回填表单；password 为 null 表示沿用后端已加密保存的口令。
+const draftFrom = (conn: SavedDbConnection): DbConnectionInput => ({
+  id: conn.id,
+  name: conn.name,
+  engine: conn.engine,
+  host: conn.host,
+  port: conn.engine === 'sqlite' ? null : conn.port,
+  user: conn.user,
+  password: null,
+  database: conn.database,
+  tls: conn.tls,
+  readOnly: conn.readOnly,
+  revision: conn.revision,
+});
 
 export default function DatabasePanel({
   project,
@@ -114,24 +172,216 @@ export default function DatabasePanel({
 
   const agentSqlActions = (session?.actions ?? []).filter(a => a.kind === 'sql');
 
+  // 通用连接管理器：外部 SQLite / MySQL / PostgreSQL / Redis
+  const [connections, setConnections] = useState<SavedDbConnection[]>([]);
+  const [activeConn, setActiveConn] = useState<SavedDbConnection | null>(null);
+  const [draft, setDraft] = useState<DbConnectionInput | null>(null);
+  const [passwordDraft, setPasswordDraft] = useState('');
+  const [passwordTouched, setPasswordTouched] = useState(false);
+  const [probe, setProbe] = useState<DbProbeResult | null>(null);
+  const [connError, setConnError] = useState<string | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [savingConn, setSavingConn] = useState(false);
+  // 切换数据源后丢弃在途结果，避免异步串台。
+  const seq = useRef(0);
+
+  const reloadConnections = async () => {
+    if (!isDesktop) return;
+    try {
+      setConnections(await listDbConnections());
+    } catch (error) {
+      onNotify?.(`读取连接列表失败：${error}`);
+    }
+  };
+
+  useEffect(() => {
+    void reloadConnections();
+  }, []);
+
+  const blankDraft = (engine: DbEngineKind = 'mysql'): DbConnectionInput => ({
+    id: '',
+    name: '',
+    engine,
+    host: '',
+    port: engine === 'sqlite' ? null : PORT_BY_ENGINE[engine],
+    user: '',
+    password: null,
+    database: '',
+    tls: false,
+    readOnly: true,
+    revision: null,
+  });
+
+  const openNewDialog = () => {
+    setDraft(blankDraft());
+    setPasswordDraft('');
+    setPasswordTouched(false);
+    setProbe(null);
+    setConnError(null);
+  };
+
+  const openEditDialog = (conn: SavedDbConnection) => {
+    setDraft(draftFrom(conn));
+    setPasswordDraft('');
+    setPasswordTouched(false);
+    setProbe(null);
+    setConnError(null);
+  };
+
+  const openConnection = async (conn: SavedDbConnection) => {
+    const stamp = (seq.current += 1);
+    setActiveConn(conn);
+    setSelectedTable(null);
+    setExpandedTable(null);
+    setColumnsMap({});
+    setPaginatedData(null);
+    setActiveView('data');
+    setTableError(null);
+    setLoadingTables(true);
+    try {
+      const list =
+        conn.engine === 'redis'
+          ? await connectionRedisKeys(conn.id, '*')
+          : await connectionTables(conn.id);
+      if (stamp !== seq.current) return;
+      setTables(list);
+      if (list.length > 0) {
+        await loadConnectionData(conn, list[0].name, stamp);
+      }
+    } catch (error) {
+      if (stamp !== seq.current) return;
+      setTableError(String(error));
+      setTables([]);
+    } finally {
+      if (stamp === seq.current) setLoadingTables(false);
+    }
+  };
+
+  const backToProject = () => {
+    seq.current += 1;
+    setActiveConn(null);
+    setTables([]);
+    setPaginatedData(null);
+    setSelectedTable(null);
+    setExpandedTable(null);
+    setColumnsMap({});
+    if (project) void loadTables();
+  };
+
+  const loadConnectionData = async (conn: SavedDbConnection, target: string, stamp: number) => {
+    setSelectedTable(target);
+    setActiveView('data');
+    setLoadingData(true);
+    try {
+      if (conn.engine === 'redis') {
+        const res = await runConnectionQuery(conn.id, `GET ${target}`);
+        if (stamp !== seq.current) return;
+        setPaginatedData({
+          columns: ['键', '值'],
+          rows: res.error ? [] : [[target, String(res.rows[0]?.[1] ?? 'NULL')]],
+          totalRows: res.error ? 0 : 1,
+          page: 1,
+          pageSize,
+        });
+        if (res.error) onNotify?.(`读取键失败：${res.error}`);
+        return;
+      }
+      if (unsafeIdent(target)) {
+        setPaginatedData({ columns: [], rows: [], totalRows: 0, page: 1, pageSize });
+        onNotify?.('该对象名含引号或空格，请在 SQL 控制台手写查询');
+        return;
+      }
+      const res = await runConnectionQuery(
+        conn.id,
+        `SELECT * FROM ${quoteIdent(conn.engine, target)} LIMIT ${pageSize}`,
+      );
+      if (stamp !== seq.current) return;
+      if (res.error) {
+        setPaginatedData(null);
+        onNotify?.(`读取表数据失败：${res.error}`);
+        return;
+      }
+      setPaginatedData({
+        columns: res.columns,
+        rows: res.rows.map(row => row.map(cell => String(cell))),
+        totalRows: res.rowCount,
+        page: 1,
+        pageSize,
+      });
+    } finally {
+      if (stamp === seq.current) setLoadingData(false);
+    }
+  };
+
+  const submitDraft = async (shouldTest: boolean) => {
+    if (!draft) return;
+    const payload: DbConnectionInput = {
+      ...draft,
+      password: passwordTouched ? passwordDraft : null,
+    };
+    setSavingConn(true);
+    setConnError(null);
+    setProbe(null);
+    try {
+      const saved = await saveDbConnection(payload);
+      setConnections(await listDbConnections());
+      if (shouldTest) {
+        // 探针以已保存的 id 发起，测试时保持弹窗打开，否则结果没有落点。
+        setDraft(draftFrom(saved));
+        setPasswordDraft('');
+        setPasswordTouched(false);
+        setProbing(true);
+        try {
+          setProbe(await testDbConnection(saved.id));
+        } finally {
+          setProbing(false);
+        }
+        return;
+      }
+      setDraft(null);
+      onNotify?.(`已保存连接：${saved.name}`);
+      await openConnection(saved);
+    } catch (error) {
+      setConnError(String(error));
+    } finally {
+      setSavingConn(false);
+      setProbing(false);
+    }
+  };
+
+  const removeConnection = async (conn: SavedDbConnection) => {
+    try {
+      setConnections(await deleteDbConnection(conn.id));
+      setDraft(null);
+      if (activeConn?.id === conn.id) backToProject();
+      onNotify?.(`已删除连接：${conn.name}`);
+    } catch (error) {
+      onNotify?.(`删除连接失败：${error}`);
+    }
+  };
+
+
   const loadTables = async (path?: string) => {
-    if (!project) return;
+    if (!project || activeConn) return;
+    const stamp = (seq.current += 1);
     const target = path ?? dbPath;
     setLoadingTables(true);
     setErrorText(null);
     try {
       const list = await getDbTables(project.id, target);
+      if (stamp !== seq.current) return;
       setTables(list);
       if (list.length > 0 && !selectedTable) {
         setSelectedTable(list[0].name);
         void loadTableData(list[0].name, 1, pageSize, target);
       }
     } catch (error) {
+      if (stamp !== seq.current) return;
       setErrorText(String(error));
       setTables([]);
       setPaginatedData(null);
     } finally {
-      setLoadingTables(false);
+      if (stamp === seq.current) setLoadingTables(false);
     }
   };
 
@@ -147,7 +397,20 @@ export default function DatabasePanel({
       return;
     }
     setExpandedTable(tableName);
-    if (!columnsMap[tableName] && project) {
+    if (columnsMap[tableName]) return;
+    if (activeConn) {
+      if (activeConn.engine === 'redis') return;
+      const stamp = seq.current;
+      try {
+        const cols = await connectionColumns(activeConn.id, tableName);
+        if (stamp !== seq.current) return;
+        setColumnsMap(prev => ({ ...prev, [tableName]: cols }));
+      } catch (err) {
+        onNotify?.(`无法获取表字段：${err}`);
+      }
+      return;
+    }
+    if (project) {
       try {
         const cols = await getTableColumns(project.id, dbPath, tableName);
         setColumnsMap(prev => ({ ...prev, [tableName]: cols }));
@@ -166,6 +429,10 @@ export default function DatabasePanel({
     dir?: 'asc' | 'desc',
     cursor?: string | null,
   ) => {
+    if (activeConn) {
+      void loadConnectionData(activeConn, tableName, seq.current);
+      return;
+    }
     if (!project) return;
     const projectId = project.id;
     const token = loadToken.current + 1;
@@ -257,16 +524,19 @@ export default function DatabasePanel({
   };
 
   const handleRunSql = async () => {
-    if (!project || activeTab.running) return;
+    if ((!project && !activeConn) || activeTab.running) return;
     const trimmed = activeTab.sql.trim();
     if (!trimmed) return;
     const tabId = activeTab.id;
+    const conn = activeConn;
     const sourcePath = dbPath;
-    const projectId = project.id;
+    const projectId = project?.id ?? '';
 
     setQueryTabs(tabs => applyTabResult(tabs, tabId, { running: true, result: null, dbPath: sourcePath }));
     try {
-      const res = await executeSqlQuery(projectId, sourcePath, trimmed);
+      const res = conn
+        ? await runConnectionQuery(conn.id, trimmed)
+        : await executeSqlQuery(projectId, sourcePath, trimmed);
       setQueryTabs(tabs => applyTabResult(tabs, tabId, { running: false, result: res }));
       setActiveView('sql');
       if (res.error) {
@@ -374,6 +644,20 @@ export default function DatabasePanel({
   const totalPages = paginatedData ? Math.ceil(paginatedData.totalRows / pageSize) || 1 : 1;
   const pageLabel = paginatedData?.keyColumn && cursorStack[page - 1] ? '游标' : '偏移';
 
+  const connTarget = (c: SavedDbConnection) =>
+    c.engine === 'sqlite'
+      ? c.database
+      : `${c.host}:${c.port}${c.database ? `/${c.database}` : ''}`;
+
+  const schemaPreset = (engine: DbEngineKind) => {
+    if (engine === 'mysql') return 'SHOW TABLES;';
+    if (engine === 'postgres') {
+      return 'SELECT c.relname, CASE c.relkind WHEN \'v\' THEN \'view\' ELSE \'table\' END FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = current_schema() AND c.relkind IN (\'r\',\'m\',\'v\',\'f\') ORDER BY 1;';
+    }
+    if (engine === 'redis') return 'DBSIZE';
+    return "SELECT name, type FROM sqlite_master WHERE type IN ('table','view');";
+  };
+
   return (
     <div className="feature-panel-layout" aria-labelledby="db-title">
       <div className="workbench-header">
@@ -383,10 +667,16 @@ export default function DatabasePanel({
           </div>
           <div>
             <h2 id="db-title">Tongyun Database · 数据工作台</h2>
-            <p>多查询标签页、主键游标分页数据网格、单行变更预览与回滚 SQL、数据导出（CSV/JSON）与模式追溯。</p>
+            <p>多引擎连接管理（SQLite / MySQL / PostgreSQL / Redis）、多查询标签页、主键游标分页数据网格、单行变更预览与回滚 SQL、数据导出（CSV/JSON）与模式追溯。</p>
           </div>
         </div>
         <div className="workbench-badges">
+          {isDesktop && (
+            <button className="secondary-button-sm" onClick={openNewDialog}>
+              <Plus size={12} />
+              新建连接
+            </button>
+          )}
           <button className="secondary-button-sm" onClick={() => exportData('csv')}>
             <Download size={12} />
             导出 CSV
@@ -398,14 +688,14 @@ export default function DatabasePanel({
         </div>
       </div>
 
-      {!project ? (
+      {!project && connections.length === 0 ? (
         <div className="panel-empty-placeholder">
           <Database size={32} strokeWidth={1.2} />
-          <p>请先在左侧选择或添加一个项目，以浏览数据库结构与执行 SQL 查询。</p>
+          <p>请先在左侧选择或添加一个项目，或用「新建连接」登记外部 SQLite / MySQL / PostgreSQL / Redis 数据源。</p>
         </div>
       ) : (
         <>
-          {agentSqlActions.length > 0 && (
+          {project && agentSqlActions.length > 0 && (
             <div className="panel-subcard agent-subcard" style={{ marginBottom: 12 }}>
               <div className="section-heading">
                 <div className="subcard-title">
@@ -444,30 +734,120 @@ export default function DatabasePanel({
           <div className="db-workbench-split">
           {/* Left Column: Schema & Table Tree Explorer */}
           <aside className="db-sidebar-pane">
-            <div className="db-target-header">
-              <span className="toolbar-label">当前 SQLite 源:</span>
-              <input
-                className="db-path-mini-input"
-                value={dbPath}
-                onChange={e => setDbPath(e.target.value)}
-                placeholder="local.db"
-              />
-              <button
-                className="icon-button-sm"
-                onClick={() => void loadTables(dbPath)}
-                title="重新扫描库表"
-              >
-                <RefreshCw size={12} className={loadingTables ? 'spin' : ''} />
-              </button>
-            </div>
+            {isDesktop && (
+              <div className="db-conn-pane">
+                <div className="pane-header">
+                  <span>连接列表 ({connections.length})</span>
+                  <button className="icon-button-sm" onClick={openNewDialog} title="新建连接">
+                    <Plus size={12} />
+                  </button>
+                </div>
+                <div className="conn-list">
+                  {project && (
+                    <div
+                      className={`conn-row ${activeConn ? '' : 'selected'}`}
+                      onClick={backToProject}
+                      title="使用项目扫描到的 SQLite"
+                    >
+                      <Database size={13} className="accent-color" />
+                      <span className="conn-name">项目 SQLite</span>
+                      <span className="conn-target">{dbPath}</span>
+                    </div>
+                  )}
+                  {connections.map(c => (
+                    <div
+                      key={c.id}
+                      className={`conn-row ${activeConn?.id === c.id ? 'selected' : ''}`}
+                      onClick={() => void openConnection(c)}
+                      title={`${ENGINE_LABEL[c.engine]} · 更新于 ${c.updatedAt}`}
+                    >
+                      <span className="conn-engine">{ENGINE_LABEL[c.engine]}</span>
+                      <span className="conn-name">{c.name}</span>
+                      <span className="conn-target">{connTarget(c)}</span>
+                      <span className="conn-flags">
+                        {c.readOnly && (
+                          <span className="conn-flag" title="只读保护已开启">
+                            <ShieldCheck size={11} />
+                          </span>
+                        )}
+                        {c.hasPassword && (
+                          <span className="conn-flag" title="口令已加密保存">
+                            <Key size={11} />
+                          </span>
+                        )}
+                        <button
+                          className="icon-button-sm"
+                          title="编辑连接"
+                          onClick={e => {
+                            e.stopPropagation();
+                            openEditDialog(c);
+                          }}
+                        >
+                          <FileCode size={11} />
+                        </button>
+                        <button
+                          className="icon-button-sm"
+                          title="删除连接"
+                          onClick={e => {
+                            e.stopPropagation();
+                            void removeConnection(c);
+                          }}
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {activeConn ? (
+              <div className="db-target-header">
+                <span className="toolbar-label">当前连接:</span>
+                <input className="db-path-mini-input" value={activeConn.name} readOnly />
+                <button
+                  className="icon-button-sm"
+                  onClick={() => void openConnection(activeConn)}
+                  title="重新读取库表"
+                >
+                  <RefreshCw size={12} className={loadingTables ? 'spin' : ''} />
+                </button>
+              </div>
+            ) : (
+              <div className="db-target-header">
+                <span className="toolbar-label">当前 SQLite 源:</span>
+                <input
+                  className="db-path-mini-input"
+                  value={dbPath}
+                  onChange={e => setDbPath(e.target.value)}
+                  placeholder="local.db"
+                />
+                <button
+                  className="icon-button-sm"
+                  onClick={() => void loadTables(dbPath)}
+                  title="重新扫描库表"
+                >
+                  <RefreshCw size={12} className={loadingTables ? 'spin' : ''} />
+                </button>
+              </div>
+            )}
 
             <div className="db-objects-tree">
               <div className="pane-header">
-                <span>数据表与视图 ({tables.length})</span>
+                <span>
+                  {activeConn
+                    ? activeConn.engine === 'redis'
+                      ? `键与类型 (${tables.length})`
+                      : `表与视图 (${tables.length})`
+                    : `数据表与视图 (${tables.length})`}
+                </span>
               </div>
               <div className="tree-list-content">
                 {tables.length === 0 ? (
-                  <div className="tree-empty-hint" role={errorText ? 'alert' : undefined}>{errorText || '数据库中没有数据表'}</div>
+                  <div className="tree-empty-hint" role={errorText ? 'alert' : undefined}>
+                    {errorText || (activeConn ? '该连接暂无可读对象' : '数据库中没有数据表')}
+                  </div>
                 ) : (
                   tables.map(t => (
                     <div key={t.name} className="tree-table-item">
@@ -515,7 +895,7 @@ export default function DatabasePanel({
               </div>
 
               {/* Artifacts list (schemas / migrations) */}
-              {artifacts.length > 0 && (
+              {!activeConn && artifacts.length > 0 && (
                 <div className="db-artifacts-subpane">
                   <div className="pane-header">
                     <span>模式产物 ({artifacts.length})</span>
@@ -581,11 +961,13 @@ export default function DatabasePanel({
                     <span className="active-table-title">{selectedTable || '未选择数据表'}</span>
                     {paginatedData && (
                       <span className="meta">
-                        共 {paginatedData.totalRows} 条 · 第 {page} / {totalPages} 页 · {pageLabel}翻页
-                        {paginatedData.keyColumn ? ` · 主键 ${paginatedData.keyColumn}` : ' · 无单列主键'}
+                        {activeConn
+                          ? `首屏 ${paginatedData.totalRows} 行 · 更多请用 SQL 控制台（LIMIT / OFFSET）`
+                          : `共 ${paginatedData.totalRows} 条 · 第 ${page} / ${totalPages} 页 · ${pageLabel}翻页${paginatedData.keyColumn ? ` · 主键 ${paginatedData.keyColumn}` : ' · 无单列主键'}`}
                       </span>
                     )}
                   </div>
+                  {!activeConn && (
                   <div className="toolbar-pagination">
                     <label className="page-size-picker">
                       <span className="toolbar-label">每页</span>
@@ -617,6 +999,7 @@ export default function DatabasePanel({
                       下一页
                     </button>
                   </div>
+                  )}
                 </div>
 
                 <div className="data-grid-container">
@@ -852,7 +1235,9 @@ export default function DatabasePanel({
                 <div className="safety-warning-banner">
                   <ShieldAlert size={16} />
                   <span>
-                    只读查询：禁止写入、建表和附加数据库。单次最多 1000 行、4 MiB，执行限时 2 秒。当前源：{activeTab.dbPath}
+                    {activeConn
+                      ? `${ENGINE_LABEL[activeConn.engine]} 连接「${activeConn.name}」：只读保护${activeConn.readOnly ? '已开启，非只读语句会被拦截' : '未开启，请自行控制语句范围'}。单次最多 1000 行、4 MiB，连接与查询限时 5 秒。`
+                      : `只读查询：禁止写入、建表和附加数据库。单次最多 1000 行、4 MiB，执行限时 2 秒。当前源：${activeTab.dbPath}`}
                   </span>
                 </div>
 
@@ -870,12 +1255,32 @@ export default function DatabasePanel({
                       <button className="preset-btn" onClick={() => applyTemplate('sample')}>
                         SELECT 前 50 条
                       </button>
-                      <button className="preset-btn" onClick={() => applyTemplate('tables')}>
-                        所有表
+                      <button
+                        className="preset-btn"
+                        onClick={() => updateActiveTab({ sql: schemaPreset(activeConn?.engine ?? 'sqlite') })}
+                      >
+                        {activeConn?.engine === 'redis' ? '键数量 DBSIZE' : '所有表'}
                       </button>
-                      {selectedTable && (
+                      {selectedTable && !activeConn && (
                         <button className="preset-btn" onClick={() => applyTemplate('describe')}>
                           DESCRIBE {selectedTable}
+                        </button>
+                      )}
+                      {selectedTable && !unsafeIdent(selectedTable) && (
+                        <button
+                          className="preset-btn"
+                          onClick={() =>
+                            updateActiveTab({
+                              sql:
+                                activeConn?.engine === 'redis'
+                                  ? `TYPE ${selectedTable}`
+                                  : `SELECT * FROM ${
+                                      activeConn ? quoteIdent(activeConn.engine, selectedTable) : `"${selectedTable}"`
+                                    } LIMIT 20;`,
+                            })
+                          }
+                        >
+                          查询 {selectedTable} 前20条
                         </button>
                       )}
                     </div>
@@ -951,6 +1356,208 @@ export default function DatabasePanel({
           </div>
         </div>
         </>
+      )}
+
+      {draft && (
+        <div
+          className="modal-overlay"
+          onMouseDown={e => {
+            if (e.target === e.currentTarget && !savingConn) setDraft(null);
+          }}
+        >
+          <div className="modal-dialog" role="dialog" aria-modal="true" aria-label="连接配置">
+            <div className="modal-header">
+              <h2>{draft.id ? `编辑连接：${draft.name}` : '新建数据库连接'}</h2>
+            </div>
+            <div className="modal-body">
+              <p className="modal-description">
+                口令用本机密钥以 AES-256-GCM 加密后写入 connections.json，界面与日志都不回显明文；
+                「测试连接」会先保存当前配置再发起探针。
+              </p>
+
+              <div className="modal-form-group">
+                <label>连接名称 (1-64 字):</label>
+                <input
+                  className="modal-input"
+                  value={draft.name}
+                  onChange={e => setDraft({ ...draft, name: e.target.value })}
+                  placeholder="例如：订单主库（只读）"
+                />
+              </div>
+
+              <div className="modal-form-group">
+                <label>引擎类型:</label>
+                <div className="modal-radio-group">
+                  {(['mysql', 'postgres', 'redis', 'sqlite'] as DbEngineKind[]).map(kind => (
+                    <label key={kind}>
+                      <input
+                        type="radio"
+                        name="dbEngine"
+                        checked={draft.engine === kind}
+                        onChange={() =>
+                          setDraft({
+                            ...draft,
+                            engine: kind,
+                            port: kind === 'sqlite' ? null : PORT_BY_ENGINE[kind],
+                            tls: kind === 'mysql' ? draft.tls : false,
+                            host: kind === 'sqlite' ? '' : draft.host,
+                          })
+                        }
+                      />
+                      {kind === 'mysql' ? 'MySQL / TiDB / MariaDB' : ENGINE_LABEL[kind]}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {draft.engine === 'sqlite' ? (
+                <div className="modal-form-group">
+                  <label>数据库文件绝对路径:</label>
+                  <input
+                    className="modal-input"
+                    value={draft.database}
+                    onChange={e => setDraft({ ...draft, database: e.target.value })}
+                    placeholder="D:/data/local.db"
+                  />
+                </div>
+              ) : (
+                <>
+                  <div className="modal-form-group">
+                    <label>主机 Host:</label>
+                    <input
+                      className="modal-input"
+                      value={draft.host}
+                      onChange={e => setDraft({ ...draft, host: e.target.value })}
+                      placeholder="127.0.0.1"
+                    />
+                  </div>
+                  <div className="modal-form-group">
+                    <label>端口 Port:</label>
+                    <input
+                      className="modal-input"
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={draft.port ?? ''}
+                      onChange={e =>
+                        setDraft({ ...draft, port: e.target.value === '' ? null : Number(e.target.value) })
+                      }
+                    />
+                  </div>
+                  {draft.engine !== 'redis' && (
+                    <div className="modal-form-group">
+                      <label>用户名:</label>
+                      <input
+                        className="modal-input"
+                        value={draft.user}
+                        autoComplete="off"
+                        onChange={e => setDraft({ ...draft, user: e.target.value })}
+                        placeholder="readonly"
+                      />
+                    </div>
+                  )}
+                  <div className="modal-form-group">
+                    <label>{draft.engine === 'redis' ? '数据库索引 (如 0):' : '数据库名:'}</label>
+                    <input
+                      className="modal-input"
+                      value={draft.database}
+                      onChange={e => setDraft({ ...draft, database: e.target.value })}
+                      placeholder={draft.engine === 'redis' ? '0' : 'analytics'}
+                    />
+                  </div>
+                </>
+              )}
+
+              {draft.engine !== 'sqlite' && (
+                <div className="modal-form-group">
+                  <label>密码{draft.id ? '（不改动则保留原密码，清空则删除）:' : ':'}</label>
+                  <input
+                    className="modal-input"
+                    type="password"
+                    autoComplete="new-password"
+                    value={passwordDraft}
+                    onChange={e => {
+                      setPasswordDraft(e.target.value);
+                      setPasswordTouched(true);
+                    }}
+                  />
+                  {draft.id && (
+                    <div className="confirm-tip">
+                      当前{connections.find(c => c.id === draft.id)?.hasPassword ? '已保存加密口令' : '没有保存口令'}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="modal-form-group">
+                <div className="modal-radio-group">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={draft.tls}
+                      disabled={draft.engine !== 'mysql'}
+                      onChange={e => setDraft({ ...draft, tls: e.target.checked })}
+                    />
+                    使用 SSL 连接{draft.engine !== 'mysql' ? '（当前仅 MySQL 支持）' : ''}
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={draft.readOnly}
+                      onChange={e => setDraft({ ...draft, readOnly: e.target.checked })}
+                    />
+                    只读保护（拦截写入、加锁与多语句）
+                  </label>
+                </div>
+              </div>
+
+              {connError && <div className="form-error" role="alert">{connError}</div>}
+              {probe && (
+                <div className={`probe-result ${probe.ok ? 'ok' : 'fail'}`} role="status">
+                  {probe.ok
+                    ? `连接成功（${probe.latencyMs}ms）：${probe.detail}`
+                    : `连接失败 [${probe.errorCode}]：${probe.detail}`}
+                </div>
+              )}
+
+              <div className="modal-actions">
+                {draft.id && (
+                  <button
+                    className="danger-button"
+                    disabled={savingConn}
+                    onClick={() => {
+                      const target = connections.find(c => c.id === draft.id);
+                      if (target) void removeConnection(target);
+                    }}
+                  >
+                    <Trash2 size={13} />
+                    删除连接
+                  </button>
+                )}
+                <button className="secondary-button-sm" disabled={savingConn} onClick={() => setDraft(null)}>
+                  <X size={13} />
+                  取消
+                </button>
+                <button
+                  className="secondary-button-sm"
+                  disabled={savingConn || !draft.name.trim()}
+                  onClick={() => void submitDraft(true)}
+                >
+                  {probing || savingConn ? <LoaderCircle size={13} className="spin" /> : <Play size={13} />}
+                  测试连接
+                </button>
+                <button
+                  className="primary-button"
+                  disabled={savingConn || !draft.name.trim()}
+                  onClick={() => void submitDraft(false)}
+                >
+                  <Plus size={13} />
+                  保存连接
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

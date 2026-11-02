@@ -289,6 +289,47 @@ export interface RowChangePlan {
   changedColumns: string[];
 }
 
+export type DbEngineKind = 'sqlite' | 'mysql' | 'postgres' | 'redis';
+
+/** 已保存连接的展示视图：后端只回是否存有密码，绝不回传口令本身。 */
+export interface SavedDbConnection {
+  id: string;
+  name: string;
+  engine: DbEngineKind;
+  host: string;
+  port: number;
+  user: string;
+  database: string;
+  tls: boolean;
+  readOnly: boolean;
+  revision: number;
+  updatedAt: string;
+  hasPassword: boolean;
+}
+
+/** 新建/编辑连接的表单入参；password 为 null 表示保留原密码，空串表示清除。 */
+export interface DbConnectionInput {
+  id: string;
+  name: string;
+  engine: DbEngineKind | null;
+  host: string;
+  port: number | null;
+  user: string;
+  password: string | null;
+  database: string;
+  tls: boolean;
+  readOnly: boolean;
+  revision: number | null;
+}
+
+export interface DbProbeResult {
+  ok: boolean;
+  engine: DbEngineKind;
+  latencyMs: number;
+  detail: string;
+  errorCode: string | null;
+}
+
 export interface ListeningPort {
   port: number;
   process: string;

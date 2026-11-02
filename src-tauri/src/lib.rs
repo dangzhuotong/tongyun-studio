@@ -2,6 +2,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use studio_core::agent_http::ServerHandle;
+use studio_core::connections::{
+    ConnectionInput as DbConnectionInput, ConnectionProbeResult as DbProbeResult,
+    ConnectionSummary as DbConnectionSummary,
+};
 use studio_core::{
     AiProjectContext, ColumnChange, DbColumnInfo, DbTableInfo, DevCandidate, DevImportOutcome,
     ExecutionResult, ExistingProject, FileEntry, GitCommitDetails, GitFileChange, GitHistoryResult,
@@ -43,6 +47,7 @@ fn agent_http_info() -> AgentHttpInfo {
 pub struct AppState {
     pub store: Arc<WorkspaceStore>,
     pub services: Arc<ServiceManager>,
+    pub connections: Arc<studio_core::connections::ConnectionStore>,
 }
 
 #[tauri::command]
@@ -425,10 +430,70 @@ fn plan_row_change(
 }
 
 #[tauri::command]
+fn db_list_connections(state: tauri::State<'_, AppState>) -> Result<Vec<DbConnectionSummary>, String> {
+    state.connections.list()
+}
+
+#[tauri::command]
+fn db_save_connection(
+    state: tauri::State<'_, AppState>,
+    input: DbConnectionInput,
+) -> Result<DbConnectionSummary, String> {
+    state.connections.save(&input)
+}
+
+#[tauri::command]
+fn db_delete_connection(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<Vec<DbConnectionSummary>, String> {
+    state.connections.remove(&id)
+}
+
+#[tauri::command]
+fn db_test_connection(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<DbProbeResult, String> {
+    studio_core::connections::test_connection(&state.connections, &id)
+}
+
+#[tauri::command]
+fn db_list_tables(state: tauri::State<'_, AppState>, id: String) -> Result<Vec<DbTableInfo>, String> {
+    studio_core::connections::list_tables(&state.connections, &id)
+}
+
+#[tauri::command]
+fn db_list_columns(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    table: String,
+) -> Result<Vec<DbColumnInfo>, String> {
+    studio_core::connections::table_columns(&state.connections, &id, &table)
+}
+
+#[tauri::command]
+fn db_list_redis_keys(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    pattern: Option<String>,
+) -> Result<Vec<DbTableInfo>, String> {
+    studio_core::connections::redis_keys(&state.connections, &id, pattern.as_deref())
+}
+
+#[tauri::command]
+fn db_run_query(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    query: String,
+) -> Result<SqlQueryResult, String> {
+    studio_core::connections::run_query(&state.connections, &id, &query)
+}
+
+#[tauri::command]
 fn detect_listening_ports() -> Vec<ListeningPort> {
     studio_core::detect_listening_ports()
 }
-
 #[tauri::command]
 fn generate_ai_project_context(
     state: tauri::State<'_, AppState>,
@@ -669,6 +734,9 @@ pub fn run() {
                 .unwrap_or_else(|_| PathBuf::from("."));
             let workspace_path = config_dir.join("workspace.json");
             let store = Arc::new(WorkspaceStore::new(workspace_path));
+            let connections = Arc::new(studio_core::connections::ConnectionStore::new(
+                config_dir.join("connections.json"),
+            ));
             let services = Arc::new(ServiceManager::new());
 
             let initial_port = studio_core::agent_http::resolve_agent_port();
@@ -691,7 +759,11 @@ pub fn run() {
                 }
             }
 
-            app.manage(AppState { store, services });
+            app.manage(AppState {
+                store,
+                services,
+                connections,
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -731,6 +803,14 @@ pub fn run() {
             get_table_columns,
             get_table_data,
             plan_row_change,
+            db_list_connections,
+            db_save_connection,
+            db_delete_connection,
+            db_test_connection,
+            db_list_tables,
+            db_list_columns,
+            db_list_redis_keys,
+            db_run_query,
             detect_listening_ports,
             generate_ai_project_context,
             open_project_directory,

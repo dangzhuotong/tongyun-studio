@@ -3889,6 +3889,102 @@ body, html {
   overflow: hidden;
 }
 
+.db-conn-pane {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+}
+
+.conn-list {
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 190px;
+  overflow-y: auto;
+}
+
+.conn-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border: 1px solid transparent;
+  border-radius: var(--ty-radius-sm);
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.conn-row:hover {
+  background: var(--card-hover);
+}
+
+.conn-row.selected {
+  background: var(--accent-tint);
+  border-color: var(--accent);
+}
+
+.conn-engine {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: var(--ty-radius-xs);
+  background: var(--sunken);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--accent);
+}
+
+.conn-name {
+  flex: none;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conn-target {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-meta);
+}
+
+.conn-flags {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+}
+
+.conn-flag {
+  display: inline-flex;
+  color: var(--accent);
+}
+
+.probe-result {
+  margin: 8px 0 0;
+  padding: 6px 8px;
+  border-radius: var(--ty-radius-xs);
+  font-size: 11px;
+  word-break: break-all;
+  background: var(--sunken);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.probe-result.ok {
+  color: var(--accent);
+}
+
+.probe-result.fail {
+  color: var(--error);
+}
+
 .db-target-header {
   padding: 8px 10px;
   background: var(--sunken);

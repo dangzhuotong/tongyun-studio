@@ -17,6 +17,7 @@ pub mod diagnostics;
 pub mod processes;
 pub mod tongyun_dev;
 pub mod toolchain;
+pub mod connections;
 pub use agent_http::{
     bind_from, is_studio_server, resolve_agent_port, start_agent_server, AgentHttpInfo,
     ServerHandle, DEFAULT_AGENT_PORT, DEFAULT_STUDIO_AGENT_PORT,
@@ -1887,13 +1888,13 @@ pub fn send_http_request(
     })
 }
 
-const SQL_MAX_ROWS: usize = 1_000;
+pub(crate) const SQL_MAX_ROWS: usize = 1_000;
 const SQL_MAX_RESULT_BYTES: usize = 4 * 1024 * 1024;
 const SQL_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Read-only policy is enforced by SQLite itself, never by guessing an SQL prefix.
 /// A fresh, non-URI connection also prevents user SQL from persisting connection state.
-fn query_sqlite_readonly(target: &Path, sql: &str) -> Result<(Vec<String>, Vec<Vec<String>>)> {
+pub(crate) fn query_sqlite_readonly(target: &Path, sql: &str) -> Result<(Vec<String>, Vec<Vec<String>>)> {
     use rusqlite::{
         hooks::{AuthAction, AuthContext, Authorization},
         limits::Limit,

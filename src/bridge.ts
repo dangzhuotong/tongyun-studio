@@ -1,5 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import type { Project, Workspace, ProjectInspection, FileEntry, GitFileChange, GitHistoryResult, GitCommitDetails, GitStashEntry, ExecutionResult, HttpResponse, SqlQueryResult, DbTableInfo, DbColumnInfo, PaginatedData, ColumnChange, RowChangePlan, ListeningPort, AiProjectContext, ManagedService, AgentSessionState, DevScanReport, DevCandidate, DevImportResult, AgentHttpInfo, DiagnosticReport, TongyunDevSyncReport } from './contracts';
+import type { Project, Workspace, ProjectInspection, FileEntry, GitFileChange, GitHistoryResult, GitCommitDetails, GitStashEntry, ExecutionResult, HttpResponse, SqlQueryResult, DbTableInfo, DbColumnInfo, PaginatedData, ColumnChange, RowChangePlan, SavedDbConnection, DbConnectionInput, DbProbeResult, ListeningPort, AiProjectContext, ManagedService, AgentSessionState, DevScanReport, DevCandidate, DevImportResult, AgentHttpInfo, DiagnosticReport, TongyunDevSyncReport } from './contracts';
 
 export const isDesktop = isTauri();
 function native<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -68,6 +68,14 @@ export const planRowChange = (
   keyValues: string[],
   changes: ColumnChange[],
 ) => native<RowChangePlan>('plan_row_change', { id, dbPath, tableName, keyValues, changes });
+export const listDbConnections = () => native<SavedDbConnection[]>('db_list_connections');
+export const saveDbConnection = (input: DbConnectionInput) => native<SavedDbConnection>('db_save_connection', { input });
+export const deleteDbConnection = (id: string) => native<SavedDbConnection[]>('db_delete_connection', { id });
+export const testDbConnection = (id: string) => native<DbProbeResult>('db_test_connection', { id });
+export const connectionTables = (id: string) => native<DbTableInfo[]>('db_list_tables', { id });
+export const connectionColumns = (id: string, table: string) => native<DbColumnInfo[]>('db_list_columns', { id, table });
+export const connectionRedisKeys = (id: string, pattern?: string) => native<DbTableInfo[]>('db_list_redis_keys', { id, pattern: pattern ?? null });
+export const runConnectionQuery = (id: string, query: string) => native<SqlQueryResult>('db_run_query', { id, query });
 export const detectListeningPorts = () => native<ListeningPort[]>('detect_listening_ports');
 export const generateAiProjectContext = (id: string) => native<AiProjectContext>('generate_ai_project_context', { id });
 export const openProjectDirectory = (id: string) => native<void>('open_project_directory', { id });
