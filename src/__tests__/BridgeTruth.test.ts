@@ -8,6 +8,8 @@ describe('browser preview never invents local results', () => {
       () => bridge.inspectProject('p'), () => bridge.readProjectTree('p'),
       () => bridge.readProjectFileContent('p', 'file'), () => bridge.getGitChangedFiles('p'),
       () => bridge.getGitDiff('p'), () => bridge.createGitCommit('p', 'message'),
+      () => bridge.getGitHistory('p', 0, 50, false), () => bridge.getGitCommitDetails('p', 'abcdef0123'),
+      () => bridge.getGitCommitFileDiff('p', 'abcdef0123', 'file.ts'),
       () => bridge.gitCommitAmend('p'), () => bridge.gitStageFile('p', 'file'),
       () => bridge.gitUnstageFile('p', 'file'), () => bridge.gitStageAll('p'),
       () => bridge.gitUnstageAll('p'), () => bridge.gitDiscardFile('p', 'file'),

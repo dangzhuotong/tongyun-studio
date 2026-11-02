@@ -1,9 +1,12 @@
-import { useEffect, useState, type FormEvent } from 'react';
-import type { Project, ProjectInspection, GitFileChange, AgentSessionState } from '../contracts';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import type { Project, ProjectInspection, GitFileChange, GitLogCommit, GitCommitDetails, AgentSessionState } from '../contracts';
 import {
   getGitBranches,
   getGitChangedFiles,
   getGitDiff,
+  getGitHistory,
+  getGitCommitDetails,
+  getGitCommitFileDiff,
   createGitCommit,
   gitCommitAmend,
   switchGitBranch,
@@ -15,6 +18,9 @@ import {
   gitCreateBranch,
   gitRemoteSync,
 } from '../bridge';
+import { computeGitGraphRows, relativeCommitTime } from './gitGraph';
+
+const LANE_COLORS = ['#4d7c5d', '#3e6f9e', '#c2593f', '#8b6e3c'];
 import {
   Bot,
   Clock,
@@ -63,6 +69,91 @@ export default function GitPanel({
   const [committing, setCommitting] = useState(false);
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
   const [syncing, setSyncing] = useState<'fetch' | 'pull' | 'push' | null>(null);
+
+  // Log Tree view
+  const [view, setView] = useState<'changes' | 'log'>('changes');
+  const [historyCommits, setHistoryCommits] = useState<GitLogCommit[]>([]);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyHasMore, setHistoryHasMore] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [allBranches, setAllBranches] = useState(false);
+  const [selectedOid, setSelectedOid] = useState<string | null>(null);
+  const [commitDetails, setCommitDetails] = useState<GitCommitDetails | null>(null);
+  const [loadingDetails, setLoadingDetails] = useState(false);
+  const [selectedCommitFile, setSelectedCommitFile] = useState<string | null>(null);
+  const [commitFileDiff, setCommitFileDiff] = useState('');
+  const [loadingCommitDiff, setLoadingCommitDiff] = useState(false);
+
+  const graphRows = useMemo(() => computeGitGraphRows(historyCommits), [historyCommits]);
+  const maxLane = graphRows.reduce((max, row) => Math.max(max, row.laneCount), 1);
+
+  const loadHistory = async (append: boolean) => {
+    if (!project || !isRepo || loadingHistory) return;
+    const owner = project.id;
+    setLoadingHistory(true);
+    setHistoryError(null);
+    try {
+      const skip = append ? historyCommits.length : 0;
+      const result = await getGitHistory(owner, skip, 100, allBranches);
+      if (project?.id !== owner) return;
+      setHistoryCommits(prev => (append ? [...prev, ...result.commits] : result.commits));
+      setHistoryTotal(result.total);
+      setHistoryHasMore(result.hasMore);
+    } catch (e) {
+      if (project?.id === owner) setHistoryError(`读取提交历史失败：${e}`);
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  const openCommit = async (oid: string) => {
+    if (!project) return;
+    const owner = project.id;
+    setSelectedOid(oid);
+    setSelectedCommitFile(null);
+    setCommitFileDiff('');
+    setLoadingDetails(true);
+    setCommitDetails(null);
+    try {
+      const details = await getGitCommitDetails(owner, oid);
+      if (project?.id !== owner) return;
+      setCommitDetails(details);
+      const first = details.files[0]?.path ?? null;
+      if (first) void loadCommitFileDiff(details.oid, first, details.files[0]?.oldPath ?? null);
+    } catch (e) {
+      if (project?.id === owner) onNotify?.(`读取提交详情失败：${e}`);
+    } finally {
+      setLoadingDetails(false);
+    }
+  };
+
+  const loadCommitFileDiff = async (oid: string, filePath: string, oldPath?: string | null) => {
+    if (!project) return;
+    const owner = project.id;
+    setSelectedCommitFile(filePath);
+    setLoadingCommitDiff(true);
+    try {
+      const diff = await getGitCommitFileDiff(owner, oid, filePath, oldPath);
+      if (project?.id !== owner) return;
+      setCommitFileDiff(diff || '(该文件无文本差异)');
+    } catch (e) {
+      if (project?.id === owner) setCommitFileDiff(`读取差异失败：${e}`);
+    } finally {
+      setLoadingCommitDiff(false);
+    }
+  };
+
+  useEffect(() => {
+    setHistoryCommits([]);
+    setHistoryHasMore(false);
+    setHistoryTotal(0);
+    setSelectedOid(null);
+    setCommitDetails(null);
+    setCommitFileDiff('');
+    setSelectedCommitFile(null);
+    if (project && isRepo && view === 'log') void loadHistory(false);
+  }, [project?.id, view, allBranches, isRepo]);
 
   const agentGitActions = (session?.actions ?? []).filter(a => a.kind === 'git' || a.kind === 'edit');
 
@@ -237,6 +328,7 @@ export default function GitPanel({
       setIsAmend(false);
       onRefresh?.();
       void loadGitState();
+      if (view === 'log') void loadHistory(false);
     } catch (err) {
       onNotify?.(`提交失败：${err}`);
     } finally {
@@ -408,6 +500,28 @@ export default function GitPanel({
             </div>
           </div>
 
+          {/* View switch: Changes vs Log Tree */}
+          <div className="git-view-switch" role="tablist" aria-label="Git 视图切换">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={view === 'changes'}
+              className={`git-view-tab ${view === 'changes' ? 'active' : ''}`}
+              onClick={() => setView('changes')}
+            >
+              改动视图 (Changes)
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={view === 'log'}
+              className={`git-view-tab ${view === 'log' ? 'active' : ''}`}
+              onClick={() => setView('log')}
+            >
+              提交历史 (Log Tree)
+            </button>
+          </div>
+
           {agentGitActions.length > 0 && (
             <div className="panel-subcard agent-subcard" style={{ marginBottom: 12 }}>
               <div className="section-heading">
@@ -435,6 +549,7 @@ export default function GitPanel({
           )}
 
           {/* Side-by-Side Workbench: Left Changes Dual-List, Right Diff & Commit */}
+          {view === 'changes' ? (
           <div className="git-workbench-split">
             {/* Left Column: Dual Staged / Unstaged Lists */}
             <div className="git-changed-files-pane">
@@ -630,6 +745,218 @@ export default function GitPanel({
               </div>
             </div>
           </div>
+
+          ) : (
+            <div className="git-log-pane">
+              <div className="git-log-toolbar">
+                <label className="git-log-scope">
+                  <input
+                    type="checkbox"
+                    checked={allBranches}
+                    onChange={e => setAllBranches(e.target.checked)}
+                  />
+                  <span>全部分支</span>
+                </label>
+                <button
+                  type="button"
+                  className="git-sync-btn"
+                  onClick={() => void loadHistory(false)}
+                  disabled={loadingHistory}
+                  title="刷新提交历史"
+                >
+                  <RefreshCw size={12} className={loadingHistory ? 'spin' : ''} />
+                  刷新
+                </button>
+                <span className="meta">
+                  {historyTotal > 0
+                    ? `已加载 ${historyCommits.length} / ${historyTotal} 个提交`
+                    : historyCommits.length > 0
+                      ? `${historyCommits.length} 个提交`
+                      : '暂无提交记录'}
+                </span>
+              </div>
+              {historyError && <div className="git-log-error">{historyError}</div>}
+              <div className="git-log-split">
+                <div className="git-log-list" role="list">
+                  {historyCommits.length === 0 && !loadingHistory && !historyError && (
+                    <div className="files-empty-hint">该仓库尚无提交，或当前范围没有可显示的提交。</div>
+                  )}
+                  {historyCommits.map((c, idx) => {
+                    const row = graphRows[idx];
+                    const colX = (col: number) => col * 14 + 7;
+                    return (
+                      <div
+                        key={c.oid}
+                        role="listitem"
+                        className={`git-log-row ${selectedOid === c.oid ? 'selected' : ''}`}
+                        onClick={() => void openCommit(c.oid)}
+                      >
+                        <svg
+                          className="git-log-graph"
+                          width={Math.max(1, row?.laneCount ?? maxLane) * 14}
+                          height={28}
+                          aria-hidden="true"
+                        >
+                          {(row?.throughCols ?? []).map(thru => (
+                            <line
+                              key={`thru:${thru}`}
+                              x1={colX(thru)}
+                              y1={0}
+                              x2={colX(thru)}
+                              y2={28}
+                              stroke={LANE_COLORS[thru % LANE_COLORS.length]}
+                              strokeWidth={1.5}
+                            />
+                          ))}
+                          {row?.incoming && (
+                            <line
+                              x1={colX(row.col)}
+                              y1={0}
+                              x2={colX(row.col)}
+                              y2={14}
+                              stroke={LANE_COLORS[row.col % LANE_COLORS.length]}
+                              strokeWidth={1.5}
+                            />
+                          )}
+                          {(row?.edges ?? []).map((edge, ei) => (
+                            <line
+                              key={`edge:${ei}`}
+                              x1={colX(edge.fromCol)}
+                              y1={14}
+                              x2={colX(edge.toCol)}
+                              y2={28}
+                              stroke={LANE_COLORS[edge.fromCol % LANE_COLORS.length]}
+                              strokeWidth={1.5}
+                            />
+                          ))}
+                          <circle
+                            cx={colX(row?.col ?? 0)}
+                            cy={14}
+                            r={4}
+                            fill={selectedOid === c.oid ? 'var(--ty-matcha)' : 'var(--ty-surface)'}
+                            stroke={LANE_COLORS[(row?.col ?? 0) % LANE_COLORS.length]}
+                            strokeWidth={1.5}
+                          />
+                        </svg>
+                        <code
+                          className="mini-hash"
+                          onClick={e => {
+                            e.stopPropagation();
+                            copyHash(c.oid);
+                          }}
+                          title="点击复制 Commit SHA"
+                        >
+                          {c.shortOid}
+                          {copiedHash === c.oid && ' ✓'}
+                        </code>
+                        <span className="commit-msg git-log-summary">{c.summary}</span>
+                        {c.refs.length > 0 && (
+                          <span className="git-log-refs">
+                            {c.refs.map(r => (
+                              <span key={`${r.kind}:${r.name}`} className={`ref-badge ref-badge-${r.kind}`}>
+                                {r.name}
+                              </span>
+                            ))}
+                          </span>
+                        )}
+                        <span className="commit-meta">
+                          <span className="commit-author">{c.authorName}</span>
+                          <span className="commit-time">
+                            <Clock size={11} />
+                            {relativeCommitTime(c.timestamp)}
+                          </span>
+                        </span>
+                      </div>
+                    );
+                  })}
+                  {historyHasMore && (
+                    <button
+                      type="button"
+                      className="text-button-sm git-log-more"
+                      onClick={() => void loadHistory(true)}
+                      disabled={loadingHistory}
+                    >
+                      {loadingHistory ? '加载中…' : '加载更多'}
+                    </button>
+                  )}
+                </div>
+                <div className="git-log-detail">
+                  {!selectedOid ? (
+                    <div className="files-empty-hint">点击左侧任意提交，查看作者信息、改动文件与 Diff。</div>
+                  ) : loadingDetails ? (
+                    <div className="diff-viewer-header">
+                      <span>读取提交详情…</span>
+                      <LoaderCircle size={13} className="spin" />
+                    </div>
+                  ) : commitDetails ? (
+                    <>
+                      <div className="git-log-detail-head">
+                        <code
+                          className="mini-hash"
+                          onClick={() => copyHash(commitDetails.oid)}
+                          title="点击复制完整 Commit SHA"
+                        >
+                          {commitDetails.oid}
+                          {copiedHash === commitDetails.oid && ' ✓'}
+                        </code>
+                        <span className="meta">
+                          {commitDetails.authorName} &lt;{commitDetails.authorEmail}&gt; ·{' '}
+                          {relativeCommitTime(commitDetails.authorTimestamp)}
+                        </span>
+                        {commitDetails.parents.length > 0 && (
+                          <span className="meta">父提交：{commitDetails.parents.map(p => p.slice(0, 7)).join(', ')}</span>
+                        )}
+                      </div>
+                      <pre className="git-log-message">{commitDetails.message}</pre>
+                      <div className="git-log-files-list">
+                        {commitDetails.files.map(f => (
+                          <div
+                            key={f.path}
+                            className={`changed-file-row ${selectedCommitFile === f.path ? 'selected' : ''}`}
+                            onClick={() =>
+                              void loadCommitFileDiff(
+                                commitDetails.oid,
+                                f.path,
+                                f.oldPath,
+                              )
+                            }
+                          >
+                            <span
+                              className={`status-tag ${
+                                f.status === 'A'
+                                  ? 'status-added'
+                                  : f.status === 'D'
+                                    ? 'status-deleted'
+                                    : 'status-modified'
+                              }`}
+                            >
+                              {f.status}
+                            </span>
+                            <span className="file-path" title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}>
+                              {f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="diff-viewer-card git-log-diff-card">
+                        <div className="diff-viewer-header">
+                          <span>提交内差异：{selectedCommitFile ?? '选择左侧文件'}</span>
+                          {loadingCommitDiff && <LoaderCircle size={13} className="spin" />}
+                        </div>
+                        <div className="diff-code-area">
+                          {(commitFileDiff || '(未选择文件)').split('\n').map((line, idx) =>
+                            renderDiffLine(line, idx),
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="files-empty-hint">未能读取该提交的详情。</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Recent Commits Activity */}
           {commits.length > 0 && (

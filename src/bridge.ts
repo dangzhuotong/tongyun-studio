@@ -1,5 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import type { Project, Workspace, ProjectInspection, FileEntry, GitFileChange, ExecutionResult, HttpResponse, SqlQueryResult, DbTableInfo, DbColumnInfo, PaginatedData, ListeningPort, AiProjectContext, ManagedService, AgentSessionState, DevScanReport, DevCandidate, DevImportResult, AgentHttpInfo } from './contracts';
+import type { Project, Workspace, ProjectInspection, FileEntry, GitFileChange, GitHistoryResult, GitCommitDetails, ExecutionResult, HttpResponse, SqlQueryResult, DbTableInfo, DbColumnInfo, PaginatedData, ListeningPort, AiProjectContext, ManagedService, AgentSessionState, DevScanReport, DevCandidate, DevImportResult, AgentHttpInfo } from './contracts';
 
 export const isDesktop = isTauri();
 function native<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -17,6 +17,11 @@ export const readProjectTree = (id: string, relativeDir?: string) => native<File
 export const readProjectFileContent = (id: string, relativePath: string) => native<string>('read_project_file_content', { id, relativePath });
 export const getGitChangedFiles = (id: string) => native<GitFileChange[]>('get_git_changed_files', { id });
 export const getGitDiff = (id: string, filePath?: string) => native<string>('get_git_diff', { id, filePath: filePath ?? null });
+export const getGitHistory = (id: string, skip?: number, limit?: number, allBranches?: boolean) =>
+  native<GitHistoryResult>('get_git_history', { id, skip: skip ?? null, limit: limit ?? null, allBranches: allBranches ?? null });
+export const getGitCommitDetails = (id: string, oid: string) => native<GitCommitDetails>('get_git_commit_details', { id, oid });
+export const getGitCommitFileDiff = (id: string, oid: string, filePath: string, oldPath?: string | null) =>
+  native<string>('get_git_commit_file_diff', { id, oid, filePath, oldPath: oldPath ?? null });
 export const createGitCommit = (id: string, message: string) => native<string>('create_git_commit', { id, message });
 export const gitCommitAmend = (id: string, message?: string) => native<string>('git_commit_amend', { id, message: message ?? null });
 export const gitStageFile = (id: string, path: string) => native<string>('git_stage_file', { id, path });
