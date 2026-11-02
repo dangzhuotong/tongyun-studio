@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import type { Project, ProjectInspection, GitFileChange, GitLogCommit, GitCommitDetails, AgentSessionState } from '../contracts';
+import type { Project, ProjectInspection, GitFileChange, GitLogCommit, GitCommitDetails, GitStashEntry, AgentSessionState } from '../contracts';
 import {
   getGitBranches,
   getGitChangedFiles,
@@ -17,11 +17,19 @@ import {
   gitDiscardFile,
   gitCreateBranch,
   gitRemoteSync,
+  gitStashList,
+  gitStashPush,
+  gitStashApply,
+  gitStashPop,
+  gitStashDrop,
 } from '../bridge';
 import { computeGitGraphRows, relativeCommitTime } from './gitGraph';
+import Modal from '../components/Modal';
+import { parseDiff, splitHunks, diffStats, formatStats, type ParsedDiffLine } from './diffParser';
 
 const LANE_COLORS = ['#4d7c5d', '#3e6f9e', '#c2593f', '#8b6e3c'];
 import {
+  Archive,
   Bot,
   Clock,
   DownloadCloud,
@@ -34,7 +42,17 @@ import {
   Sparkles,
   Undo2,
   UploadCloud,
+  X,
 } from '../components/Icons';
+
+interface PendingConfirm {
+  title: string;
+  description: string;
+  tip: string;
+  detail: string;
+  confirmLabel: string;
+  run: () => Promise<void>;
+}
 
 export default function GitPanel({
   project,
@@ -155,6 +173,14 @@ export default function GitPanel({
     if (project && isRepo && view === 'log') void loadHistory(false);
   }, [project?.id, view, allBranches, isRepo]);
 
+  const [stashOpen, setStashOpen] = useState(false);
+  const [stashEntries, setStashEntries] = useState<GitStashEntry[]>([]);
+  const [stashMessage, setStashMessage] = useState('');
+  const [stashUntracked, setStashUntracked] = useState(true);
+  const [stashBusy, setStashBusy] = useState<'push' | 'list' | null>(null);
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
+
   const agentGitActions = (session?.actions ?? []).filter(a => a.kind === 'git' || a.kind === 'edit');
 
   const loadGitState = async () => {
@@ -184,9 +210,74 @@ export default function GitPanel({
   useEffect(() => {
     if (project && isRepo) {
       setCurrentBranch(git?.branch ?? 'main');
+      setStashEntries([]);
       void loadGitState();
     }
   }, [project?.id, isRepo, git?.branch]);
+
+  const loadStashList = async () => {
+    if (!project || !isRepo) return;
+    setStashBusy('list');
+    try {
+      setStashEntries(await gitStashList(project.id));
+    } catch (e) {
+      onNotify?.(`读取贮藏列表失败：${e}`);
+    } finally {
+      setStashBusy(null);
+    }
+  };
+
+  const handleToggleStash = () => {
+    const next = !stashOpen;
+    setStashOpen(next);
+    if (next) void loadStashList();
+  };
+
+  const runStashAction = async (action: () => Promise<string>, done: string) => {
+    if (!project || stashBusy) return;
+    try {
+      onNotify?.(`${done}：${await action()}`);
+      onRefresh?.();
+      void loadGitState();
+      void loadStashList();
+    } catch (err) {
+      onNotify?.(`${done}失败：${err}`);
+    }
+  };
+
+  const handleStashPush = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!project || !changedFiles.length) {
+      onNotify?.('工作区没有改动，无需贮藏');
+      return;
+    }
+    setStashBusy('push');
+    try {
+      const message = stashMessage.trim();
+      onNotify?.(await gitStashPush(project.id, message || undefined, stashUntracked));
+      setStashMessage('');
+      onRefresh?.();
+      void loadGitState();
+      void loadStashList();
+    } catch (err) {
+      onNotify?.(`贮藏失败：${err}`);
+    } finally {
+      setStashBusy(null);
+    }
+  };
+
+  const askConfirm = (confirm: PendingConfirm) => setPendingConfirm(confirm);
+
+  const handleConfirmRun = async () => {
+    if (!pendingConfirm) return;
+    setConfirmBusy(true);
+    try {
+      await pendingConfirm.run();
+      setPendingConfirm(null);
+    } finally {
+      setConfirmBusy(false);
+    }
+  };
 
   const loadDiff = async (filePath?: string) => {
     if (!project) return;
@@ -230,17 +321,21 @@ export default function GitPanel({
     }
   };
 
-  const handleDiscardFile = async (e: React.MouseEvent, path: string) => {
+  const handleDiscardFile = (e: React.MouseEvent, path: string) => {
     e.stopPropagation();
     if (!project) return;
-    if (!window.confirm(`确定要丢弃文件 ${path} 的所有修改吗？此操作无法撤销。`)) return;
-    try {
-      await gitDiscardFile(project.id, path);
-      onNotify?.(`已丢弃修改：${path}`);
-      void loadGitState();
-    } catch (err) {
-      onNotify?.(`丢弃修改失败：${err}`);
-    }
+    askConfirm({
+      title: '丢弃文件修改',
+      description: `确定要丢弃 ${path} 的全部修改吗？`,
+      tip: '未跟踪文件会被删除，已跟踪文件会回到 HEAD 版本，此操作无法通过工作台撤销。',
+      detail: path,
+      confirmLabel: '确认丢弃',
+      run: async () => {
+        await gitDiscardFile(project.id, path);
+        onNotify?.(`已丢弃修改：${path}`);
+        void loadGitState();
+      },
+    });
   };
 
   const handleStageAll = async () => {
@@ -383,6 +478,27 @@ export default function GitPanel({
     );
   };
 
+  const diffKindClass: Record<ParsedDiffLine['kind'], string> = {
+    context: 'diff-line-context',
+    add: 'diff-line-add',
+    delete: 'diff-line-del',
+    hunk: 'diff-line-hunk',
+    file: 'diff-line-file',
+    meta: 'diff-line-file',
+  };
+
+  const renderParsedLine = (line: ParsedDiffLine, key: string) => (
+    <div key={key} className={`diff-line diff-gutter-row ${diffKindClass[line.kind]}`}>
+      <span className="diff-ln">{line.oldLine ?? ''}</span>
+      <span className="diff-ln">{line.newLine ?? ''}</span>
+      <span className="diff-line-content">{line.text}</span>
+    </div>
+  );
+
+  const parsedLines = parseDiff(diffText);
+  const hunkBlocks = splitHunks(parsedLines);
+  const totalStats = diffStats(parsedLines);
+
   return (
     <div className="feature-panel-layout" aria-labelledby="git-title">
       <div className="workbench-header">
@@ -494,6 +610,19 @@ export default function GitPanel({
                 </button>
               </div>
 
+              <div className="stash-toggle-group">
+                <button
+                  className="git-sync-btn"
+                  onClick={handleToggleStash}
+                  title="查看与管理贮藏 (Stash)"
+                  aria-expanded={stashOpen}
+                >
+                  <Archive size={12} />
+                  Stash 贮藏
+                  {stashEntries.length > 0 && <span className="stash-count">{stashEntries.length}</span>}
+                </button>
+              </div>
+
               <span className="badge-changes">
                 {stagedFiles.length} 暂存 / {unstagedFiles.length} 未暂存
               </span>
@@ -521,6 +650,110 @@ export default function GitPanel({
               提交历史 (Log Tree)
             </button>
           </div>
+
+          {/* Stash Manager */}
+          {stashOpen && (
+            <div className="panel-subcard stash-subcard">
+              <div className="section-heading">
+                <div className="subcard-title">
+                  <Archive size={15} className="accent-color" />
+                  <h3>贮藏管理 (Stash)</h3>
+                  <span className="mini-badge-accent">{stashEntries.length} 条</span>
+                </div>
+                <div className="stash-heading-actions">
+                  <button className="text-button-xs" onClick={() => void loadStashList()} disabled={stashBusy === 'list'}>
+                    刷新
+                  </button>
+                  <button className="text-button-xs" onClick={() => setStashOpen(false)} aria-label="关闭贮藏面板">
+                    <X size={12} />
+                  </button>
+                </div>
+              </div>
+
+              <form onSubmit={handleStashPush} className="stash-push-form">
+                <input
+                  className="modal-input"
+                  placeholder="贮藏备注（可留空，默认「橦云工作台贮藏」）"
+                  value={stashMessage}
+                  onChange={e => setStashMessage(e.target.value)}
+                  disabled={stashBusy === 'push'}
+                />
+                <label className="amend-checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={stashUntracked}
+                    onChange={e => setStashUntracked(e.target.checked)}
+                  />
+                  <span>包含未跟踪文件 (--include-untracked)</span>
+                </label>
+                <button
+                  type="submit"
+                  className="primary-button-sm"
+                  disabled={stashBusy === 'push' || changedFiles.length === 0}
+                >
+                  {stashBusy === 'push' ? <LoaderCircle size={13} className="spin" /> : <Archive size={13} />}
+                  <span>{stashBusy === 'push' ? '贮藏中…' : '贮藏当前改动'}</span>
+                </button>
+              </form>
+
+              <div className="stash-list">
+                {stashBusy === 'list' ? (
+                  <div className="files-empty-hint">正在读取贮藏列表…</div>
+                ) : stashEntries.length === 0 ? (
+                  <div className="files-empty-hint">暂无贮藏记录</div>
+                ) : (
+                  stashEntries.map(entry => {
+                    if (!project) return null;
+                    return (
+                      <div key={entry.reference} className="stash-row">
+                        <code className="stash-ref">{entry.reference}</code>
+                        <div className="stash-meta">
+                          <span className="stash-msg" title={entry.message}>{entry.message}</span>
+                          <span className="mono-subtle">{entry.date}</span>
+                        </div>
+                        <div className="stash-actions">
+                          <button
+                            className="file-action-icon-btn"
+                            onClick={() => void runStashAction(() => gitStashApply(project.id, entry.index), '应用贮藏')}
+                            disabled={!!stashBusy}
+                            title="Apply（保留贮藏条目）"
+                          >
+                            Apply
+                          </button>
+                          <button
+                            className="file-action-icon-btn"
+                            onClick={() => void runStashAction(() => gitStashPop(project.id, entry.index), '弹出贮藏')}
+                            disabled={!!stashBusy}
+                            title="Pop（恢复并删除条目）"
+                          >
+                            Pop
+                          </button>
+                          <button
+                            className="file-action-icon-btn danger"
+                            onClick={() => askConfirm({
+                              title: '删除贮藏条目',
+                              description: `确定要删除 ${entry.reference} 吗？`,
+                              tip: '删除后该贮藏内容无法从工作台找回，请确认已不需要这些改动。',
+                              detail: entry.message,
+                              confirmLabel: '确认删除',
+                              run: async () => {
+                                onNotify?.(await gitStashDrop(project.id, entry.index));
+                                void loadStashList();
+                              },
+                            })}
+                            disabled={!!stashBusy}
+                            title="Drop（丢弃贮藏）"
+                          >
+                            Drop
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          )}
 
           {agentGitActions.length > 0 && (
             <div className="panel-subcard agent-subcard" style={{ marginBottom: 12 }}>
@@ -735,11 +968,28 @@ export default function GitPanel({
               <div className="diff-viewer-card">
                 <div className="diff-viewer-header">
                   <span>差异对比：{selectedFile ? selectedFile : '工作区所有文件'}</span>
-                  {loadingDiff && <LoaderCircle size={13} className="spin" />}
+                  <span className="diff-header-right">
+                    {hunkBlocks.length > 0 && (
+                      <span className="diff-total-stats">{formatStats(totalStats)}</span>
+                    )}
+                    {loadingDiff && <LoaderCircle size={13} className="spin" />}
+                  </span>
                 </div>
-                <div className="diff-code-area">
-                  {diffText.split('\n').map((line, idx) =>
-                    renderDiffLine(line, idx),
+                <div className="diff-code-area diff-gutter-grid">
+                  {hunkBlocks.length > 0 ? (
+                    hunkBlocks.map((block, blockIndex) => (
+                      <div key={`hunk:${blockIndex}`} className="diff-hunk-block">
+                        <div className="diff-hunk-header">
+                          <span className="diff-hunk-range">{block[0]?.text ?? ''}</span>
+                          <span className="diff-hunk-stats">{formatStats(diffStats(block))}</span>
+                        </div>
+                        {block.slice(1).map((line, lineIndex) =>
+                          renderParsedLine(line, `h${blockIndex}:${lineIndex}`),
+                        )}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="diff-plain-message">{diffText || '(该文件暂无文本差异)'}</div>
                   )}
                 </div>
               </div>
@@ -995,6 +1245,39 @@ export default function GitPanel({
             </section>
           )}
         </>
+      )}
+
+      {pendingConfirm && (
+        <Modal
+          title={pendingConfirm.title}
+          onClose={() => setPendingConfirm(null)}
+          busy={confirmBusy}
+        >
+          <div className="confirm-content">
+            <p className="modal-description">{pendingConfirm.description}</p>
+            <p className="confirm-tip">{pendingConfirm.tip}</p>
+            <code className="confirm-path">{pendingConfirm.detail}</code>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setPendingConfirm(null)}
+                disabled={confirmBusy}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="danger-button"
+                onClick={() => void handleConfirmRun()}
+                disabled={confirmBusy}
+              >
+                {confirmBusy ? <LoaderCircle size={13} className="spin" /> : null}
+                <span>{pendingConfirm.confirmLabel}</span>
+              </button>
+            </div>
+          </div>
+        </Modal>
       )}
     </div>
   );

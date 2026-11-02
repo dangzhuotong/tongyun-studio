@@ -281,6 +281,56 @@ fn switch_git_branch(
 }
 
 #[tauri::command]
+fn git_stash_list(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<Vec<studio_core::GitStashEntry>, String> {
+    let project = state.store.project(&id)?;
+    studio_core::git_stash_list(&project)
+}
+
+#[tauri::command]
+fn git_stash_push(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    message: Option<String>,
+    include_untracked: bool,
+) -> Result<String, String> {
+    let project = state.store.project(&id)?;
+    studio_core::git_stash_push(&project, message.as_deref(), include_untracked)
+}
+
+#[tauri::command]
+fn git_stash_apply(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    index: usize,
+) -> Result<String, String> {
+    let project = state.store.project(&id)?;
+    studio_core::git_stash_apply(&project, index)
+}
+
+#[tauri::command]
+fn git_stash_pop(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    index: usize,
+) -> Result<String, String> {
+    let project = state.store.project(&id)?;
+    studio_core::git_stash_pop(&project, index)
+}
+
+#[tauri::command]
+fn git_stash_drop(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    index: usize,
+) -> Result<String, String> {
+    let project = state.store.project(&id)?;
+    studio_core::git_stash_drop(&project, index)
+}
+
+#[tauri::command]
 fn execute_project_script(
     state: tauri::State<'_, AppState>,
     id: String,
@@ -624,6 +674,11 @@ pub fn run() {
             git_remote_sync,
             get_git_branches,
             switch_git_branch,
+            git_stash_list,
+            git_stash_push,
+            git_stash_apply,
+            git_stash_pop,
+            git_stash_drop,
             execute_project_script,
             send_http_request,
             execute_sql_query,

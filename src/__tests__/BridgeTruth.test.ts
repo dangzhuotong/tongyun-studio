@@ -15,6 +15,8 @@ describe('browser preview never invents local results', () => {
       () => bridge.gitUnstageAll('p'), () => bridge.gitDiscardFile('p', 'file'),
       () => bridge.gitCreateBranch('p', 'new'), () => bridge.gitRemoteSync('p', 'push'),
       () => bridge.getGitBranches('p'), () => bridge.switchGitBranch('p', 'main'),
+      () => bridge.gitStashList('p'), () => bridge.gitStashPush('p', 'note', true),
+      () => bridge.gitStashApply('p', 0), () => bridge.gitStashPop('p', 0), () => bridge.gitStashDrop('p', 0),
       () => bridge.executeProjectScript('p', 'command'),
       () => bridge.sendHttpRequest('GET', 'https://example.invalid', []),
       () => bridge.executeSqlQuery('p', 'db', 'SELECT 1'), () => bridge.getDbTables('p', 'db'),

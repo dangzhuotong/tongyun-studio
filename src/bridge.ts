@@ -1,5 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import type { Project, Workspace, ProjectInspection, FileEntry, GitFileChange, GitHistoryResult, GitCommitDetails, ExecutionResult, HttpResponse, SqlQueryResult, DbTableInfo, DbColumnInfo, PaginatedData, ListeningPort, AiProjectContext, ManagedService, AgentSessionState, DevScanReport, DevCandidate, DevImportResult, AgentHttpInfo, DiagnosticReport } from './contracts';
+import type { Project, Workspace, ProjectInspection, FileEntry, GitFileChange, GitHistoryResult, GitCommitDetails, GitStashEntry, ExecutionResult, HttpResponse, SqlQueryResult, DbTableInfo, DbColumnInfo, PaginatedData, ListeningPort, AiProjectContext, ManagedService, AgentSessionState, DevScanReport, DevCandidate, DevImportResult, AgentHttpInfo, DiagnosticReport } from './contracts';
 
 export const isDesktop = isTauri();
 function native<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -33,6 +33,11 @@ export const gitCreateBranch = (id: string, branchName: string) => native<string
 export const gitRemoteSync = (id: string, action: 'fetch' | 'pull' | 'push') => native<string>('git_remote_sync', { id, action });
 export const getGitBranches = (id: string) => native<string[]>('get_git_branches', { id });
 export const switchGitBranch = (id: string, branch: string) => native<string>('switch_git_branch', { id, branch });
+export const gitStashList = (id: string) => native<GitStashEntry[]>('git_stash_list', { id });
+export const gitStashPush = (id: string, message?: string, includeUntracked = false) => native<string>('git_stash_push', { id, message: message ?? null, includeUntracked });
+export const gitStashApply = (id: string, index: number) => native<string>('git_stash_apply', { id, index });
+export const gitStashPop = (id: string, index: number) => native<string>('git_stash_pop', { id, index });
+export const gitStashDrop = (id: string, index: number) => native<string>('git_stash_drop', { id, index });
 export const executeProjectScript = (id: string, command: string) => native<ExecutionResult>('execute_project_script', { id, command });
 export const sendHttpRequest = (method: string, url: string, headers: [string, string][], body?: string) => native<HttpResponse>('send_http_request', { method, url, headers, body: body ?? null });
 export const executeSqlQuery = (id: string, dbPath: string, sql: string) => native<SqlQueryResult>('execute_sql_query', { id, dbPath, sql });

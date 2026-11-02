@@ -1,6 +1,7 @@
 import {
   Activity,
   ArrowUpRight,
+  Archive,
   Bot,
   Box,
   Check,
@@ -68,6 +69,7 @@ export {
   PanelRight as PanelRightOpen,
   Activity,
   ArrowUpRight,
+  Archive,
   Bot,
   Box,
   Check,
