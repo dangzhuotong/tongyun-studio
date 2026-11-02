@@ -488,6 +488,7 @@ pub struct DbColumnInfo {
     pub not_null: bool,
     pub dflt_value: Option<String>,
     pub pk: bool,
+    pub pk_position: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -498,6 +499,31 @@ pub struct PaginatedData {
     pub total_rows: usize,
     pub page: usize,
     pub page_size: usize,
+    pub sort_by: Option<String>,
+    pub sort_dir: String,
+    pub key_column: Option<String>,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnChange {
+    pub column: String,
+    pub old_value: String,
+    pub new_value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RowChangePlan {
+    pub table: String,
+    pub forward_sql: String,
+    pub forward_parameters: Vec<Option<String>>,
+    pub rollback_sql: String,
+    pub rollback_parameters: Vec<Option<String>>,
+    pub key_predicate: String,
+    pub changed_columns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2055,7 +2081,8 @@ pub fn get_table_columns(
             } else {
                 Some(row[4].clone())
             };
-            let pk = row[5] == "1";
+            let pk_position = row[5].parse::<i64>().unwrap_or(0);
+            let pk = pk_position > 0;
             columns.push(DbColumnInfo {
                 cid,
                 name,
@@ -2063,6 +2090,7 @@ pub fn get_table_columns(
                 not_null,
                 dflt_value,
                 pk,
+                pk_position,
             });
         }
     }
@@ -2075,16 +2103,30 @@ pub fn get_table_data(
     table_name: &str,
     page: usize,
     page_size: usize,
+    sort_by: Option<&str>,
+    sort_dir: Option<&str>,
+    cursor: Option<&str>,
 ) -> Result<PaginatedData> {
-    if !table_name
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-    {
+    if !is_safe_object_name(table_name) {
         return Err("表名包含非法字符".into());
     }
     let page = page.max(1);
     let page_size = page_size.clamp(1, 200);
-    let offset = (page - 1) * page_size;
+    let columns = get_table_columns(project, db_path, table_name)?;
+    let descending = sort_dir
+        .map(|dir| dir.eq_ignore_ascii_case("desc"))
+        .unwrap_or(false);
+    let sort_column = match sort_by {
+        None => None,
+        Some(requested) => Some(
+            columns
+                .iter()
+                .find(|column| column.name.eq_ignore_ascii_case(requested))
+                .ok_or_else(|| format!("排序列不存在：{requested}"))?
+                .name
+                .clone(),
+        ),
+    };
 
     let count_sql = format!("SELECT count(*) FROM \"{table_name}\";");
     let count_res = execute_sql_query(project, db_path, &count_sql)?;
@@ -2094,15 +2136,79 @@ pub fn get_table_data(
     let total_rows = count_res
         .rows
         .first()
-        .and_then(|r| r.first())
-        .and_then(|v| v.parse::<usize>().ok())
+        .and_then(|row| row.first())
+        .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(0);
 
-    let data_sql = format!("SELECT * FROM \"{table_name}\" LIMIT {page_size} OFFSET {offset};");
+    // Keyset paging only when the table has exactly one primary key column and the
+    // ordering is that column; anything else (composite key, view, other sort) uses OFFSET.
+    let mut pk_columns: Vec<&DbColumnInfo> = columns.iter().filter(|column| column.pk).collect();
+    pk_columns.sort_by_key(|column| column.pk_position);
+    let key_column = if pk_columns.len() == 1 {
+        let key = &pk_columns[0];
+        let ordered_by_key = sort_column
+            .as_deref()
+            .map_or(true, |sort| sort.eq_ignore_ascii_case(&key.name));
+        if ordered_by_key {
+            Some(key.clone())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let order_column = sort_column
+        .clone()
+        .or_else(|| key_column.as_ref().map(|key| key.name.clone()));
+    // A page jump without a cursor cannot use keyset, so only a supplied cursor switches modes.
+    let active_cursor = key_column
+        .as_ref()
+        .zip(cursor.filter(|value| !value.trim().is_empty()))
+        .map(|(key, value)| (key.name.clone(), key.data_type.clone(), value.trim().to_owned()));
+    let mut data_sql = format!("SELECT * FROM \"{table_name}\"");
+    if let Some((key_name, key_type, value)) = &active_cursor {
+        let operator = if descending { "<" } else { ">" };
+        let literal = keyset_cursor_literal(key_type, value)?;
+        data_sql.push_str(&format!(" WHERE \"{key_name}\" {operator} {literal}"));
+    }
+    if let Some(order) = &order_column {
+        data_sql.push_str(&format!(
+            " ORDER BY \"{order}\" {}",
+            if descending { "DESC" } else { "ASC" }
+        ));
+    }
+    if active_cursor.is_none() {
+        data_sql.push_str(&format!(
+            " LIMIT {page_size} OFFSET {}",
+            (page - 1) * page_size
+        ));
+    } else {
+        data_sql.push_str(&format!(" LIMIT {page_size}"));
+    }
+    data_sql.push(';');
+
     let data_res = execute_sql_query(project, db_path, &data_sql)?;
     if let Some(err) = data_res.error {
         return Err(err);
     }
+
+    let mut next_cursor = None;
+    if let Some(key) = key_column.as_ref() {
+        if let Some(index) = data_res
+            .columns
+            .iter()
+            .position(|name| name.eq_ignore_ascii_case(&key.name))
+        {
+            if let Some(last_row) = data_res.rows.last() {
+                let value = &last_row[index];
+                if value != "NULL" {
+                    next_cursor = Some(value.clone());
+                }
+            }
+        }
+    }
+    let has_more = data_res.rows.len() == page_size && page * page_size < total_rows;
 
     Ok(PaginatedData {
         columns: data_res.columns,
@@ -2110,6 +2216,127 @@ pub fn get_table_data(
         total_rows,
         page,
         page_size,
+        sort_by: order_column,
+        sort_dir: if descending { "desc".into() } else { "asc".into() },
+        key_column: key_column.as_ref().map(|key| key.name.clone()),
+        next_cursor,
+        has_more,
+    })
+}
+
+pub fn plan_table_row_change(
+    project: &Project,
+    db_path: &str,
+    table_name: &str,
+    key_values: &[String],
+    changes: &[ColumnChange],
+) -> Result<RowChangePlan> {
+    let columns = get_table_columns(project, db_path, table_name)?;
+    plan_row_change(table_name, &columns, key_values, changes)
+}
+
+fn is_safe_object_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|character| character.is_alphanumeric() || character == '_' || character == '-')
+}
+
+/// SQLite has no backslash escapes, so doubling the quote is the only escape a literal needs.
+fn sql_string_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+/// The data grid renders a SQL NULL as the "NULL" sentinel, so bind it back as a real NULL.
+fn grid_value_to_parameter(raw: &str) -> Option<String> {
+    (raw != "NULL").then(|| raw.to_owned())
+}
+
+fn keyset_cursor_literal(data_type: &str, cursor: &str) -> Result<String> {
+    if data_type.to_ascii_uppercase().contains("INT") {
+        cursor
+            .trim()
+            .parse::<i64>()
+            .map(|value| value.to_string())
+            .map_err(|_| "游标不是合法的主键整数，请回到第一页重新翻页".into())
+    } else {
+        Ok(sql_string_literal(cursor.trim()))
+    }
+}
+
+pub fn plan_row_change(
+    table_name: &str,
+    columns: &[DbColumnInfo],
+    key_values: &[String],
+    changes: &[ColumnChange],
+) -> Result<RowChangePlan> {
+    if !is_safe_object_name(table_name) {
+        return Err("表名包含非法字符".into());
+    }
+    let pk_columns: Vec<&DbColumnInfo> = columns.iter().filter(|column| column.pk).collect();
+    if pk_columns.is_empty() {
+        return Err("该表没有主键，无法生成可回滚的单行变更".into());
+    }
+    if pk_columns.len() > 1 {
+        return Err("复合主键表暂不生成单行变更，请在 SQL 控制台手写并自行备份".into());
+    }
+    if key_values.len() != 1 {
+        return Err("主键值数量与表结构不一致".into());
+    }
+    if changes.is_empty() {
+        return Err("没有需要修改的字段".into());
+    }
+
+    let key = pk_columns[0];
+    let key_literal = keyset_cursor_literal(&key.data_type, &key_values[0])
+        .unwrap_or_else(|_| sql_string_literal(&key_values[0]));
+    let predicate = format!("\"{}\" = {key_literal}", key.name);
+
+    let mut seen: Vec<&str> = Vec::new();
+    let mut set_clauses: Vec<String> = Vec::new();
+    let mut rollback_clauses: Vec<String> = Vec::new();
+    let mut forward_parameters = Vec::new();
+    let mut rollback_parameters = Vec::new();
+    let mut changed_columns = Vec::new();
+
+    for change in changes {
+        if change.column == key.name {
+            return Err("主键列不参与单行变更".into());
+        }
+        if seen.contains(&change.column.as_str()) {
+            return Err(format!("字段重复：{}", change.column));
+        }
+        if !columns.iter().any(|column| column.name == change.column) {
+            return Err(format!("字段不存在：{}", change.column));
+        }
+        if change.old_value == change.new_value {
+            continue;
+        }
+        seen.push(change.column.as_str());
+        set_clauses.push(format!("\"{}\" = ?", change.column));
+        rollback_clauses.push(format!("\"{}\" = ?", change.column));
+        forward_parameters.push(grid_value_to_parameter(&change.new_value));
+        rollback_parameters.push(grid_value_to_parameter(&change.old_value));
+        changed_columns.push(change.column.clone());
+    }
+    if changed_columns.is_empty() {
+        return Err("修改值与原值一致，无需变更".into());
+    }
+
+    Ok(RowChangePlan {
+        table: table_name.into(),
+        forward_sql: format!(
+            "UPDATE \"{table_name}\" SET {} WHERE {predicate};",
+            set_clauses.join(", ")
+        ),
+        forward_parameters,
+        rollback_sql: format!(
+            "UPDATE \"{table_name}\" SET {} WHERE {predicate};",
+            rollback_clauses.join(", ")
+        ),
+        rollback_parameters,
+        key_predicate: predicate,
+        changed_columns,
     })
 }
 

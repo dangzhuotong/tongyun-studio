@@ -6115,3 +6115,215 @@ body, html {
   margin: 0;
   color: var(--text-primary);
 }
+
+/* Database workbench: query tabs, keyset grid, change control */
+.query-tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 10px;
+}
+
+.query-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: var(--ty-radius-sm) var(--ty-radius-sm) 0 0;
+  background: var(--sunken);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.query-tab.active {
+  background: var(--card);
+  border-bottom: 1px solid var(--card);
+  color: var(--accent);
+  font-weight: 600;
+  margin-bottom: -1px;
+}
+
+.query-tab-name {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.query-tab-meta {
+  color: var(--text-meta);
+  font-size: 10.5px;
+}
+
+.query-tab-rename {
+  width: 110px;
+  font-size: 11.5px;
+  padding: 2px 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--ty-radius-sm);
+  background: var(--card);
+  color: var(--text-primary);
+}
+
+.query-tab-close,
+.query-tab-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: none;
+  border-radius: var(--ty-radius-sm);
+  color: var(--text-meta);
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.query-tab-add {
+  color: var(--accent);
+  border: 1px dashed var(--border-strong);
+  font-size: 11.5px;
+  padding: 4px 8px;
+}
+
+.query-tab-close:hover,
+.query-tab-add:hover {
+  background: var(--card-hover);
+  color: var(--accent-hover);
+}
+
+.page-size-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.page-size-select {
+  font-size: 11.5px;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--ty-radius-sm);
+  background: var(--card);
+  color: var(--text-primary);
+}
+
+.enterprise-data-table.auto-column-width {
+  table-layout: auto;
+  width: max-content;
+  min-width: 100%;
+}
+
+.enterprise-data-table.auto-column-width th,
+.enterprise-data-table.auto-column-width td {
+  white-space: nowrap;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sort-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.sort-header.sorting,
+.sort-header:hover {
+  color: var(--accent);
+}
+
+.sort-arrow {
+  font-size: 10px;
+  color: var(--accent);
+}
+
+.row-action-col,
+.row-action-cell {
+  position: sticky;
+  right: 0;
+  background: var(--card);
+  width: 132px;
+}
+
+thead .row-action-col {
+  background: var(--sunken);
+}
+
+.cell-edit-input {
+  width: 100%;
+  min-width: 90px;
+  font-size: 11.5px;
+  padding: 2px 4px;
+  border: 1px solid var(--accent);
+  border-radius: var(--ty-radius-sm);
+  background: var(--card);
+  color: var(--text-primary);
+}
+
+.editing-row td {
+  background: var(--accent-tint);
+}
+
+.row-editor-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.change-control-card {
+  margin-top: 12px;
+}
+
+.change-plan-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.change-plan-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--ty-radius-sm);
+  padding: 8px;
+}
+
+.change-plan-sql {
+  font-size: 11.5px;
+  color: var(--text-primary);
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.change-plan-confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.change-plan-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.change-control-hint {
+  font-size: 11.5px;
+  color: var(--text-meta);
+  margin: 4px 0 0;
+}
