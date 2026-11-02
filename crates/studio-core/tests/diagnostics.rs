@@ -113,6 +113,135 @@ fn test_sanitize_text_keeps_ordinary_urls_and_flags() {
 }
 
 #[test]
+fn test_sanitize_env_map_redacts_credentials_inside_non_sensitive_values() {
+    // Reviewer repro: key names carrying no secret substring used to be cloned
+    // verbatim, so connection-string passwords landed in metadata.json in clear.
+    let mut env = BTreeMap::new();
+    env.insert(
+        "DATABASE_URL".to_string(),
+        "postgres://app:hunter2@db.internal:5432/main".to_string(),
+    );
+    env.insert(
+        "MONGO_URI".to_string(),
+        "mongodb://svc:MongoPass9@cluster0.mongodb.net/test".to_string(),
+    );
+    env.insert(
+        "REDIS_URL".to_string(),
+        "redis://:r3d1spass@cache.internal:6379/0".to_string(),
+    );
+    env.insert(
+        "BILLING_DSN".to_string(),
+        "mysql://billing:S3cr3tP@ss/db.internal:3306/pay".to_string(),
+    );
+    env.insert("PORT".to_string(), "3000".to_string());
+    env.insert("NODE_ENV".to_string(), "development".to_string());
+
+    let sanitized = sanitize_env_map(&env);
+    for secret in ["hunter2", "MongoPass9", "r3d1spass", "S3cr3tP"] {
+        assert!(
+            !sanitized.values().any(|v| v.contains(secret)),
+            "secret {secret} survived sanitize_env_map: {:?}",
+            sanitized
+        );
+    }
+    assert_eq!(sanitized.get("DATABASE_URL").unwrap(), "postgres://app:[REDACTED]@db.internal:5432/main");
+    assert_eq!(sanitized.get("PORT").unwrap(), "3000");
+    assert_eq!(sanitized.get("NODE_ENV").unwrap(), "development");
+}
+
+#[test]
+fn test_sanitize_env_map_runs_values_through_text_sanitizer() {
+    let mut env = BTreeMap::new();
+    env.insert(
+        "STARTUP_NOTE".to_string(),
+        "boot with token=leak_val_1 and AWS_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE".to_string(),
+    );
+    env.insert(
+        "SLACK_BOT".to_string(),
+        "xoxb-123456789012-abcdefghij".to_string(),
+    );
+
+    let sanitized = sanitize_env_map(&env);
+    assert!(
+        !sanitized.get("STARTUP_NOTE").unwrap().contains("leak_val_1"),
+        "{}",
+        sanitized.get("STARTUP_NOTE").unwrap()
+    );
+    assert!(
+        !sanitized.get("STARTUP_NOTE").unwrap().contains("AKIAIOSFODNN7EXAMPLE"),
+        "{}",
+        sanitized.get("STARTUP_NOTE").unwrap()
+    );
+    assert!(
+        !sanitized.get("SLACK_BOT").unwrap().contains("123456789012"),
+        "{}",
+        sanitized.get("SLACK_BOT").unwrap()
+    );
+    assert!(sanitized.get("STARTUP_NOTE").unwrap().contains("[REDACTED]"));
+}
+
+#[test]
+fn test_sanitize_text_covers_url_passwords_with_slash_and_at() {
+    let cases: &[(&str, &[&str])] = &[
+        ("restore from postgres://u:pa/ss@h/db", &["pa/ss"]),
+        ("restore from postgres://u:p@ss@h/db", &["p@ss", "ss@h"]),
+        (
+            "mysql --url mysql://root:s3cr/3t@x@h:3306/app",
+            &["s3cr/3t@x"],
+        ),
+    ];
+
+    for (input, secrets) in cases {
+        let sanitized = sanitize_text(input);
+        for secret in secrets.iter() {
+            assert!(
+                !sanitized.contains(secret),
+                "secret leaked: {input}\n      result: {sanitized}"
+            );
+        }
+        assert!(
+            sanitized.contains("[REDACTED]"),
+            "nothing redacted: {input}\n      result: {sanitized}"
+        );
+    }
+}
+
+#[test]
+fn test_sanitize_text_covers_space_separated_cli_flags_and_bare_tokens() {
+    let cases: &[(&str, &str)] = &[
+        ("mysql --password hunter2 --host 127.0.0.1", "hunter2"),
+        ("mysql -h h --passwd='q uoted' --port 3306", "q uoted"),
+        ("curl -H \"--token ghp_1234567890abcdefghijABCDEFGHIJKL\"", "ghp_1234567890abcdefghijABCDEFGHIJKL"),
+        ("AWS_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE loaded", "AKIAIOSFODNN7EXAMPLE"),
+        ("assuming ASIAIOSFODNN7EXAMPLE role", "ASIAIOSFODNN7EXAMPLE"),
+        (
+            "github_pat_11ABCDEFGH0IJKLMNOP_shortenedexamplevalue1234567890",
+            "github_pat_11ABCDEFGH0IJKLMNOP_shortenedexamplevalue1234567890",
+        ),
+        ("replying on xoxb-123456789012-abcdefghij", "xoxb-123456789012-abcdefghij"),
+    ];
+
+    for (input, secret) in cases {
+        let sanitized = sanitize_text(input);
+        assert!(
+            !sanitized.contains(secret),
+            "secret leaked: {input}\n      result: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("[REDACTED]"),
+            "nothing redacted: {input}\n      result: {sanitized}"
+        );
+    }
+}
+
+#[test]
+fn test_sanitize_text_keeps_urls_with_ports_and_plain_cli_flags() {
+    let benign = "jdbc:mysql://127.0.0.1:3306/app?user=root&limit=50 http://localhost:8080/ready npm run dev --port 3000 --host 127.0.0.1 --max-old-space-size 4096 git commit -m \"fix: token rotation docs\"";
+    let sanitized = sanitize_text(benign);
+    assert_eq!(sanitized, benign);
+}
+
+#[test]
 fn test_sanitize_project_and_dev_profile() {
     let mut env = BTreeMap::new();
     env.insert("PORT".to_string(), "8080".to_string());

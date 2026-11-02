@@ -46,7 +46,9 @@ pub fn sanitize_env_map(env: &BTreeMap<String, String>) -> BTreeMap<String, Stri
             if is_sensitive_key(k) {
                 (k.clone(), "[REDACTED]".to_string())
             } else {
-                (k.clone(), v.clone())
+                // Key-name matching alone misses credentials carried in values,
+                // e.g. DATABASE_URL=postgres://app:hunter2@db.internal:5432/main.
+                (k.clone(), sanitize_text(v))
             }
         })
         .collect()
@@ -56,17 +58,23 @@ static URL_CREDENTIAL_RE: OnceLock<Regex> = OnceLock::new();
 static BEARER_TOKEN_RE: OnceLock<Regex> = OnceLock::new();
 static BASIC_AUTH_RE: OnceLock<Regex> = OnceLock::new();
 static BARE_JWT_RE: OnceLock<Regex> = OnceLock::new();
+static PROVIDER_TOKEN_RE: OnceLock<Regex> = OnceLock::new();
 static CLI_SECRET_RE: OnceLock<Regex> = OnceLock::new();
 static KEY_VALUE_SECRET_RE: OnceLock<Regex> = OnceLock::new();
 
 /// Matches `scheme://user:password@` for any URL scheme, so database connection
 /// strings (postgres, mysql, redis, mongodb, ...) are covered as well as http(s).
-const URL_CREDENTIAL_PATTERN: &str = r"(?i)(\b[a-z][a-z0-9+.\-]{1,19}://[^:/\s@]*:)([^@\s/]+)(@)";
+/// The password span is deliberately greedy over non-space characters so it stops
+/// at the last `@` of the token: passwords containing `/` or `@`
+/// (`postgres://u:pa/ss@h/db`, `postgres://u:p@ss@h/db`) stay fully covered.
+const URL_CREDENTIAL_PATTERN: &str = r"(?i)(\b[a-z][a-z0-9+.\-]{1,19}://[^:/\s@]*:)([^\s@]*(?:@[^\s@]*)*)(@)";
 const BEARER_TOKEN_PATTERN: &str = r"(?i)(bearer\s+)[A-Za-z0-9\-._~+/]+=*";
 const BASIC_AUTH_PATTERN: &str = r"(?i)(authorization\s*[=:]\s*basic\s+)[A-Za-z0-9\-._~+/]+=*";
 const BARE_JWT_PATTERN: &str =
     r"(?i)\beyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{4,}";
-const CLI_SECRET_PATTERN: &str = r#"(?i)(--(?:x-)?(?:api-?)?(?:key|secret|password|passwd|pwd|token)\s*=\s*)("[^"]*"|'[^']*'|[^\s,;"'&]+)"#;
+/// Fixed-format credentials that appear in free text with no key name at all.
+const PROVIDER_TOKEN_PATTERN: &str = r"(?i)\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{16,}\b|\bgithub_pat_[A-Za-z0-9_]{16,}\b|\bxox[baprs]-[A-Za-z0-9-]{10,}\b";
+const CLI_SECRET_PATTERN: &str = r#"(?i)(--(?:x-)?(?:api-?)?(?:key|secret|password|passwd|pwd|token)(?:\s*=\s*|\s+))("[^"]*"|'[^']*'|[^\s,;"'&]+)"#;
 const KEY_VALUE_SECRET_PATTERN: &str = r#"(?i)("?(?:password|passwd|pwd|secret|token|api[-_]?key|access[-_]?token|refresh[-_]?token|private[-_]?key|credential)"?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;"'&]+)"#;
 
 pub fn sanitize_text(text: &str) -> String {
@@ -74,6 +82,7 @@ pub fn sanitize_text(text: &str) -> String {
     let bearer_re = BEARER_TOKEN_RE.get_or_init(|| Regex::new(BEARER_TOKEN_PATTERN).unwrap());
     let basic_re = BASIC_AUTH_RE.get_or_init(|| Regex::new(BASIC_AUTH_PATTERN).unwrap());
     let jwt_re = BARE_JWT_RE.get_or_init(|| Regex::new(BARE_JWT_PATTERN).unwrap());
+    let provider_re = PROVIDER_TOKEN_RE.get_or_init(|| Regex::new(PROVIDER_TOKEN_PATTERN).unwrap());
     let cli_re = CLI_SECRET_RE.get_or_init(|| Regex::new(CLI_SECRET_PATTERN).unwrap());
     let kv_re = KEY_VALUE_SECRET_RE.get_or_init(|| Regex::new(KEY_VALUE_SECRET_PATTERN).unwrap());
 
@@ -81,9 +90,10 @@ pub fn sanitize_text(text: &str) -> String {
     let s2 = bearer_re.replace_all(&s1, "${1}[REDACTED]");
     let s3 = basic_re.replace_all(&s2, "${1}[REDACTED]");
     let s4 = jwt_re.replace_all(&s3, "[REDACTED]");
-    let s5 = cli_re.replace_all(&s4, "${1}[REDACTED]");
-    let s6 = kv_re.replace_all(&s5, "${1}[REDACTED]");
-    s6.into_owned()
+    let s5 = provider_re.replace_all(&s4, "[REDACTED]");
+    let s6 = cli_re.replace_all(&s5, "${1}[REDACTED]");
+    let s7 = kv_re.replace_all(&s6, "${1}[REDACTED]");
+    s7.into_owned()
 }
 
 pub fn sanitize_dev_profile(dev: &DevProfile) -> DevProfile {
@@ -278,7 +288,8 @@ pub fn export_diagnostics_to_writer<W: Write + Seek>(
         - metadata.json: 包含已脱敏的项目配置（命令、端口、路径、依赖预设等，不含密码和密钥）与服务状态\n\
         - logs/: 各项目最近运行的滚动日志尾部（包含启动、安装及退出日志，敏感认证信息已自动屏蔽）\n\n\
         脱敏保证：\n\
-        所有 Key、Token、Secret、Password、Auth、Cookie、JWT 及 URL 凭据字段均已自动脱敏替换为 [REDACTED] 或剔除。\n",
+        所有 Key、Token、Secret、Password、Auth、Cookie、JWT 及 URL 凭据字段均已自动脱敏替换为 [REDACTED] 或剔除。\n\
+        环境变量除按键名屏蔽外，值也按内容扫描（连接串凭据、Bearer/Basic、命令行密钥、裸 JWT 与已知厂商令牌）。\n",
         metadata.exported_at,
         sanitized_projects.len(),
         log_count
