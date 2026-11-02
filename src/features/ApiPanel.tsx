@@ -27,6 +27,28 @@ import {
   type WorkspaceRequest,
 } from './apiWorkspace';
 import {
+  PUBLIC_ENV_FILE,
+  PRIVATE_ENV_FILE,
+  loadEnvFiles,
+  substitute,
+  findMissingVars,
+  runAssertions,
+  runExtractions,
+  type ApiAssertion,
+  type AssertionKind,
+  type AssertionResult,
+  type EnvPreset,
+  type ExtractRule,
+  type ExtractSource,
+  type ExtractionResult,
+} from './apiEnv';
+import {
+  CODE_TARGETS,
+  generateRequestCode,
+  type CodegenRequest,
+  type CodeTarget,
+} from './apiCodegen';
+import {
   Bot,
   Check,
   ChevronDown,
@@ -43,9 +65,13 @@ import {
   Plus,
   RefreshCw,
   Send,
+  ShieldAlert,
+  ShieldCheck,
   Terminal,
   Trash2,
+  Workflow,
   X,
+  Zap,
 } from '../components/Icons';
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD';
@@ -55,6 +81,7 @@ interface ParamRow {
   key: string;
   value: string;
   enabled: boolean;
+  runtime?: boolean;
 }
 
 interface RequestHistoryItem {
@@ -120,6 +147,16 @@ interface RequestTab {
   body: string;
   response: HttpResponse | null;
   sending: boolean;
+  /** 编辑器子页（Params/Headers/Auth/Body/断言/提取），逐 Tab 独立，避免串台 */
+  section: 'params' | 'headers' | 'auth' | 'body' | 'assert' | 'extract';
+  /** 该 Tab 选中的环境预设名 */
+  envName: string;
+  /** 该 Tab 的手动环境变量行；运行时提取值另存共享池 */
+  envVars: ParamRow[];
+  assertions: ApiAssertion[];
+  assertionResults: AssertionResult[];
+  extractRules: ExtractRule[];
+  extractResults: ExtractionResult[];
   /** 载入或上次保存时的请求快照，用于脏标记与写回 */
   baseline: string;
   httpId?: string;
@@ -146,7 +183,18 @@ const EDITABLE_FIELDS = [
 ] as const;
 
 type EditableField = (typeof EDITABLE_FIELDS)[number];
-type TabField = EditableField | 'response' | 'sending' | 'name';
+type TabField =
+  | EditableField
+  | 'response'
+  | 'sending'
+  | 'name'
+  | 'section'
+  | 'envName'
+  | 'envVars'
+  | 'assertions'
+  | 'assertionResults'
+  | 'extractRules'
+  | 'extractResults';
 
 function requestSignature(tab: RequestTab): string {
   return JSON.stringify(EDITABLE_FIELDS.map(key => tab[key]));
@@ -171,6 +219,13 @@ function newRequestTab(patch: Partial<RequestTab> = {}): RequestTab {
     body: '{\n  "query": "hello"\n}',
     response: null,
     sending: false,
+    section: 'params',
+    envName: '',
+    envVars: [{ id: 'e1', key: 'baseUrl', value: 'http://localhost:3000', enabled: true }],
+    assertions: [{ id: 'a1', kind: 'status', enabled: true, name: '', expected: '200' }],
+    assertionResults: [],
+    extractRules: [],
+    extractResults: [],
     baseline: '',
     autoName: true,
   };
@@ -299,22 +354,29 @@ export default function ApiPanel({
   const [basicUser, setBasicUser] = bindField('basicUser');
   const [basicPass, setBasicPass] = bindField('basicPass');
   const [body, setBody] = bindField('body');
-  const [response, setResponse] = bindField('response');
-  const [sending, setSending] = bindField('sending');
+  const [sending] = bindField('sending');
 
-  // Active editor tab
-  const [activeTab, setActiveTab] = useState<'params' | 'headers' | 'auth' | 'body'>('params');
-
-  // Environments
-  const [envVars, setEnvVars] = useState<ParamRow[]>([
-    { id: 'e1', key: 'baseUrl', value: 'http://localhost:3000', enabled: true },
-  ]);
+  // Environments（运行时提取值共享池；手动行与环境预设逐 Tab）
+  const [envVars, setEnvVars] = useState<ParamRow[]>([]);
+  const [envPresets, setEnvPresets] = useState<EnvPreset[]>([]);
+  const [loadingEnvFiles, setLoadingEnvFiles] = useState(false);
+  const [envSourceNote, setEnvSourceNote] = useState('');
   const [showEnvModal, setShowEnvModal] = useState(false);
+
+  // 逐 Tab 编辑器子页与环境/断言/提取绑定到 active
+  const [section, setSection] = bindField('section');
+  const [envName, setEnvName] = bindField('envName');
+  const [, setTabEnvVars] = bindField('envVars');
+  const [assertions, setAssertions] = bindField('assertions');
+  const [extractRules, setExtractRules] = bindField('extractRules');
+
+  // Code generation
+  const [showCodeModal, setShowCodeModal] = useState(false);
+  const [codeTarget, setCodeTarget] = useState<CodeTarget>('curl');
 
   // Execution
   const [responseTab, setResponseTab] = useState<'body' | 'headers'>('body');
   const [copiedBody, setCopiedBody] = useState(false);
-  const [copiedCurl, setCopiedCurl] = useState(false);
 
   // Save as .http modal state
   const [showSaveHttpModal, setShowSaveHttpModal] = useState(false);
@@ -412,28 +474,188 @@ export default function ApiPanel({
 
   const httpPaths = inspection?.httpFilePaths ?? [];
 
-  // Interpolate {{variable}} from envVars
-  const interpolate = (text: string): string => {
-    let result = text;
-    for (const ev of envVars) {
-      if (ev.enabled && ev.key.trim()) {
-        result = result.replaceAll(`{{${ev.key.trim()}}}`, ev.value);
-      }
+  // Variable resolution: per-tab preset + tab manual rows, then session runtime rows
+  const presetFor = (name: string): EnvPreset | null =>
+    envPresets.find(p => p.name === name) ?? null;
+
+  const varsForTab = (tab: RequestTab): Record<string, string> => {
+    const manual: Record<string, string> = {};
+    for (const ev of tab.envVars) {
+      if (ev.enabled && ev.key.trim()) manual[ev.key.trim()] = ev.value;
     }
-    return result;
+    const runtime: Record<string, string> = {};
+    for (const ev of envVars) {
+      if (ev.runtime && ev.enabled && ev.key.trim()) runtime[ev.key.trim()] = ev.value;
+    }
+    return { ...(presetFor(tab.envName)?.vars ?? {}), ...manual, ...runtime };
+  };
+
+  const missingVarsFor = (tab: RequestTab): string[] => {
+    const vars = varsForTab(tab);
+    return findMissingVars(
+      [
+        tab.url,
+        ...tab.params.filter(p => p.enabled && p.key.trim()).map(p => p.value),
+        ...tab.headers.filter(h => h.enabled && h.key.trim()).map(h => h.value),
+        tab.authType === 'bearer' ? tab.bearerToken : '',
+        tab.method !== 'GET' && tab.method !== 'HEAD' ? tab.body : '',
+      ],
+      vars,
+    );
+  };
+
+  const missingVars = missingVarsFor(active);
+  const activePreset = presetFor(active.envName);
+  const activeVars = varsForTab(active);
+
+  // 弹窗视图：当前 Tab 手动行 + 会话运行时池（同名时运行时行展示并可编辑）
+  const envModalRows: ParamRow[] = [
+    ...active.envVars.filter(m => !envVars.some(r => r.runtime && r.key.trim() === m.key.trim())),
+    ...envVars,
+  ];
+
+  /** 弹窗行编辑：优先命中运行时池行，否则落到当前 Tab 的手动行 */
+  const updateEnvModalRow = (id: string, field: 'key' | 'value' | 'enabled', val: string | boolean) => {
+    const updater = (rows: ParamRow[]) =>
+      rows.map(item => (item.id === id ? { ...item, [field]: val } : item));
+    if (envVars.some(item => item.id === id)) setEnvVars(updater);
+    else setTabEnvVars(updater);
+  };
+
+  const removeEnvModalRow = (id: string) => {
+    const updater = (rows: ParamRow[]) => rows.filter(item => item.id !== id);
+    if (envVars.some(item => item.id === id)) setEnvVars(updater);
+    else setTabEnvVars(updater);
+  };
+
+  const buildTargetUrlFor = (tab: RequestTab): string => {
+    const vars = varsForTab(tab);
+    let raw = substitute(tab.url.trim(), vars).text;
+    const activeParams = tab.params.filter(p => p.enabled && p.key.trim());
+    if (activeParams.length > 0) {
+      const searchParams = new URLSearchParams();
+      for (const p of activeParams) {
+        searchParams.append(p.key.trim(), substitute(p.value.trim(), vars).text);
+      }
+      const delimiter = raw.includes('?') ? '&' : '?';
+      raw += `${delimiter}${searchParams.toString()}`;
+    }
+    return raw;
+  };
+
+  const buildResolvedRequest = (tab: RequestTab): CodegenRequest => {
+    const vars = varsForTab(tab);
+    const activeHeaders: [string, string][] = tab.headers
+      .filter(h => h.enabled && h.key.trim())
+      .map(h => [h.key.trim(), substitute(h.value.trim(), vars).text]);
+
+    if (tab.authType === 'bearer' && tab.bearerToken.trim()) {
+      activeHeaders.push(['Authorization', `Bearer ${substitute(tab.bearerToken.trim(), vars).text}`]);
+    } else if (tab.authType === 'basic' && (tab.basicUser || tab.basicPass)) {
+      const credentials = btoa(`${tab.basicUser}:${tab.basicPass}`);
+      activeHeaders.push(['Authorization', `Basic ${credentials}`]);
+    }
+
+    const reqBody =
+      tab.method !== 'GET' && tab.method !== 'HEAD' && tab.body.trim()
+        ? substitute(tab.body, vars).text
+        : undefined;
+
+    return { method: tab.method, url: buildTargetUrlFor(tab), headers: activeHeaders, body: reqBody };
+  };
+
+  const assertionPassedCount = active.assertionResults.filter(item => item.passed).length;
+  const assertionsAllPassed =
+    active.assertionResults.length > 0 && assertionPassedCount === active.assertionResults.length;
+
+  const loadProjectEnvFiles = async () => {
+    if (!project) return;
+    setLoadingEnvFiles(true);
+    try {
+      const [publicContent, privateContent] = await Promise.all([
+        readProjectFileContent(project.id, PUBLIC_ENV_FILE).catch(() => null),
+        readProjectFileContent(project.id, PRIVATE_ENV_FILE).catch(() => null),
+      ]);
+      if (publicContent === null && privateContent === null) {
+        setEnvSourceNote('项目根目录没有环境文件');
+        onNotify?.(`未找到 ${PUBLIC_ENV_FILE}，仍可只用手动变量`);
+      } else {
+        const presets = loadEnvFiles(publicContent, privateContent);
+        setEnvPresets(presets);
+        const sendingTabId = active.id;
+        setTabs(prev =>
+          prev.map(t =>
+            t.id === sendingTabId
+              ? {
+                  ...t,
+                  envName: presets.some(p => p.name === t.envName)
+                    ? t.envName
+                    : (presets[0]?.name ?? ''),
+                }
+              : t,
+          ),
+        );
+        setEnvSourceNote(
+          [
+            publicContent !== null ? PUBLIC_ENV_FILE : null,
+            privateContent !== null ? PRIVATE_ENV_FILE : null,
+          ]
+            .filter(Boolean)
+            .join(' + '),
+        );
+        onNotify?.(
+          presets.length > 0
+            ? `已载入 ${presets.length} 个环境预设：${presets.map(p => p.name).join('、')}`
+            : '环境文件解析后没有可用预设',
+        );
+      }
+    } catch (err) {
+      onNotify?.(`读取环境文件失败：${err}`);
+    } finally {
+      setLoadingEnvFiles(false);
+    }
+  };
+
+  /** 提取值进会话共享运行时池：链式引用跨 Tab 可用，但不回写各 Tab 的手动行 */
+  const applyExtractedVars = (results: ExtractionResult[]) => {
+    const updates = results.filter(r => r.value !== null);
+    if (updates.length === 0) return;
+    setEnvVars(prev => {
+      const next = [...prev];
+      for (const update of updates) {
+        const index = next.findIndex(item => item.key.trim() === update.variable);
+        if (index >= 0) {
+          next[index] = {
+            ...next[index],
+            value: update.value as string,
+            enabled: true,
+            runtime: true,
+          };
+        } else {
+          next.push({
+            id: `rt_${Math.random().toString(36).slice(2, 9)}`,
+            key: update.variable,
+            value: update.value as string,
+            enabled: true,
+            runtime: true,
+          });
+        }
+      }
+      return next;
+    });
   };
 
   const addRow = (type: 'params' | 'headers' | 'env') => {
-    const newRow = { id: Math.random().toString(36).slice(2, 9), key: '', value: '', enabled: true };
+    const newRow = { id: nextWorkspaceId('row'), key: '', value: '', enabled: true };
     if (type === 'params') setParams(p => [...p, newRow]);
     else if (type === 'headers') setHeaders(h => [...h, newRow]);
-    else setEnvVars(e => [...e, newRow]);
+    else setTabEnvVars(e => [...e, newRow]);
   };
 
   const removeRow = (type: 'params' | 'headers' | 'env', id: string) => {
     if (type === 'params') setParams(p => p.filter(item => item.id !== id));
     else if (type === 'headers') setHeaders(h => h.filter(item => item.id !== id));
-    else setEnvVars(e => e.filter(item => item.id !== id));
+    else setTabEnvVars(e => e.filter(item => item.id !== id));
   };
 
   const updateRow = (
@@ -446,54 +668,57 @@ export default function ApiPanel({
       list.map(item => (item.id === id ? { ...item, [field]: val } : item));
     if (type === 'params') setParams(updater);
     else if (type === 'headers') setHeaders(updater);
-    else setEnvVars(updater);
-  };
-
-  const buildTargetUrl = () => {
-    let raw = interpolate(url.trim());
-    const activeParams = params.filter(p => p.enabled && p.key.trim());
-    if (activeParams.length > 0) {
-      const searchParams = new URLSearchParams();
-      for (const p of activeParams) {
-        searchParams.append(p.key.trim(), interpolate(p.value.trim()));
-      }
-      const delimiter = raw.includes('?') ? '&' : '?';
-      raw += `${delimiter}${searchParams.toString()}`;
-    }
-    return raw;
+    else setTabEnvVars(updater);
   };
 
   const handleSend = async (e?: FormEvent) => {
     if (e) e.preventDefault();
-    if (!url.trim() || sending) return;
+    const tab = active;
+    if (!tab.url.trim() || tab.sending) return;
+    const tabMissing = missingVarsFor(tab);
+    if (tabMissing.length > 0) {
+      onNotify?.(`变量未解析：${tabMissing.map(v => `{{${v}}}`).join('、')}`);
+      return;
+    }
 
-    setSending(true);
-    setResponse(null);
+    const tabId = tab.id;
+    const startPatch = (prev: RequestTab): Partial<RequestTab> => ({
+      ...prev,
+      sending: true,
+      response: null,
+      assertionResults: [],
+      extractResults: [],
+    });
+    patchTab(tabId, startPatch);
     try {
-      const targetUrl = buildTargetUrl();
-      const activeHeaders: [string, string][] = headers
-        .filter(h => h.enabled && h.key.trim())
-        .map(h => [h.key.trim(), interpolate(h.value.trim())]);
+      const request = buildResolvedRequest(tab);
+      const res = await sendHttpRequest(
+        request.method,
+        request.url,
+        request.headers,
+        request.body,
+      );
 
-      if (authType === 'bearer' && bearerToken.trim()) {
-        activeHeaders.push(['Authorization', `Bearer ${interpolate(bearerToken.trim())}`]);
-      } else if (authType === 'basic' && (basicUser || basicPass)) {
-        const credentials = btoa(`${basicUser}:${basicPass}`);
-        activeHeaders.push(['Authorization', `Basic ${credentials}`]);
-      }
+      const assertionRun = runAssertions(tab.assertions, res);
+      const extractionRun = runExtractions(tab.extractRules, res);
+      applyExtractedVars(extractionRun);
 
-      const reqBody =
-        method !== 'GET' && method !== 'HEAD' && body.trim() ? interpolate(body) : undefined;
+      const recordedCurl = generateRequestCode('curl', request);
 
-      const res = await sendHttpRequest(method, targetUrl, activeHeaders, reqBody);
-      setResponse(res);
+      // 结果只落回发起请求的 Tab；期间切了 Tab 也不串台
+      patchTab(tabId, prev => ({
+        ...prev,
+        sending: false,
+        response: res,
+        assertionResults: assertionRun,
+        extractResults: extractionRun,
+      }));
 
-      const recordedCurl = generateCurl(method, targetUrl, headers, authType, bearerToken, basicUser, basicPass, reqBody);
       setHistory(prev => [
         {
           id: Math.random().toString(36).slice(2, 9),
-          method,
-          url: targetUrl,
+          method: tab.method,
+          url: request.url,
           status: res.status,
           latencyMs: res.latencyMs,
           timestamp: new Date().toLocaleTimeString(),
@@ -502,18 +727,31 @@ export default function ApiPanel({
         ...prev.slice(0, 19),
       ]);
 
-      onNotify?.(`HTTP ${res.status} ${res.statusText} (${res.latencyMs}ms)`);
+      const assertionsFailed = assertionRun.some(item => !item.passed);
+      const extractedCount = extractionRun.filter(item => item.value !== null).length;
+      const suffix = extractedCount > 0 ? `，已提取 ${extractedCount} 个变量` : '';
+      const verdict =
+        assertionRun.length === 0
+          ? ''
+          : assertionsFailed
+            ? '，断言未通过'
+            : '，断言全部通过';
+      onNotify?.(`HTTP ${res.status} ${res.statusText} (${res.latencyMs}ms)${verdict}${suffix}`);
     } catch (err) {
-      setResponse({
-        status: 0,
-        statusText: 'Request Failed',
-        headers: [],
-        body: String(err),
-        latencyMs: 0,
-      });
+      patchTab(tabId, prev => ({
+        ...prev,
+        sending: false,
+        response: {
+          status: 0,
+          statusText: 'Request Failed',
+          headers: [],
+          body: String(err),
+          latencyMs: 0,
+        },
+        assertionResults: [],
+        extractResults: [],
+      }));
       onNotify?.(`请求失败：${err}`);
-    } finally {
-      setSending(false);
     }
   };
 
@@ -740,56 +978,64 @@ export default function ApiPanel({
       );
     });
 
-  const generateCurl = (
-    customMethod?: HttpMethod,
-    customUrl?: string,
-    customHeaders?: ParamRow[],
-    customAuthType?: 'none' | 'bearer' | 'basic',
-    customBearer?: string,
-    customUser?: string,
-    customPass?: string,
-    customBody?: string,
-  ) => {
-    const m = customMethod ?? method;
-    const targetUrl = customUrl ?? buildTargetUrl();
-    let curl = `curl -X ${m} "${targetUrl}"`;
-
-    const activeHeaders = (customHeaders ?? headers)
-      .filter(h => h.enabled && h.key.trim())
-      .map(h => [h.key.trim(), interpolate(h.value.trim())]);
-
-    for (const [k, v] of activeHeaders) {
-      curl += ` \\\n  -H "${k}: ${v}"`;
-    }
-
-    const auth = customAuthType ?? authType;
-    const bToken = customBearer ?? bearerToken;
-    const uName = customUser ?? basicUser;
-    const uPass = customPass ?? basicPass;
-
-    if (auth === 'bearer' && bToken.trim()) {
-      curl += ` \\\n  -H "Authorization: Bearer ${interpolate(bToken.trim())}"`;
-    } else if (auth === 'basic' && (uName || uPass)) {
-      const creds = btoa(`${uName}:${uPass}`);
-      curl += ` \\\n  -H "Authorization: Basic ${creds}"`;
-    }
-
-    const reqBody = customBody !== undefined ? customBody : body;
-    if (m !== 'GET' && m !== 'HEAD' && reqBody.trim()) {
-      curl += ` \\\n  --data '${interpolate(reqBody)}'`;
-    }
-    return curl;
-  };
-
   const exportAsCurl = () => {
-    const curl = generateCurl();
-    navigator.clipboard.writeText(curl);
+    navigator.clipboard.writeText(generateRequestCode('curl', buildResolvedRequest(active)));
     onNotify?.('已复制 cURL 完整命令');
   };
 
+  const generatedCode = () => generateRequestCode(codeTarget, buildResolvedRequest(active));
+
+  const copyGeneratedCode = () => {
+    navigator.clipboard.writeText(generatedCode());
+    onNotify?.(`已复制 ${CODE_TARGETS.find(t => t.id === codeTarget)?.label ?? ''} 代码`);
+  };
+
+  const addAssertion = (kind: AssertionKind) => {
+    setAssertions(prev => [
+      ...prev,
+      {
+        id: `a_${Math.random().toString(36).slice(2, 9)}`,
+        kind,
+        enabled: true,
+        name: '',
+        expected: kind === 'status' ? '200' : kind === 'latency' ? '500' : '',
+      },
+    ]);
+  };
+
+  const patchAssertion = (id: string, patch: Partial<ApiAssertion>) => {
+    setAssertions(prev => prev.map(item => (item.id === id ? { ...item, ...patch } : item)));
+  };
+
+  const removeAssertion = (id: string) => {
+    setAssertions(prev => prev.filter(item => item.id !== id));
+  };
+
+  const addExtractRule = () => {
+    setExtractRules(prev => [
+      ...prev,
+      {
+        id: `x_${Math.random().toString(36).slice(2, 9)}`,
+        enabled: true,
+        variable: '',
+        source: 'body' as ExtractSource,
+        path: '',
+      },
+    ]);
+  };
+
+  const patchExtractRule = (id: string, patch: Partial<ExtractRule>) => {
+    setExtractRules(prev => prev.map(item => (item.id === id ? { ...item, ...patch } : item)));
+  };
+
+  const removeExtractRule = (id: string) => {
+    setExtractRules(prev => prev.filter(item => item.id !== id));
+  };
+
   const copyResponseBody = () => {
-    if (!response) return;
-    navigator.clipboard.writeText(response.body);
+    const res = active.response;
+    if (!res) return;
+    navigator.clipboard.writeText(res.body);
     setCopiedBody(true);
     onNotify?.('已复制响应数据');
     setTimeout(() => setCopiedBody(false), 2000);
@@ -856,13 +1102,19 @@ export default function ApiPanel({
           </div>
           <div>
             <h2 id="api-title">Tongyun API · 接口工作台</h2>
-            <p>多 Tab 独立调试、.http／.rest 双协议读写、JSON 用例集、cURL 导入导出与历史快照。</p>
+            <p>
+              多 Tab 独立调试、.http／.rest 双协议读写、JSON 用例集、环境预设级联（{`{{baseUrl}}`}）、断言与变量提取、7 种语言代码生成与 cURL 导入导出。
+            </p>
           </div>
         </div>
         <div className="workbench-badges">
           <button className="secondary-button-sm" onClick={() => setShowEnvModal(true)}>
             <Key size={12} />
-            环境变量 ({envVars.length})
+            环境变量 ({active.envVars.length + envVars.length})
+          </button>
+          <button className="secondary-button-sm" onClick={() => setShowCodeModal(true)}>
+            <Zap size={12} />
+            代码生成
           </button>
           <button className="secondary-button-sm" onClick={() => setShowCurlModal(true)}>
             导入 cURL
@@ -1036,7 +1288,6 @@ export default function ApiPanel({
 
           {/* Main Request & Response Section */}
           <div className="api-main-pane">
-
             {/* Agent Automated API Verifications */}
             {agentHttpActions.length > 0 && (
               <section className="panel-subcard agent-subcard">
@@ -1122,6 +1373,62 @@ export default function ApiPanel({
               </button>
             </div>
 
+            {/* Environment presets & resolution（逐 Tab 生效） */}
+            <section className="api-env-bar">
+              <div className="env-bar-group">
+                <span className="env-bar-label">环境</span>
+                <select
+                  className="env-select"
+                  aria-label="环境预设"
+                  value={envName}
+                  onChange={e => setEnvName(e.target.value)}
+                >
+                  <option value="">未选择预设</option>
+                  {envPresets.map(p => (
+                    <option key={p.name} value={p.name}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="text-button-sm"
+                  onClick={() => void loadProjectEnvFiles()}
+                  disabled={loadingEnvFiles}
+                >
+                  {loadingEnvFiles ? (
+                    <LoaderCircle size={12} className="spin" />
+                  ) : (
+                    <RefreshCw size={12} />
+                  )}
+                  读取 http-client.env.json
+                </button>
+              </div>
+              <div className="env-bar-group">
+                <span className="env-bar-meta">
+                  {activePreset
+                    ? `预设 ${Object.keys(activePreset.vars).length} 个变量`
+                    : '仅手动／运行时变量'}{' '}
+                  · 生效 {Object.keys(activeVars).length} 个
+                </span>
+                {envSourceNote && <span className="env-source-note">{envSourceNote}</span>}
+                <button className="text-button-sm" onClick={() => setShowEnvModal(true)}>
+                  <Key size={12} />
+                  编辑变量
+                </button>
+              </div>
+            </section>
+
+            {missingVars.length > 0 && (
+              <div className="env-missing-banner" role="alert">
+                <ShieldAlert size={13} />
+                <span>
+                  当前环境缺少变量 {missingVars.map(v => `{{${v}}}`).join('、')}
+                  ，切换环境或补全变量后才能发送。
+                </span>
+              </div>
+            )}
+
             {/* HTTP Request Builder Workbench */}
             <section className="api-requester-card">
               <div className="api-case-meta">
@@ -1198,7 +1505,12 @@ export default function ApiPanel({
                 <button
                   type="submit"
                   className="primary-button"
-                  disabled={sending || !url.trim()}
+                  disabled={sending || !url.trim() || missingVars.length > 0}
+                  title={
+                    missingVars.length > 0
+                      ? `变量未解析：${missingVars.map(v => `{{${v}}}`).join('、')}`
+                      : undefined
+                  }
                 >
                   {sending ? (
                     <LoaderCircle size={14} className="spin" />
@@ -1214,35 +1526,51 @@ export default function ApiPanel({
                 <div className="sub-tabs">
                   <button
                     type="button"
-                    className={activeTab === 'params' ? 'active' : ''}
-                    onClick={() => setActiveTab('params')}
+                    className={section === 'params' ? 'active' : ''}
+                    onClick={() => setSection('params')}
                   >
                     Params ({params.filter(p => p.enabled && p.key).length})
                   </button>
                   <button
                     type="button"
-                    className={activeTab === 'headers' ? 'active' : ''}
-                    onClick={() => setActiveTab('headers')}
+                    className={section === 'headers' ? 'active' : ''}
+                    onClick={() => setSection('headers')}
                   >
                     Headers ({headers.filter(h => h.enabled && h.key).length})
                   </button>
                   <button
                     type="button"
-                    className={activeTab === 'auth' ? 'active' : ''}
-                    onClick={() => setActiveTab('auth')}
+                    className={section === 'auth' ? 'active' : ''}
+                    onClick={() => setSection('auth')}
                   >
                     Auth {authType !== 'none' ? `(${authType})` : ''}
                   </button>
                   <button
                     type="button"
-                    className={activeTab === 'body' ? 'active' : ''}
-                    onClick={() => setActiveTab('body')}
+                    className={section === 'body' ? 'active' : ''}
+                    onClick={() => setSection('body')}
                   >
                     Body
                   </button>
+                  <button
+                    type="button"
+                    className={section === 'assert' ? 'active' : ''}
+                    onClick={() => setSection('assert')}
+                  >
+                    <Zap size={11} /> 断言 (
+                    {assertions.filter(a => a.enabled).length})
+                  </button>
+                  <button
+                    type="button"
+                    className={section === 'extract' ? 'active' : ''}
+                    onClick={() => setSection('extract')}
+                  >
+                    <Workflow size={11} /> 提取 (
+                    {extractRules.filter(r => r.enabled).length})
+                  </button>
                 </div>
 
-                {activeTab === 'params' && (
+                {section === 'params' && (
                   <div className="key-val-editor">
                     <div className="key-val-table">
                       <div className="table-row-head">
@@ -1288,7 +1616,7 @@ export default function ApiPanel({
                   </div>
                 )}
 
-                {activeTab === 'headers' && (
+                {section === 'headers' && (
                   <div className="key-val-editor">
                     <div className="header-presets-bar">
                       <span className="preset-label">快捷预设:</span>
@@ -1391,7 +1719,7 @@ export default function ApiPanel({
                   </div>
                 )}
 
-                {activeTab === 'auth' && (
+                {section === 'auth' && (
                   <div className="auth-editor">
                     <div className="auth-type-selector">
                       <label>认证类型:</label>
@@ -1445,7 +1773,7 @@ export default function ApiPanel({
                   </div>
                 )}
 
-                {activeTab === 'body' && (
+                {section === 'body' && (
                   <div className="body-editor">
                     <textarea
                       className="body-textarea"
@@ -1472,26 +1800,187 @@ export default function ApiPanel({
                     </div>
                   </div>
                 )}
+
+                {section === 'assert' && (
+                  <div className="rule-editor">
+                    <div className="key-val-table rule-table">
+                      <div className="table-row-head">
+                        <span />
+                        <span>断言类型</span>
+                        <span>目标 (Header 名 / JSON 路径)</span>
+                        <span>期望值</span>
+                        <span />
+                      </div>
+                      {assertions.map(rule => (
+                        <div key={rule.id} className="table-row-item">
+                          <input
+                            type="checkbox"
+                            checked={rule.enabled}
+                            onChange={e => patchAssertion(rule.id, { enabled: e.target.checked })}
+                          />
+                          <select
+                            aria-label="断言类型"
+                            value={rule.kind}
+                            onChange={e =>
+                              patchAssertion(rule.id, { kind: e.target.value as AssertionKind })
+                            }
+                          >
+                            <option value="status">状态码</option>
+                            <option value="latency">时延上限 (ms)</option>
+                            <option value="header">响应头</option>
+                            <option value="json">JSON 字段</option>
+                          </select>
+                          <input
+                            placeholder={
+                              rule.kind === 'header'
+                                ? 'X-Request-Id'
+                                : rule.kind === 'json'
+                                  ? 'data.code'
+                                  : '无需填写'
+                            }
+                            value={rule.name}
+                            disabled={rule.kind === 'status' || rule.kind === 'latency'}
+                            onChange={e => patchAssertion(rule.id, { name: e.target.value })}
+                          />
+                          <input
+                            placeholder={
+                              rule.kind === 'status'
+                                ? '200,201'
+                                : rule.kind === 'latency'
+                                  ? '500'
+                                  : rule.kind === 'header'
+                                    ? 'application/json（留空=只判断存在）'
+                                    : '0（留空=只判断存在）'
+                            }
+                            value={rule.expected}
+                            onChange={e => patchAssertion(rule.id, { expected: e.target.value })}
+                          />
+                          <button
+                            type="button"
+                            className="icon-button-sm"
+                            onClick={() => removeAssertion(rule.id)}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="rule-add-row">
+                      <button type="button" className="text-button-sm" onClick={() => addAssertion('status')}>
+                        <Plus size={12} /> 状态码
+                      </button>
+                      <button type="button" className="text-button-sm" onClick={() => addAssertion('latency')}>
+                        <Plus size={12} /> 时延上限
+                      </button>
+                      <button type="button" className="text-button-sm" onClick={() => addAssertion('header')}>
+                        <Plus size={12} /> 响应头
+                      </button>
+                      <button type="button" className="text-button-sm" onClick={() => addAssertion('json')}>
+                        <Plus size={12} /> JSON 字段
+                      </button>
+                    </div>
+                    <p className="rule-hint">
+                      发送后按启用的规则自动判定，结果显示在响应区；期望值留空表示只判断存在。
+                    </p>
+                  </div>
+                )}
+
+                {section === 'extract' && (
+                  <div className="rule-editor">
+                    <div className="key-val-table rule-table">
+                      <div className="table-row-head">
+                        <span />
+                        <span>目标变量</span>
+                        <span>来源</span>
+                        <span>字段路径 / Header 名</span>
+                        <span />
+                      </div>
+                      {extractRules.map(rule => (
+                        <div key={rule.id} className="table-row-item">
+                          <input
+                            type="checkbox"
+                            checked={rule.enabled}
+                            onChange={e => patchExtractRule(rule.id, { enabled: e.target.checked })}
+                          />
+                          <input
+                            placeholder="token"
+                            value={rule.variable}
+                            onChange={e => patchExtractRule(rule.id, { variable: e.target.value })}
+                          />
+                          <select
+                            aria-label="提取来源"
+                            value={rule.source}
+                            onChange={e =>
+                              patchExtractRule(rule.id, { source: e.target.value as ExtractSource })
+                            }
+                          >
+                            <option value="body">响应体 JSON</option>
+                            <option value="header">响应头</option>
+                          </select>
+                          <input
+                            placeholder={rule.source === 'header' ? 'X-Token' : 'data.token'}
+                            value={rule.path}
+                            onChange={e => patchExtractRule(rule.id, { path: e.target.value })}
+                          />
+                          <button
+                            type="button"
+                            className="icon-button-sm"
+                            onClick={() => removeExtractRule(rule.id)}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="rule-add-row">
+                      <button type="button" className="text-button-sm" onClick={addExtractRule}>
+                        <Plus size={12} /> 添加提取规则
+                      </button>
+                    </div>
+                    <p className="rule-hint">
+                      提取值写入当前会话的环境变量，下一个请求可直接用 {'{{变量名}}'} 引用。
+                    </p>
+                    {active.extractResults.length > 0 && (
+                      <div className="extract-result-list">
+                        {active.extractResults.map(item => (
+                          <div
+                            key={item.id}
+                            className={`extract-result ${item.value === null ? 'failed' : 'passed'}`}
+                          >
+                            <span className="extract-source">
+                              {item.source === 'header' ? 'Header' : 'JSON'} ·{' '}
+                              <code>{item.path || '(未填写)'}</code>
+                            </span>
+                            <span className="extract-value">
+                              {item.value === null ? '—' : <code>{`{{${item.variable}}} = ${item.value}`}</code>}
+                            </span>
+                            <span className="extract-reason">{item.reason}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </section>
 
             {/* HTTP Response Panel */}
-            {response && (
+            {active.response && (
               <section className="api-response-card">
                 <div className="response-header">
                   <div className="response-meta">
                     <span
                       className={`status-pill ${
-                        response.status >= 200 && response.status < 300
+                        active.response.status >= 200 && active.response.status < 300
                           ? 'status-success'
-                          : response.status >= 400
+                          : active.response.status >= 400
                           ? 'status-client-error'
                           : 'status-server-error'
                       }`}
                     >
-                      {response.status} {response.statusText}
+                      {active.response.status} {active.response.statusText}
                     </span>
-                    <span className="latency-badge">{response.latencyMs} ms</span>
+                    <span className="latency-badge">{active.response.latencyMs} ms</span>
                   </div>
                   <div className="response-tabs">
                     <button
@@ -1504,20 +1993,14 @@ export default function ApiPanel({
                       className={responseTab === 'headers' ? 'active' : ''}
                       onClick={() => setResponseTab('headers')}
                     >
-                      响应头 ({response.headers.length})
+                      响应头 ({active.response.headers.length})
                     </button>
                     <button
                       className="terminal-btn"
-                      onClick={() => {
-                        const curl = generateCurl();
-                        navigator.clipboard.writeText(curl);
-                        setCopiedCurl(true);
-                        onNotify?.('已复制 cURL 完整命令');
-                        setTimeout(() => setCopiedCurl(false), 2000);
-                      }}
+                      onClick={exportAsCurl}
                       title="复制此请求的 cURL 命令"
                     >
-                      {copiedCurl ? <Check size={12} /> : <Terminal size={12} />}
+                      <Terminal size={12} />
                       复制 cURL
                     </button>
                     <button
@@ -1531,15 +2014,44 @@ export default function ApiPanel({
                   </div>
                 </div>
 
+                {active.assertionResults.length > 0 && (
+                  <div className={`assertion-card ${assertionsAllPassed ? 'all-pass' : 'has-fail'}`}>
+                    <div className="assertion-card-head">
+                      <span className="assertion-title">
+                        {assertionsAllPassed ? <ShieldCheck size={13} /> : <ShieldAlert size={13} />}
+                        断言测试 {assertionPassedCount}/{active.assertionResults.length} 通过
+                      </span>
+                      <span
+                        className={`assertion-verdict ${assertionsAllPassed ? 'passed' : 'failed'}`}
+                      >
+                        {assertionsAllPassed ? 'Passed' : 'Failed'}
+                      </span>
+                    </div>
+                    <ul className="assertion-list">
+                      {active.assertionResults.map(item => (
+                        <li key={item.id} className={item.passed ? 'pass' : 'fail'}>
+                          <span className={`assertion-flag ${item.passed ? 'pass' : 'fail'}`}>
+                            {item.passed ? <Check size={11} /> : <X size={11} />}
+                            {item.kind}
+                          </span>
+                          <span className="assertion-label">{item.label}</span>
+                          <span className="assertion-actual">实际 {item.actual}</span>
+                          <span className="assertion-reason">{item.reason}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
                 {responseTab === 'body' ? (
                   <div className="response-body-view">
                     <pre className="response-pre">
                       {(() => {
                         try {
-                          const parsed = JSON.parse(response.body);
+                          const parsed = JSON.parse(active.response.body);
                           return JSON.stringify(parsed, null, 2);
                         } catch {
-                          return response.body || '(空响应体)';
+                          return active.response.body || '(空响应体)';
                         }
                       })()}
                     </pre>
@@ -1554,7 +2066,7 @@ export default function ApiPanel({
                         </tr>
                       </thead>
                       <tbody>
-                        {response.headers.map(([k, v], idx) => (
+                        {active.response.headers.map(([k, v], idx) => (
                           <tr key={idx}>
                             <td className="mono">{k}</td>
                             <td className="mono">{v}</td>
@@ -1605,7 +2117,13 @@ export default function ApiPanel({
                         className="history-copy-btn"
                         onClick={e => {
                           e.stopPropagation();
-                          const curl = item.curl ?? generateCurl(item.method, item.url);
+                          const curl =
+                            item.curl ??
+                            generateRequestCode('curl', {
+                              method: item.method,
+                              url: item.url,
+                              headers: [],
+                            });
                           navigator.clipboard.writeText(curl);
                           onNotify?.('已复制历史请求 cURL');
                         }}
@@ -1771,35 +2289,58 @@ export default function ApiPanel({
               <h2>环境变量配置 (支持 {'{{key}}'} 动态替换)</h2>
             </div>
             <div className="modal-body">
+              {activePreset && (
+                <div className="env-preset-block">
+                  <div className="env-preset-head">
+                    <span className="preset-label">环境预设：{activePreset.name}</span>
+                    <span className="env-bar-meta">
+                      {envSourceNote ? `来源 ${envSourceNote}` : '来自项目环境文件'}
+                    </span>
+                  </div>
+                  <div className="env-preset-grid">
+                    {Object.entries(activePreset.vars).map(([name, value]) => (
+                      <div key={name} className="env-preset-row">
+                        <code className="env-preset-key">{name}</code>
+                        <code className="env-preset-value">{value}</code>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="rule-hint">预设值只读，手动／运行时变量同名时覆盖预设。</p>
+                </div>
+              )}
               <div className="key-val-editor">
-                <div className="key-val-table">
+                <div className="key-val-table env-var-table">
                   <div className="table-row-head">
                     <span />
                     <span>变量名 (Key)</span>
                     <span>变量值 (Value)</span>
+                    <span>来源</span>
                     <span />
                   </div>
-                  {envVars.map(ev => (
+                  {envModalRows.map(ev => (
                     <div key={ev.id} className="table-row-item">
                       <input
                         type="checkbox"
                         checked={ev.enabled}
-                        onChange={e => updateRow('env', ev.id, 'enabled', e.target.checked)}
+                        onChange={e => updateEnvModalRow(ev.id, 'enabled', e.target.checked)}
                       />
                       <input
                         placeholder="baseUrl"
                         value={ev.key}
-                        onChange={e => updateRow('env', ev.id, 'key', e.target.value)}
+                        onChange={e => updateEnvModalRow(ev.id, 'key', e.target.value)}
                       />
                       <input
                         placeholder="http://127.0.0.1:3000"
                         value={ev.value}
-                        onChange={e => updateRow('env', ev.id, 'value', e.target.value)}
+                        onChange={e => updateEnvModalRow(ev.id, 'value', e.target.value)}
                       />
+                      <span className={`var-origin ${ev.runtime ? 'runtime' : ''}`}>
+                        {ev.runtime ? '运行时提取' : '手动'}
+                      </span>
                       <button
                         type="button"
                         className="icon-button-sm"
-                        onClick={() => removeRow('env', ev.id)}
+                        onClick={() => removeEnvModalRow(ev.id)}
                       >
                         <Trash2 size={13} />
                       </button>
@@ -1816,8 +2357,51 @@ export default function ApiPanel({
               </div>
             </div>
             <div className="modal-actions">
+              <button className="secondary-button" onClick={() => void loadProjectEnvFiles()}>
+                <RefreshCw size={13} />
+                重新读取项目环境
+              </button>
               <button className="primary-button" onClick={() => setShowEnvModal(false)}>
                 完成
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Code Generation Modal */}
+      {showCodeModal && (
+        <div className="modal-overlay" onClick={() => setShowCodeModal(false)}>
+          <div className="modal-dialog codegen-dialog" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>多语言客户端代码生成</h2>
+            </div>
+            <div className="modal-body">
+              <div className="codegen-tabs">
+                {CODE_TARGETS.map(target => (
+                  <button
+                    key={target.id}
+                    type="button"
+                    className={`codegen-tab ${codeTarget === target.id ? 'active' : ''}`}
+                    onClick={() => setCodeTarget(target.id)}
+                    title={target.hint}
+                  >
+                    {target.label}
+                  </button>
+                ))}
+              </div>
+              <pre className="codegen-preview">{generatedCode()}</pre>
+              <p className="rule-hint">
+                代码按当前环境的实际替换结果生成；切换语言或修改请求后内容同步更新。
+              </p>
+            </div>
+            <div className="modal-actions">
+              <button className="secondary-button" onClick={() => setShowCodeModal(false)}>
+                关闭
+              </button>
+              <button className="primary-button" onClick={copyGeneratedCode}>
+                <Copy size={13} />
+                复制代码
               </button>
             </div>
           </div>
