@@ -153,6 +153,55 @@ export interface GitFileChange {
   staged: boolean;
 }
 
+export interface GitRefBadge {
+  name: string;
+  kind: 'head' | 'local' | 'remote' | 'tag';
+}
+
+export interface GitGraphEdge {
+  fromCol: number;
+  toCol: number;
+}
+
+export interface GitLogCommit {
+  oid: string;
+  shortOid: string;
+  parents: string[];
+  authorName: string;
+  authorEmail: string;
+  timestamp: number;
+  summary: string;
+  refs: GitRefBadge[];
+  col: number;
+  edges: GitGraphEdge[];
+}
+
+export interface GitHistoryResult {
+  commits: GitLogCommit[];
+  total: number;
+  hasMore: boolean;
+}
+
+export interface GitCommitFileChange {
+  path: string;
+  oldPath: string | null;
+  status: string;
+}
+
+export interface GitCommitDetails {
+  oid: string;
+  shortOid: string;
+  parents: string[];
+  authorName: string;
+  authorEmail: string;
+  authorTimestamp: number;
+  committerName: string;
+  committerEmail: string;
+  commitTimestamp: number;
+  message: string;
+  files: GitCommitFileChange[];
+}
+
 export interface ExecutionResult {
   exitCode: number;
   stdout: string;

@@ -396,6 +396,67 @@ pub struct GitFileChange {
     pub staged: bool,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRefBadge {
+    pub name: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitGraphEdge {
+    pub from_col: usize,
+    pub to_col: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitLogCommit {
+    pub oid: String,
+    pub short_oid: String,
+    pub parents: Vec<String>,
+    pub author_name: String,
+    pub author_email: String,
+    pub timestamp: i64,
+    pub summary: String,
+    pub refs: Vec<GitRefBadge>,
+    pub col: usize,
+    pub edges: Vec<GitGraphEdge>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHistoryResult {
+    pub commits: Vec<GitLogCommit>,
+    pub total: usize,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommitFileChange {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommitDetails {
+    pub oid: String,
+    pub short_oid: String,
+    pub parents: Vec<String>,
+    pub author_name: String,
+    pub author_email: String,
+    pub author_timestamp: i64,
+    pub committer_name: String,
+    pub committer_email: String,
+    pub commit_timestamp: i64,
+    pub message: String,
+    pub files: Vec<GitCommitFileChange>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DbTableInfo {
@@ -1151,6 +1212,420 @@ pub fn switch_git_branch(project: &Project, branch: &str) -> Result<String> {
         return Err(output_string(&output.stderr));
     }
     Ok(format!("已切换至分支 {}", branch.trim()))
+}
+
+fn collect_ref_badges(path: &Path) -> std::collections::HashMap<String, Vec<GitRefBadge>> {
+    let mut map: std::collections::HashMap<String, Vec<GitRefBadge>> =
+        std::collections::HashMap::new();
+    let mut insert = |oid: &str, badge: GitRefBadge| {
+        if oid.is_empty() {
+            return;
+        }
+        let entry = map.entry(oid.to_string()).or_default();
+        if !entry.iter().any(|b| b.name == badge.name) {
+            entry.push(badge);
+        }
+    };
+    if let Ok(head_out) = git(path, &["rev-parse", "--verify", "HEAD"]) {
+        if head_out.success {
+            let head_oid = output_string(&head_out.stdout);
+            let branch = git(path, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+                .ok()
+                .filter(|o| o.success)
+                .map(|o| output_string(&o.stdout))
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "HEAD".to_string());
+            insert(
+                &head_oid,
+                GitRefBadge {
+                    name: branch,
+                    kind: "head".to_string(),
+                },
+            );
+        }
+    }
+    for (namespace, kind) in [("refs/heads", "local"), ("refs/remotes", "remote")] {
+        let format = "--format=%(refname:short)\t%(objectname)";
+        if let Ok(out) = git(path, &["for-each-ref", format, namespace]) {
+            if out.success {
+                for line in output_string(&out.stdout).lines() {
+                    let mut parts = line.split('\t');
+                    let (Some(name), Some(oid)) = (parts.next(), parts.next()) else {
+                        continue;
+                    };
+                    if kind == "remote" && name.ends_with("/HEAD") {
+                        continue;
+                    }
+                    insert(
+                        oid,
+                        GitRefBadge {
+                            name: name.to_string(),
+                            kind: kind.to_string(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+    let tag_format = "--format=%(refname)\t%(objectname)\t%(objecttype)";
+    if let Ok(out) = git(path, &["for-each-ref", tag_format, "refs/tags"]) {
+        if out.success {
+            for line in output_string(&out.stdout).lines() {
+                let mut parts = line.split('\t');
+                let (Some(full), Some(oid), Some(otype)) =
+                    (parts.next(), parts.next(), parts.next())
+                else {
+                    continue;
+                };
+                let name = full
+                    .strip_prefix("refs/tags/")
+                    .unwrap_or(full)
+                    .to_string();
+                let target = if otype == "tag" {
+                    match git(path, &["rev-list", "-n", "1", full]) {
+                        Ok(peel) if peel.success => output_string(&peel.stdout),
+                        _ => continue,
+                    }
+                } else {
+                    oid.to_string()
+                };
+                insert(
+                    &target,
+                    GitRefBadge {
+                        name,
+                        kind: "tag".to_string(),
+                    },
+                );
+            }
+        }
+    }
+    for badges in map.values_mut() {
+        badges.sort_by(|a, b| a.kind.cmp(&b.kind).then(a.name.cmp(&b.name)));
+    }
+    map
+}
+
+fn git_log_records(output: &CommandOutput) -> Result<Vec<GitLogCommit>> {
+    if !output.success {
+        let stderr = output_string(&output.stderr);
+        // A repository without commits yet must degrade to an empty history.
+        if stderr.contains("does not have any commits yet")
+            || stderr.contains("your current branch '")
+        {
+            return Ok(Vec::new());
+        }
+        return Err(stderr);
+    }
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let mut commits = Vec::new();
+    for record in text.split('\u{1e}') {
+        if record.trim().is_empty() {
+            continue;
+        }
+        let mut fields = record.trim_start_matches('\n').split('\t');
+        let oid = fields.next().unwrap_or_default().to_string();
+        if oid.is_empty() {
+            continue;
+        }
+        let short_oid = fields.next().unwrap_or_default().to_string();
+        let author_name = fields.next().unwrap_or_default().to_string();
+        let author_email = fields.next().unwrap_or_default().to_string();
+        let timestamp = fields.next().unwrap_or("0").parse::<i64>().unwrap_or(0);
+        let parents: Vec<String> = fields
+            .next()
+            .unwrap_or_default()
+            .split(' ')
+            .filter(|p| !p.is_empty())
+            .map(|p| p.to_string())
+            .collect();
+        let summary = fields.next().unwrap_or_default().to_string();
+        commits.push(GitLogCommit {
+            oid,
+            short_oid,
+            parents,
+            author_name,
+            author_email,
+            timestamp,
+            summary,
+            refs: Vec::new(),
+            col: 0,
+            edges: Vec::new(),
+        });
+    }
+    Ok(commits)
+}
+
+/// Assign graph lanes so the frontend can draw the commit topology, mirroring
+/// the lane model of tongyun-git's log view.
+fn assign_graph_lanes(commits: &mut [GitLogCommit]) {
+    let mut active_lanes: Vec<Option<String>> = Vec::new();
+    for commit in commits.iter_mut() {
+        let mut col = 0usize;
+        let mut found = false;
+        for (idx, lane) in active_lanes.iter().enumerate() {
+            if lane.as_deref() == Some(commit.oid.as_str()) {
+                col = idx;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            match active_lanes.iter().position(|l| l.is_none()) {
+                Some(free) => col = free,
+                None => {
+                    col = active_lanes.len();
+                    active_lanes.push(None);
+                }
+            }
+        }
+        let mut edges = Vec::new();
+        if commit.parents.is_empty() {
+            if col < active_lanes.len() {
+                active_lanes[col] = None;
+            }
+        } else {
+            let p0 = commit.parents[0].clone();
+            match active_lanes.iter().position(|l| l.as_deref() == Some(p0.as_str())) {
+                Some(p0_col) => {
+                    edges.push(GitGraphEdge {
+                        from_col: col,
+                        to_col: p0_col,
+                    });
+                    if p0_col != col {
+                        active_lanes[col] = None;
+                    }
+                }
+                None => {
+                    active_lanes[col] = Some(p0);
+                    edges.push(GitGraphEdge {
+                        from_col: col,
+                        to_col: col,
+                    });
+                }
+            }
+            for pk in commit.parents.iter().skip(1) {
+                let pk = pk.clone();
+                let pk_col = match active_lanes.iter().position(|l| l.as_deref() == Some(pk.as_str()))
+                {
+                    Some(existing) => existing,
+                    None => match active_lanes.iter().position(|l| l.is_none()) {
+                        Some(free) => {
+                            active_lanes[free] = Some(pk);
+                            free
+                        }
+                        None => {
+                            active_lanes.push(Some(pk));
+                            active_lanes.len() - 1
+                        }
+                    },
+                };
+                edges.push(GitGraphEdge {
+                    from_col: col,
+                    to_col: pk_col,
+                });
+            }
+        }
+        while active_lanes.last().map(|l| l.is_none()).unwrap_or(false) {
+            active_lanes.pop();
+        }
+        commit.col = col;
+        commit.edges = edges;
+    }
+}
+
+pub fn get_git_history(
+    project: &Project,
+    skip: Option<usize>,
+    limit: Option<usize>,
+    all_branches: Option<bool>,
+) -> Result<GitHistoryResult> {
+    let path = Path::new(&project.path);
+    let skip = skip.unwrap_or(0);
+    let limit = limit.unwrap_or(100).clamp(1, 500);
+    let all = all_branches.unwrap_or(false);
+    let limit_arg = (limit + 1).to_string();
+    let skip_arg = skip.to_string();
+    let mut args: Vec<&str> = vec![
+        "log",
+        "--topo-order",
+        "--format=%H\t%h\t%an\t%ae\t%at\t%P\t%s\u{1e}",
+    ];
+    if all {
+        args.push("--all");
+    }
+    args.extend(["--skip", &skip_arg, "-n", &limit_arg]);
+    let output = git(path, &args)?;
+    let mut commits = git_log_records(&output)?;
+    let ref_map = collect_ref_badges(path);
+    for commit in commits.iter_mut() {
+        commit.refs = ref_map.get(&commit.oid).cloned().unwrap_or_default();
+    }
+    let has_more = commits.len() > limit;
+    if has_more {
+        commits.truncate(limit);
+    }
+    assign_graph_lanes(&mut commits);
+    let mut total = skip + commits.len();
+    if has_more {
+        if let Ok(count_out) = git(path, &["rev-list", "--count", if all { "--all" } else { "HEAD" }])
+        {
+            if count_out.success {
+                total = output_string(&count_out.stdout)
+                    .parse::<usize>()
+                    .unwrap_or(total);
+            }
+        }
+    }
+    Ok(GitHistoryResult {
+        commits,
+        total,
+        has_more,
+    })
+}
+
+fn validate_git_oid(oid: &str) -> Result<String> {
+    let trimmed = oid.trim();
+    if trimmed.len() < 4
+        || trimmed.len() > 40
+        || !trimmed.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return Err("无效的提交哈希".into());
+    }
+    Ok(trimmed.to_ascii_lowercase())
+}
+
+pub fn get_git_commit_details(project: &Project, oid: &str) -> Result<GitCommitDetails> {
+    let oid = validate_git_oid(oid)?;
+    let path = Path::new(&project.path);
+    let show = git(
+        path,
+        &[
+            "show",
+            "-s",
+            "--format=%H\t%h\t%an\t%ae\t%at\t%cn\t%ce\t%ct\t%B\u{1e}",
+            &oid,
+        ],
+    )?;
+    if !show.success {
+        return Err(output_string(&show.stderr));
+    }
+    let text = String::from_utf8_lossy(&show.stdout).into_owned();
+    let record = text
+        .split('\u{1e}')
+        .find(|r| !r.trim().is_empty())
+        .ok_or_else(|| format!("无法读取提交 {oid}"))?;
+    let mut fields = record.split('\t');
+    let full_oid = fields.next().unwrap_or_default().to_string();
+    let short_oid = fields.next().unwrap_or_default().to_string();
+    let author_name = fields.next().unwrap_or_default().to_string();
+    let author_email = fields.next().unwrap_or_default().to_string();
+    let author_timestamp = fields.next().unwrap_or("0").parse::<i64>().unwrap_or(0);
+    let committer_name = fields.next().unwrap_or_default().to_string();
+    let committer_email = fields.next().unwrap_or_default().to_string();
+    let commit_timestamp = fields.next().unwrap_or("0").parse::<i64>().unwrap_or(0);
+    let message = fields.next().unwrap_or_default().trim().to_string();
+
+    let parents_out = git(path, &["rev-list", "--parents", "-n", "1", &full_oid])?;
+    let parents: Vec<String> = output_string(&parents_out.stdout)
+        .split(' ')
+        .skip(1)
+        .filter(|p| !p.is_empty())
+        .map(|p| p.to_string())
+        .collect();
+
+    let empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    let base = parents
+        .first()
+        .cloned()
+        .unwrap_or_else(|| empty_tree.to_string());
+    let files_out = git(
+        path,
+        &["diff", "-r", "--name-status", "-z", &base, &full_oid],
+    )?;
+    let mut files: Vec<GitCommitFileChange> = Vec::new();
+    if files_out.success {
+        let raw = String::from_utf8_lossy(&files_out.stdout).into_owned();
+        let tokens: Vec<&str> = raw.split('\0').filter(|t| !t.is_empty()).collect();
+        let mut i = 0usize;
+        while i < tokens.len() {
+            let status = tokens[i].to_string();
+            let letter = status.chars().next().unwrap_or('M');
+            i += 1;
+            if matches!(letter, 'R' | 'C') {
+                let old_path = tokens.get(i).unwrap_or(&"").to_string();
+                let new_path = tokens.get(i + 1).unwrap_or(&"").to_string();
+                i += 2;
+                files.push(GitCommitFileChange {
+                    path: new_path,
+                    old_path: Some(old_path),
+                    status: letter.to_string(),
+                });
+            } else {
+                let new_path = tokens.get(i).unwrap_or(&"").to_string();
+                i += 1;
+                files.push(GitCommitFileChange {
+                    path: new_path,
+                    old_path: None,
+                    status: letter.to_string(),
+                });
+            }
+        }
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(GitCommitDetails {
+        oid: full_oid,
+        short_oid,
+        parents,
+        author_name,
+        author_email,
+        author_timestamp,
+        committer_name,
+        committer_email,
+        commit_timestamp,
+        message,
+        files,
+    })
+}
+
+pub fn get_git_commit_file_diff(
+    project: &Project,
+    oid: &str,
+    file_path: &str,
+    old_path: Option<&str>,
+) -> Result<String> {
+    let oid = validate_git_oid(oid)?;
+    let path = Path::new(&project.path);
+    if file_path.trim().is_empty() {
+        return Err("文件路径不能为空".into());
+    }
+    let parents_out = git(path, &["rev-list", "--parents", "-n", "1", &oid])?;
+    let parent_count = output_string(&parents_out.stdout)
+        .split(' ')
+        .skip(1)
+        .filter(|p| !p.is_empty())
+        .count();
+    let mut pathspecs: Vec<&str> = vec![file_path];
+    if let Some(old) = old_path.filter(|s| !s.trim().is_empty()) {
+        pathspecs.push(old);
+    }
+    let output = if parent_count == 0 {
+        let mut args: Vec<&str> = vec!["show", "--format=", "--no-color", &oid, "--"];
+        args.extend(pathspecs.iter().copied());
+        git(path, &args)?
+    } else {
+        let range = format!("{oid}^1");
+        let mut args: Vec<&str> = vec!["diff", "--no-color", "-M", &range, &oid, "--"];
+        args.extend(pathspecs.iter().copied());
+        git(path, &args)?
+    };
+    if !output.success {
+        return Err(output_string(&output.stderr));
+    }
+    let diff = output_string(&output.stdout);
+    if diff.is_empty() {
+        return Ok("(该提交未改动此文件的文本内容)".into());
+    }
+    Ok(diff)
 }
 
 pub fn execute_project_script(project: &Project, command: &str) -> Result<ExecutionResult> {

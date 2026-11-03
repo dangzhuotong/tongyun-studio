@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 use studio_core::agent_http::ServerHandle;
 use studio_core::{
     AiProjectContext, DbColumnInfo, DbTableInfo, DevCandidate, DevImportOutcome, ExecutionResult,
-    ExistingProject, FileEntry, GitFileChange, HttpResponse, ListeningPort, ManagedService,
+    ExistingProject, FileEntry, GitCommitDetails, GitFileChange, GitHistoryResult, HttpResponse,
+    ListeningPort, ManagedService,
     PaginatedData, Project, ProjectInspection, ServiceManager, SqlQueryResult, Workspace, WorkspaceStore,
 };
 use tauri::Manager;
@@ -145,6 +146,40 @@ fn get_git_diff(
 ) -> Result<String, String> {
     let project = state.store.project(&id)?;
     studio_core::get_git_diff(&project, file_path.as_deref())
+}
+
+#[tauri::command]
+fn get_git_history(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    skip: Option<usize>,
+    limit: Option<usize>,
+    all_branches: Option<bool>,
+) -> Result<GitHistoryResult, String> {
+    let project = state.store.project(&id)?;
+    studio_core::get_git_history(&project, skip, limit, all_branches)
+}
+
+#[tauri::command]
+fn get_git_commit_details(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    oid: String,
+) -> Result<GitCommitDetails, String> {
+    let project = state.store.project(&id)?;
+    studio_core::get_git_commit_details(&project, &oid)
+}
+
+#[tauri::command]
+fn get_git_commit_file_diff(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    oid: String,
+    file_path: String,
+    old_path: Option<String>,
+) -> Result<String, String> {
+    let project = state.store.project(&id)?;
+    studio_core::get_git_commit_file_diff(&project, &oid, &file_path, old_path.as_deref())
 }
 
 #[tauri::command]
@@ -550,6 +585,9 @@ pub fn run() {
             read_project_file_content,
             get_git_changed_files,
             get_git_diff,
+            get_git_history,
+            get_git_commit_details,
+            get_git_commit_file_diff,
             create_git_commit,
             git_commit_amend,
             git_stage_file,
