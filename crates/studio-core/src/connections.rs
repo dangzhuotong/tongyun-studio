@@ -27,6 +27,8 @@ const GCM_PREFIX: &str = "gcm1:";
 const ALLOWED_SQL_HEADS: &[&str] = &[
     "select", "show", "describe", "desc", "explain", "with", "pragma",
 ];
+/// 这些头只是元数据查询，参数里合法包含 DDL 词（`SHOW CREATE TABLE`），不做关键字扫描。
+const METADATA_ONLY_HEADS: &[&str] = &["show", "describe", "desc"];
 const DENIED_SQL_CLAUSES: &[&str] = &[
     " into outfile",
     " into dumpfile",
@@ -35,6 +37,14 @@ const DENIED_SQL_CLAUSES: &[&str] = &[
     " for share",
     " for no key update",
     " for key share",
+];
+/// 写在任意层级都成立的语句级关键字：CTE 里嵌 `DELETE ... RETURNING`、`SELECT ... INTO tbl`
+/// 和 `EXPLAIN ANALYZE <DML>` 都会真的改数据，只比对头部与固定子句拦不住。
+/// 紧跟 `(` 的同名词是函数调用（`REPLACE(a,'x','y')`），不当作语句关键字。
+const DENIED_SQL_KEYWORDS: &[&str] = &[
+    "insert", "update", "delete", "merge", "replace", "truncate", "alter", "drop", "create",
+    "grant", "revoke", "call", "execute", "prepare", "deallocate", "handler", "lock",
+    "returning", "copy", "refresh", "vacuum", "analyze", "into",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -494,16 +504,24 @@ pub fn classify_readonly_sql(sql: &str) -> std::result::Result<(), String> {
     if sql.len() > 64 * 1024 {
         return Err("SQL 超过 64 KiB，请缩小查询".into());
     }
-    let normalized = strip_sql_noise(sql).to_lowercase();
-    let statements: Vec<&str> = normalized
-        .split(';')
-        .map(str::trim)
-        .filter(|statement| !statement.is_empty())
-        .collect();
-    if statements.len() != 1 {
-        return Err("GUARD_SINGLE_STATEMENT：每次仅允许一条只读 SQL 查询".into());
+    // MySQL 把 `\` 当字符串转义符，PostgreSQL 的标准字符串不认（只有 E'' 认）。同一条文本
+    // 在两种解释下可能一个是串、一个是代码，所以两种都要过闸，任一种判出写操作就拦。
+    for backslash_escapes in [true, false] {
+        let normalized = strip_sql_noise(sql, backslash_escapes).to_lowercase();
+        let statements: Vec<&str> = normalized
+            .split(';')
+            .map(str::trim)
+            .filter(|statement| !statement.is_empty())
+            .collect();
+        if statements.len() != 1 {
+            return Err("GUARD_SINGLE_STATEMENT：每次仅允许一条只读 SQL 查询".into());
+        }
+        check_readonly_statement(statements[0])?;
     }
-    let statement = statements[0];
+    Ok(())
+}
+
+fn check_readonly_statement(statement: &str) -> std::result::Result<(), String> {
     let head = statement.split_whitespace().next().unwrap_or_default();
     if !ALLOWED_SQL_HEADS.contains(&head) {
         return Err("GUARD_READONLY：该连接开启了只读保护，仅允许 SELECT / SHOW / EXPLAIN 等查询".into());
@@ -514,48 +532,95 @@ pub fn classify_readonly_sql(sql: &str) -> std::result::Result<(), String> {
             return Err("GUARD_READONLY：查询包含加锁或导出子句，只读连接已拦截".into());
         }
     }
+    if METADATA_ONLY_HEADS.contains(&head) {
+        return Ok(());
+    }
+    for token in sql_word_tokens(statement) {
+        if DENIED_SQL_KEYWORDS.contains(&token) {
+            return Err("GUARD_READONLY：查询内层包含写数据或加锁关键字，只读连接已拦截".into());
+        }
+    }
     Ok(())
 }
 
-fn strip_sql_noise(sql: &str) -> String {
+/// 拆出语句里的裸词（字母、数字、下划线连成的片段），跳过紧跟 `(` 的函数调用名。
+fn sql_word_tokens(statement: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    let mut start: Option<usize> = None;
+    for (index, c) in statement.char_indices() {
+        if c.is_alphanumeric() || c == '_' {
+            if start.is_none() {
+                start = Some(index);
+            }
+            continue;
+        }
+        if let Some(begin) = start.take() {
+            if c != '(' {
+                tokens.push(&statement[begin..index]);
+            }
+        }
+    }
+    if let Some(begin) = start {
+        tokens.push(&statement[begin..]);
+    }
+    tokens
+}
+
+/// 去掉字符串、反引号与注释。引号或块注释没有闭合时按最保守口径处理：把原文暴露出来，
+/// 让调用方看得见被「半个字符串」藏起来的子句。
+fn strip_sql_noise(sql: &str, backslash_escapes: bool) -> String {
     let mut out = String::with_capacity(sql.len());
-    let mut chars = sql.chars().peekable();
-    while let Some(c) = chars.next() {
+    let mut chars = sql.char_indices().peekable();
+    while let Some((index, c)) = chars.next() {
         match c {
             '\'' | '"' | '`' => {
                 let quote = c;
-                while let Some(inner) = chars.next() {
-                    if inner == '\\' {
+                let mut closed = false;
+                while let Some((_, inner)) = chars.next() {
+                    if backslash_escapes && inner == '\\' {
                         chars.next();
                         continue;
                     }
                     if inner == quote {
-                        if chars.peek() == Some(&quote) {
+                        if chars.peek().map(|next| next.1) == Some(quote) {
                             chars.next();
                             continue;
                         }
+                        closed = true;
                         break;
                     }
                 }
-                out.push(' ');
+                if closed {
+                    out.push(' ');
+                } else {
+                    out.push_str(&sql[index..]);
+                    return out;
+                }
             }
-            '-' if chars.peek() == Some(&'-') => {
-                for inner in chars.by_ref() {
+            '-' if chars.peek().map(|next| next.1) == Some('-') => {
+                for (_, inner) in chars.by_ref() {
                     if inner == '\n' {
                         out.push('\n');
                         break;
                     }
                 }
             }
-            '/' if chars.peek() == Some(&'*') => {
+            '/' if chars.peek().map(|next| next.1) == Some('*') => {
                 chars.next();
-                while let Some(inner) = chars.next() {
-                    if inner == '*' && chars.peek() == Some(&'/') {
+                let mut closed = false;
+                while let Some((_, inner)) = chars.next() {
+                    if inner == '*' && chars.peek().map(|next| next.1) == Some('/') {
                         chars.next();
+                        closed = true;
                         break;
                     }
                 }
-                out.push(' ');
+                if closed {
+                    out.push(' ');
+                } else {
+                    out.push_str(&sql[index..]);
+                    return out;
+                }
             }
             _ => out.push(c),
         }
@@ -1454,6 +1519,15 @@ mod tests {
             "EXPLAIN SELECT 1",
             "/* 注释 */ SELECT 1",
             "SELECT 1 -- 尾注释",
+            // 元数据头的参数里合法带 DDL 词，不参与关键字扫描
+            "SHOW CREATE TABLE users",
+            "DESCRIBE users",
+            // 与关键字同名的函数调用不是语句
+            "SELECT REPLACE(name, 'a', 'b') FROM users",
+            "SELECT * FROM t WHERE updated_at > '2026-01-01'",
+            "SELECT * FROM logs WHERE note = 'don''t delete'",
+            // MySQL 的 \\' 转义只在「暴露出来的片段含写关键字」时才拦，普通英文撇号不误伤
+            "SELECT 'Bob\\'s' AS name",
         ] {
             assert!(classify_readonly_sql(allowed).is_ok(), "{allowed}");
         }
@@ -1470,9 +1544,36 @@ mod tests {
             "CALL sp_x()",
             "",
             "SElecT 1; DELETE FROM t",
+            // EXPLAIN ANALYZE 会真跑一遍语句，只读连接一律不放行
+            "EXPLAIN ANALYZE SELECT * FROM users",
+            "EXPLAIN ANALYZE DELETE FROM users",
+            "EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM users",
+            // PostgreSQL 数据修改 CTE：关键字藏在括号里也要扫到
+            "WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d",
+            "WITH i AS (INSERT INTO audit(msg) VALUES ('x') RETURNING id) SELECT * FROM i",
+            "WITH u AS (UPDATE users SET name = 'x' RETURNING id) SELECT * FROM u",
+            // PostgreSQL 标准字符串里 \\ 不是转义符，别让它把 FOR UPDATE 藏进串里
+            "SELECT 'a\\' FOR UPDATE",
+            "SELECT 'a\\' OR 1=1; DELETE FROM t",
+            // SELECT ... INTO 在 PostgreSQL 里是建表
+            "SELECT * INTO users_backup FROM users",
         ] {
             assert!(classify_readonly_sql(denied).is_err(), "{denied} 应被拦截");
         }
+    }
+
+    #[test]
+    fn denied_bypasses_report_which_guard_fired() {
+        assert!(classify_readonly_sql("EXPLAIN ANALYZE DELETE FROM users")
+            .unwrap_err()
+            .starts_with("GUARD_READONLY"));
+        assert!(classify_readonly_sql("WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d")
+            .unwrap_err()
+            .contains("只读"));
+        // 反斜杠歧义暴露出分号时按多语句拦截，两种解释都过闸
+        assert!(classify_readonly_sql("SELECT 'a\\' AS x; DELETE FROM t")
+            .unwrap_err()
+            .starts_with("GUARD_SINGLE_STATEMENT"));
     }
 
     #[test]
