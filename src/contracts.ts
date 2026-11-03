@@ -202,6 +202,13 @@ export interface GitCommitDetails {
   files: GitCommitFileChange[];
 }
 
+export interface GitStashEntry {
+  index: number;
+  reference: string;
+  message: string;
+  date: string;
+}
+
 export interface ExecutionResult {
   exitCode: number;
   stdout: string;

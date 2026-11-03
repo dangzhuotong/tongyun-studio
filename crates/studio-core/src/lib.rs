@@ -465,6 +465,15 @@ pub struct GitCommitDetails {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GitStashEntry {
+    pub index: usize,
+    pub reference: String,
+    pub message: String,
+    pub date: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DbTableInfo {
     pub name: String,
     pub kind: String,
@@ -1634,6 +1643,107 @@ pub fn get_git_commit_file_diff(
     Ok(diff)
 }
 
+/// Stash references are index-based, so they must be validated before reaching git.
+fn stash_ref(path: &Path, index: usize) -> Result<String> {
+    let list = git_stash_entries(path)?;
+    if list.iter().any(|entry| entry.index == index) {
+        return Ok(format!("stash@{{{index}}}"));
+    }
+    Err(format!("贮藏不存在：stash@{{{index}}}"))
+}
+
+fn stash_worktree_dirty(path: &Path) -> Result<bool> {
+    Ok(!git(path, &["status", "--porcelain=v1"])?.stdout.is_empty())
+}
+
+pub fn git_stash_list(project: &Project) -> Result<Vec<GitStashEntry>> {
+    git_stash_entries(Path::new(&project.path))
+}
+
+fn git_stash_entries(path: &Path) -> Result<Vec<GitStashEntry>> {
+    let output = git(
+        path,
+        &["stash", "list", "--format=%gd|%ci|%gs"],
+    )?;
+    if !output.success {
+        return Err(output_string(&output.stderr));
+    }
+    let text = output_string(&output.stdout);
+    if text.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut entries = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let mut parts = line.splitn(3, '|');
+        let (Some(reference), Some(date), Some(message)) =
+            (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        entries.push(GitStashEntry {
+            index,
+            reference: reference.to_owned(),
+            message: message.to_owned(),
+            date: date.to_owned(),
+        });
+    }
+    Ok(entries)
+}
+
+pub fn git_stash_push(project: &Project, message: Option<&str>, include_untracked: bool) -> Result<String> {
+    let path = Path::new(&project.path);
+    let trimmed = message.map(str::trim).filter(|m| !m.is_empty());
+    let default_message = "橦云工作台贮藏";
+    let mut args = vec!["stash", "push"];
+    if include_untracked {
+        args.push("--include-untracked");
+    }
+    args.extend(["-m", trimmed.unwrap_or(default_message)]);
+    let out = git(path, &args)?;
+    if !out.success {
+        return Err(output_string(&out.stderr));
+    }
+    let stdout = output_string(&out.stdout);
+    if stdout.contains("No local changes") {
+        return Ok("工作区没有改动，无需贮藏".into());
+    }
+    Ok(format!("已贮藏：{}", trimmed.unwrap_or(default_message)))
+}
+
+pub fn git_stash_apply(project: &Project, index: usize) -> Result<String> {
+    let path = Path::new(&project.path);
+    let reference = stash_ref(path, index)?;
+    let out = git(path, &["stash", "apply", reference.as_str()])?;
+    if !out.success {
+        return Err(output_string(&out.stderr));
+    }
+    Ok(format!("已应用 {reference}（贮藏仍保留）"))
+}
+
+pub fn git_stash_pop(project: &Project, index: usize) -> Result<String> {
+    let path = Path::new(&project.path);
+    let reference = stash_ref(path, index)?;
+    // A dirty worktree is the usual reason git aborts a pop; intercept it before touching history.
+    if stash_worktree_dirty(path)? {
+        return Err("工作区存在未提交改动，Pop 可能覆盖这些改动，已被拦截。请先提交或丢弃后重试，或改用 Apply。".into());
+    }
+    let out = git(path, &["stash", "pop", reference.as_str()])?;
+    if !out.success {
+        return Err(output_string(&out.stderr));
+    }
+    Ok(format!("已弹出 {reference} 并恢复改动"))
+}
+
+pub fn git_stash_drop(project: &Project, index: usize) -> Result<String> {
+    let path = Path::new(&project.path);
+    let reference = stash_ref(path, index)?;
+    let out = git(path, &["stash", "drop", reference.as_str()])?;
+    if !out.success {
+        return Err(output_string(&out.stderr));
+    }
+    Ok(format!("已删除 {reference}"))
+}
+
 pub fn execute_project_script(project: &Project, command: &str) -> Result<ExecutionResult> {
     let start = Instant::now();
     #[cfg(windows)]
@@ -2647,5 +2757,130 @@ mod tests {
         assert!(append_project_file(&project, ".tongyun/agent-session.json", "{}").is_err());
         assert!(open_url("ftp://example.com").is_err());
         assert!(open_url("javascript:alert(1)").is_err());
+    }
+
+    fn project_of(root: &Path) -> Project {
+        Project {
+            id: "stash-test".into(),
+            name: "stash-test".into(),
+            path: root.to_string_lossy().into_owned(),
+            created_at: "".into(),
+            dev: None,
+        }
+    }
+
+    /// A committed seed file, because stash needs HEAD to record its base against.
+    fn repo_with_commit(dir: &Path) -> Project {
+        assert!(Command::new("git")
+            .args(["init", "-q"])
+            .arg(dir)
+            .status()
+            .unwrap()
+            .success());
+        fs::write(dir.join("seed.txt"), "seed\n").unwrap();
+        assert!(git(dir, &["add", "seed.txt"]).unwrap().success);
+        assert!(git(
+            dir,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "seed"
+            ]
+        )
+        .unwrap()
+        .success);
+        project_of(dir)
+    }
+
+    /// Trailing whitespace varies with the machine's core.autocrlf, so compare content only.
+    fn read_trimmed(path: &Path) -> String {
+        fs::read_to_string(path).unwrap().trim_end().to_owned()
+    }
+
+    #[test]
+    fn stash_push_list_apply_pop_drop_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let project = repo_with_commit(root);
+        assert!(git_stash_list(&project).unwrap().is_empty());
+
+        fs::write(root.join("seed.txt"), "seed modified\n").unwrap();
+        assert!(git_stash_push(&project, Some("wip: 前端改造"), false)
+            .unwrap()
+            .contains("已贮藏"));
+        assert_eq!(read_trimmed(&root.join("seed.txt")), "seed", "贮藏后应回到基线内容");
+
+        let list = git_stash_list(&project).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].index, 0);
+        assert_eq!(list[0].reference, "stash@{0}");
+        assert!(list[0].message.contains("wip: 前端改造"), "{:?}", list[0].message);
+        assert!(!list[0].date.is_empty());
+
+        git_stash_apply(&project, 0).unwrap();
+        assert_eq!(read_trimmed(&root.join("seed.txt")), "seed modified");
+        assert_eq!(git_stash_list(&project).unwrap().len(), 1, "Apply 不消费贮藏");
+
+        git_stash_drop(&project, 0).unwrap();
+        assert!(git_stash_list(&project).unwrap().is_empty());
+
+        fs::write(root.join("seed.txt"), "seed again\n").unwrap();
+        assert!(git_stash_push(&project, None, false)
+            .unwrap()
+            .contains("橦云工作台贮藏"), "缺省备注应落进贮藏说明");
+        assert!(git_stash_pop(&project, 0).unwrap().contains("已弹出"));
+        assert_eq!(read_trimmed(&root.join("seed.txt")), "seed again");
+        assert!(git_stash_list(&project).unwrap().is_empty(), "Pop 消费贮藏");
+    }
+
+    #[test]
+    fn stash_includes_untracked_and_rejects_missing_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let project = repo_with_commit(root);
+
+        fs::write(root.join("draft.txt"), "draft\n").unwrap();
+        assert!(git_stash_push(&project, Some("含未跟踪"), true)
+            .unwrap()
+            .contains("已贮藏"));
+        assert!(!root.join("draft.txt").is_file(), "未跟踪文件应一并离开工作区");
+        assert!(git_stash_apply(&project, 0).unwrap().contains("已应用"));
+        assert_eq!(read_trimmed(&root.join("draft.txt")), "draft");
+
+        assert!(git_stash_apply(&project, 7).is_err());
+        assert!(git_stash_pop(&project, 7).is_err());
+        assert!(git_stash_drop(&project, 7).is_err());
+    }
+
+    #[test]
+    fn stash_pop_is_blocked_when_worktree_dirty() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let project = repo_with_commit(root);
+
+        fs::write(root.join("seed.txt"), "stashed\n").unwrap();
+        git_stash_push(&project, Some("first"), false).unwrap();
+
+        fs::write(root.join("seed.txt"), "conflicting\n").unwrap();
+        let blocked = git_stash_pop(&project, 0).unwrap_err();
+        assert!(blocked.contains("已被拦截"), "{blocked}");
+        assert_eq!(read_trimmed(&root.join("seed.txt")), "conflicting");
+        assert_eq!(git_stash_list(&project).unwrap().len(), 1, "拦截后贮藏必须还在");
+    }
+
+    #[test]
+    fn stash_push_on_clean_worktree_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = repo_with_commit(dir.path());
+        assert!(git_stash_push(&project, Some("nothing"), false)
+            .unwrap()
+            .contains("无需贮藏"));
+        assert!(git_stash_list(&project).unwrap().is_empty());
     }
 }

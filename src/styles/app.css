@@ -2015,6 +2015,166 @@ body, html {
   font-weight: 500;
 }
 
+/* Guttered diff viewer: old/new line-number ruler, per-hunk separators and stats */
+.diff-gutter-grid {
+  min-width: max-content;
+}
+
+.diff-hunk-block + .diff-hunk-block {
+  margin-top: 8px;
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+}
+
+.diff-hunk-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 12px 2px 72px;
+  background: var(--sunken);
+  color: var(--info);
+  font-weight: 500;
+  white-space: pre;
+}
+
+.diff-hunk-stats,
+.diff-total-stats {
+  font-size: 11px;
+  color: var(--text-meta);
+  white-space: nowrap;
+}
+
+.diff-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.diff-gutter-row {
+  display: grid;
+  grid-template-columns: 44px 44px 1fr;
+  align-items: start;
+  padding-right: 12px;
+}
+
+.diff-ln {
+  position: sticky;
+  left: 0;
+  align-self: stretch;
+  padding: 0 8px 0 12px;
+  text-align: right;
+  color: var(--text-meta);
+  background: inherit;
+  user-select: none;
+}
+
+.diff-ln:last-of-type {
+  left: 44px;
+}
+
+.diff-plain-message {
+  padding: 1px 12px;
+  color: var(--text-meta);
+  white-space: pre-wrap;
+}
+
+.diff-line-file {
+  color: var(--text-meta);
+}
+
+.diff-line-context {
+  color: var(--text-primary);
+}
+
+/* Stash manager */
+.stash-subcard {
+  margin-bottom: 12px;
+}
+
+.stash-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stash-push-form {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.stash-push-form .modal-input {
+  flex: 1;
+  min-width: 220px;
+}
+
+.stash-toggle-group {
+  display: inline-flex;
+  align-items: center;
+}
+
+.stash-count {
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent-tint);
+  color: var(--accent);
+  font-size: 10px;
+}
+
+.stash-row {
+  display: grid;
+  grid-template-columns: 88px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.stash-row:last-child {
+  border-bottom: none;
+}
+
+.stash-ref {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.stash-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.stash-msg {
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stash-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stash-actions .file-action-icon-btn {
+  width: auto;
+  padding: 2px 8px;
+  font-size: 10.5px;
+}
+
+.stash-actions .file-action-icon-btn.danger {
+  color: var(--error);
+  border-color: var(--error-tint);
+}
+
 /* Files Explorer Workbench */
 .files-workbench-split {
   display: grid;
