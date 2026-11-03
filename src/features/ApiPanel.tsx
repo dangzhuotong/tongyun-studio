@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import type { Project, ProjectInspection, HttpResponse, AgentSessionState } from '../contracts';
 import {
   sendHttpRequest,
@@ -7,17 +7,45 @@ import {
   appendProjectFile,
 } from '../bridge';
 import {
+  COLLECTION_PATH,
+  childrenOf,
+  emptyCollection,
+  nextWorkspaceId,
+  parseCollection,
+  parseCurl,
+  parseHttpFile,
+  removeNode,
+  replaceRequestInSource,
+  serializeCollection,
+  serializeRequest,
+  upsertNode,
+  type CollectionFile,
+  type CollectionNode,
+  type ParseWarning,
+  type ParsedCurl,
+  type WorkspaceAuth,
+  type WorkspaceRequest,
+} from './apiWorkspace';
+import {
   Bot,
   Check,
+  ChevronDown,
+  ChevronRight,
   Code2,
   Copy,
   FileCode,
+  Folder,
+  FolderOpen,
   History,
   Key,
+  Layers,
   LoaderCircle,
+  Plus,
+  RefreshCw,
   Send,
   Terminal,
   Trash2,
+  X,
 } from '../components/Icons';
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD';
@@ -78,6 +106,153 @@ const COMMON_HEADER_VALUES: Record<string, string[]> = {
   ],
 };
 
+interface RequestTab {
+  id: string;
+  name: string;
+  method: HttpMethod;
+  url: string;
+  params: ParamRow[];
+  headers: ParamRow[];
+  authType: 'none' | 'bearer' | 'basic';
+  bearerToken: string;
+  basicUser: string;
+  basicPass: string;
+  body: string;
+  response: HttpResponse | null;
+  sending: boolean;
+  /** 载入或上次保存时的请求快照，用于脏标记与写回 */
+  baseline: string;
+  httpId?: string;
+  sourceFile?: string;
+  sourceLine?: number;
+  loadedName?: string;
+  regionStart?: number;
+  blockStart?: number;
+  blockEnd?: number;
+  autoName?: boolean;
+  collectionNodeId?: string;
+}
+
+const EDITABLE_FIELDS = [
+  'method',
+  'url',
+  'params',
+  'headers',
+  'authType',
+  'bearerToken',
+  'basicUser',
+  'basicPass',
+  'body',
+] as const;
+
+type EditableField = (typeof EDITABLE_FIELDS)[number];
+type TabField = EditableField | 'response' | 'sending' | 'name';
+
+function requestSignature(tab: RequestTab): string {
+  return JSON.stringify(EDITABLE_FIELDS.map(key => tab[key]));
+}
+
+function freshRow(key = '', value = ''): ParamRow {
+  return { id: nextWorkspaceId('row'), key, value, enabled: true };
+}
+
+function newRequestTab(patch: Partial<RequestTab> = {}): RequestTab {
+  const base: RequestTab = {
+    id: nextWorkspaceId('tab'),
+    name: '未命名请求',
+    method: 'GET',
+    url: 'http://localhost:3000/api/health',
+    params: [freshRow('version', '1')],
+    headers: [freshRow('Content-Type', 'application/json'), freshRow('Accept', 'application/json')],
+    authType: 'none',
+    bearerToken: '',
+    basicUser: '',
+    basicPass: '',
+    body: '{\n  "query": "hello"\n}',
+    response: null,
+    sending: false,
+    baseline: '',
+    autoName: true,
+  };
+  const merged = { ...base, ...patch };
+  return { ...merged, baseline: requestSignature(merged) };
+}
+
+function authToTabFields(auth: WorkspaceAuth): Pick<RequestTab, 'authType' | 'bearerToken' | 'basicUser' | 'basicPass'> {
+  if (auth.type === 'bearer') {
+    return { authType: 'bearer', bearerToken: auth.token, basicUser: '', basicPass: '' };
+  }
+  if (auth.type === 'basic') {
+    return { authType: 'basic', bearerToken: '', basicUser: auth.username, basicPass: auth.password };
+  }
+  return { authType: 'none', bearerToken: '', basicUser: '', basicPass: '' };
+}
+
+function tabToWorkspaceRequest(tab: RequestTab): WorkspaceRequest {
+  const auth: WorkspaceAuth =
+    tab.authType === 'bearer'
+      ? { type: 'bearer', token: tab.bearerToken }
+      : tab.authType === 'basic'
+        ? { type: 'basic', username: tab.basicUser, password: tab.basicPass }
+        : { type: 'none' };
+  return {
+    id: tab.httpId ?? nextWorkspaceId('req'),
+    name: tab.name,
+    method: tab.method,
+    url: tab.url,
+    params: tab.params,
+    headers: tab.headers,
+    auth,
+    body: tab.body,
+    line: tab.sourceLine,
+    blockStart: tab.blockStart,
+    blockEnd: tab.blockEnd,
+    regionStart: tab.regionStart,
+    hasSeparator: tab.regionStart !== undefined && tab.blockStart !== undefined && tab.regionStart !== tab.blockStart,
+    autoName: tab.autoName,
+  };
+}
+
+function requestToTabPatch(req: WorkspaceRequest, sourceFile?: string): Partial<RequestTab> {
+  return {
+    name: req.name,
+    method: req.method as HttpMethod,
+    url: req.url,
+    params: req.params,
+    headers: req.headers,
+    ...authToTabFields(req.auth),
+    body: req.body,
+    response: null,
+    sending: false,
+    httpId: req.id,
+    sourceFile,
+    sourceLine: req.line,
+    loadedName: req.name,
+    regionStart: req.regionStart,
+    blockStart: req.blockStart,
+    blockEnd: req.blockEnd,
+    autoName: req.autoName,
+  };
+}
+
+function curlToTabPatch(parsed: ParsedCurl, httpMethod: string): Partial<RequestTab> {
+  return {
+    method: httpMethod as HttpMethod,
+    url: parsed.url,
+    params: parsed.params,
+    headers: parsed.headers,
+    ...authToTabFields(parsed.auth),
+    body: parsed.body,
+    autoName: false,
+  };
+}
+
+interface HttpFileTree {
+  requests: WorkspaceRequest[];
+  warnings: ParseWarning[];
+  text: string;
+}
+
 export default function ApiPanel({
   project,
   inspection,
@@ -91,22 +266,41 @@ export default function ApiPanel({
   onRefresh?: () => void;
   onNotify?: (msg: string) => void;
 }) {
-  const [method, setMethod] = useState<HttpMethod>('GET');
-  const [url, setUrl] = useState('http://localhost:3000/api/health');
+  const [tabs, setTabs] = useState<RequestTab[]>(() => [newRequestTab()]);
+  const [activeTabId, setActiveTabId] = useState('');
+  const active = tabs.find(t => t.id === activeTabId) ?? tabs[0];
 
-  // Request configs
-  const [params, setParams] = useState<ParamRow[]>([
-    { id: 'p1', key: 'version', value: '1', enabled: true },
-  ]);
-  const [headers, setHeaders] = useState<ParamRow[]>([
-    { id: 'h1', key: 'Content-Type', value: 'application/json', enabled: true },
-    { id: 'h2', key: 'Accept', value: 'application/json', enabled: true },
-  ]);
-  const [authType, setAuthType] = useState<'none' | 'bearer' | 'basic'>('none');
-  const [bearerToken, setBearerToken] = useState('');
-  const [basicUser, setBasicUser] = useState('');
-  const [basicPass, setBasicPass] = useState('');
-  const [body, setBody] = useState('{\n  "query": "hello"\n}');
+  const patchTab = (
+    id: string,
+    patch: Partial<RequestTab> | ((prev: RequestTab) => Partial<RequestTab>),
+  ) => {
+    setTabs(prev =>
+      prev.map(t => (t.id === id ? { ...t, ...(typeof patch === 'function' ? patch(t) : patch) } : t)),
+    );
+  };
+
+  const bindField = <K extends TabField>(key: K) =>
+    [
+      active[key],
+      (next: RequestTab[K] | ((prev: RequestTab[K]) => RequestTab[K])) =>
+        patchTab(active.id, prev => ({
+          [key]: typeof next === 'function'
+            ? (next as (prev: RequestTab[K]) => RequestTab[K])(prev[key])
+            : next,
+        } as Partial<RequestTab>)),
+    ] as const;
+
+  const [method, setMethod] = bindField('method');
+  const [url, setUrl] = bindField('url');
+  const [params, setParams] = bindField('params');
+  const [headers, setHeaders] = bindField('headers');
+  const [authType, setAuthType] = bindField('authType');
+  const [bearerToken, setBearerToken] = bindField('bearerToken');
+  const [basicUser, setBasicUser] = bindField('basicUser');
+  const [basicPass, setBasicPass] = bindField('basicPass');
+  const [body, setBody] = bindField('body');
+  const [response, setResponse] = bindField('response');
+  const [sending, setSending] = bindField('sending');
 
   // Active editor tab
   const [activeTab, setActiveTab] = useState<'params' | 'headers' | 'auth' | 'body'>('params');
@@ -118,8 +312,6 @@ export default function ApiPanel({
   const [showEnvModal, setShowEnvModal] = useState(false);
 
   // Execution
-  const [sending, setSending] = useState(false);
-  const [response, setResponse] = useState<HttpResponse | null>(null);
   const [responseTab, setResponseTab] = useState<'body' | 'headers'>('body');
   const [copiedBody, setCopiedBody] = useState(false);
   const [copiedCurl, setCopiedCurl] = useState(false);
@@ -135,9 +327,86 @@ export default function ApiPanel({
   const [history, setHistory] = useState<RequestHistoryItem[]>([]);
   const [selectedHttpFile, setSelectedHttpFile] = useState<string | null>(null);
   const [loadingHttpFile, setLoadingHttpFile] = useState(false);
+  const [httpTrees, setHttpTrees] = useState<Record<string, HttpFileTree>>({});
+  const [expandedFiles, setExpandedFiles] = useState<Record<string, boolean>>({});
+  const [writingBack, setWritingBack] = useState(false);
+
+  // JSON 用例集
+  const [collection, setCollection] = useState<CollectionFile>(() => emptyCollection());
+  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
+  const [newFolderName, setNewFolderName] = useState('');
+  const [caseName, setCaseName] = useState('');
+  const [targetFolderId, setTargetFolderId] = useState<string | null>(null);
+  const [showCollections, setShowCollections] = useState(true);
 
   const [curlImportText, setCurlImportText] = useState('');
   const [showCurlModal, setShowCurlModal] = useState(false);
+
+  const dirty = requestSignature(active) !== active.baseline;
+
+  const createTab = (patch: Partial<RequestTab> = {}) => {
+    const tab = newRequestTab(patch);
+    setTabs(prev => [...prev, tab]);
+    setActiveTabId(tab.id);
+    return tab;
+  };
+
+  const closeTab = (id: string) => {
+    const target = tabs.find(t => t.id === id);
+    if (!target) return;
+    if (requestSignature(target) !== target.baseline) {
+      if (!window.confirm(`「${target.name}」有未保存的修改，确定关闭该 Tab 吗？`)) return;
+    }
+    const index = tabs.findIndex(t => t.id === id);
+    const next = tabs.filter(t => t.id !== id);
+    if (next.length === 0) {
+      const fresh = newRequestTab();
+      setTabs([fresh]);
+      setActiveTabId(fresh.id);
+      return;
+    }
+    setTabs(next);
+    if (id === activeTabId) {
+      setActiveTabId(next[Math.min(index, next.length - 1)].id);
+    }
+  };
+
+  useEffect(() => {
+    if (!tabs.some(t => t.id === activeTabId)) setActiveTabId(tabs[0]?.id ?? '');
+  }, [tabs, activeTabId]);
+
+  useEffect(() => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'w') {
+        event.preventDefault();
+        closeTab(active.id);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabs, activeTabId, project]);
+
+  useEffect(() => {
+    if (!project) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const text = await readProjectFileContent(project.id, COLLECTION_PATH);
+        if (!cancelled) setCollection(parseCollection(text));
+      } catch {
+        if (!cancelled) setCollection(emptyCollection());
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [project?.id]);
+
+  useEffect(() => {
+    setHttpTrees({});
+    setExpandedFiles({});
+  }, [project?.id]);
 
   const agentHttpActions = (session?.actions ?? []).filter(a => a.kind === 'http');
 
@@ -248,116 +517,228 @@ export default function ApiPanel({
     }
   };
 
-  const loadHttpFile = async (relPath: string) => {
-    if (!project) return;
-    setSelectedHttpFile(relPath);
+  const readTree = async (relPath: string, silent = false) => {
+    if (!project) return null;
     setLoadingHttpFile(true);
     try {
       const content = await readProjectFileContent(project.id, relPath);
-      const lines = content.split('\n');
-      let foundRequest = false;
-      let inBody = false;
-      const parsedHeaders: ParamRow[] = [];
-      const bodyLines: string[] = [];
-
-      for (let i = 0; i < lines.length; i++) {
-        const rawLine = lines[i];
-        const trimmed = rawLine.trim();
-
-        if (!foundRequest) {
-          if (trimmed.startsWith('#') || !trimmed) continue;
-          const match = trimmed.match(/^(GET|POST|PUT|DELETE|PATCH|HEAD)\s+(\S+)/i);
-          if (match) {
-            setMethod(match[1].toUpperCase() as HttpMethod);
-            setUrl(match[2]);
-            foundRequest = true;
-          }
-          continue;
-        }
-
-        // Once request line is found
-        if (trimmed.startsWith('###')) {
-          // Reached next request block
-          break;
-        }
-
-        if (!inBody) {
-          if (!trimmed) {
-            inBody = true;
-            continue;
-          }
-          const colonIdx = trimmed.indexOf(':');
-          if (colonIdx > 0) {
-            const k = trimmed.slice(0, colonIdx).trim();
-            const v = trimmed.slice(colonIdx + 1).trim();
-            if (k.toLowerCase() === 'authorization' && v.toLowerCase().startsWith('bearer ')) {
-              setAuthType('bearer');
-              setBearerToken(v.slice(7).trim());
-            } else {
-              parsedHeaders.push({
-                id: `load_h_${parsedHeaders.length}`,
-                key: k,
-                value: v,
-                enabled: true,
-              });
-            }
-          }
-        } else {
-          bodyLines.push(rawLine);
-        }
+      const parsed = parseHttpFile(content);
+      setHttpTrees(prev => ({
+        ...prev,
+        [relPath]: { requests: parsed.requests, warnings: parsed.warnings, text: content },
+      }));
+      if (!silent) {
+        const first = parsed.warnings[0];
+        onNotify?.(
+          first
+            ? `已解析 ${relPath}（${parsed.requests.length} 个请求，${parsed.warnings.length} 处提示：${first.message}）`
+            : `已解析用例文件：${relPath}（${parsed.requests.length} 个请求）`,
+        );
       }
-
-      if (parsedHeaders.length > 0) {
-        setHeaders(parsedHeaders);
-      }
-      if (bodyLines.length > 0) {
-        setBody(bodyLines.join('\n').trim());
-      }
-      onNotify?.(`已载入用例：${relPath}`);
+      return parsed;
     } catch (e) {
       onNotify?.(`读取文件失败：${e}`);
+      return null;
     } finally {
       setLoadingHttpFile(false);
     }
   };
 
-  const parseCurlCommand = () => {
-    const text = curlImportText.trim();
-    if (!text.startsWith('curl')) {
-      onNotify?.('非标准 curl 命令');
+  const toggleHttpFile = async (relPath: string) => {
+    if (!project) return;
+    setSelectedHttpFile(relPath);
+    setExpandedFiles(prev => ({ ...prev, [relPath]: !prev[relPath] }));
+    if (!httpTrees[relPath]) await readTree(relPath);
+  };
+
+  const openRequestTab = (relPath: string, req: WorkspaceRequest) => {
+    const existing = tabs.find(t => t.sourceFile === relPath && t.sourceLine === req.line);
+    if (existing) {
+      setActiveTabId(existing.id);
       return;
     }
-
-    const methodMatch = text.match(/-X\s+([A-Z]+)/);
-    if (methodMatch) setMethod(methodMatch[1] as HttpMethod);
-
-    const urlMatch = text.match(/https?:\/\/[^\s'"]+/);
-    if (urlMatch) setUrl(urlMatch[0]);
-
-    const headerMatches = [...text.matchAll(/-H\s+['"]([^'"]+)['"]/g)];
-    if (headerMatches.length > 0) {
-      const parsed: ParamRow[] = headerMatches.map((m, idx) => {
-        const [k, v] = m[1].split(':');
-        return {
-          id: `curl_h_${idx}`,
-          key: k?.trim() || '',
-          value: v?.trim() || '',
-          enabled: true,
-        };
-      });
-      setHeaders(parsed);
-    }
-
-    const dataMatch = text.match(/--data(-raw|-binary)?\s+['"]([^'"]+)['"]/);
-    if (dataMatch) {
-      setBody(dataMatch[2]);
-      if (!methodMatch) setMethod('POST');
-    }
-
-    setShowCurlModal(false);
-    setCurlImportText('');
-    onNotify?.('✨ 已成功从 cURL 解析导入请求');
+    createTab(requestToTabPatch(req, relPath));
   };
+
+  const reloadSourceIntoTab = async () => {
+    if (!project || !active.sourceFile) return;
+    const parsed = await readTree(active.sourceFile, true);
+    const req = parsed?.requests.find(r => r.line === active.sourceLine);
+    if (!req) {
+      onNotify?.('源文件里已找不到该请求，请重新选择用例');
+      return;
+    }
+    patchTab(active.id, prev => {
+      const merged = { ...prev, ...requestToTabPatch(req, active.sourceFile!) };
+      return { ...merged, baseline: requestSignature(merged) };
+    });
+    onNotify?.(`已重新载入：${req.name}`);
+  };
+
+  const writeBackActive = async () => {
+    const sourceFile = active.sourceFile;
+    if (!project || !sourceFile) return;
+    setWritingBack(true);
+    try {
+      const content = await readProjectFileContent(project.id, sourceFile);
+      const parsed = parseHttpFile(content);
+      const located =
+        parsed.requests.find(r => r.line === active.sourceLine) ??
+        parsed.requests.find(r => r.name === active.loadedName);
+      if (!located) {
+        onNotify?.('写回失败：源文件里已找不到这段请求，请重新载入后再试');
+        return;
+      }
+      const updated = tabToWorkspaceRequest(active);
+      const next = replaceRequestInSource(content, located, updated);
+      await writeProjectFile(project.id, sourceFile, next);
+      const reparsed = parseHttpFile(next);
+      const moved =
+        reparsed.requests.find(r => r.name === updated.name) ??
+        reparsed.requests.find(r => r.name === located.name);
+      patchTab(active.id, prev => {
+        const merged = { ...prev, ...(moved ? requestToTabPatch(moved, sourceFile) : {}) };
+        return { ...merged, baseline: requestSignature(merged) };
+      });
+      setHttpTrees(prev => ({ ...prev, [sourceFile]: { requests: reparsed.requests, warnings: reparsed.warnings, text: next } }));
+      onNotify?.(`✨ 已写回 ${sourceFile}，其余用例逐字节保留`);
+      onRefresh?.();
+    } catch (err) {
+      onNotify?.(`写回失败：${err}`);
+    } finally {
+      setWritingBack(false);
+    }
+  };
+
+  const applyCurlToActiveTab = () => {
+    const text = curlImportText.trim();
+    if (!text) {
+      onNotify?.('请先粘贴 curl 命令');
+      return;
+    }
+    try {
+      const parsed = parseCurl(text);
+      patchTab(active.id, prev => {
+        const merged = { ...prev, ...curlToTabPatch(parsed, parsed.method) };
+        return { ...merged, baseline: requestSignature(merged) };
+      });
+      setShowCurlModal(false);
+      setCurlImportText('');
+      const extra =
+        parsed.unrecognized.length > 0 ? ` · 未识别参数：${parsed.unrecognized.join(' ')}` : '';
+      onNotify?.(`✨ 已从 cURL 解析导入（${parsed.method} ${parsed.url}）${extra}`);
+    } catch (err) {
+      onNotify?.(`cURL 解析失败：${err}`);
+    }
+  };
+
+  const persistCollection = async (nextFile: CollectionFile, msg: string) => {
+    if (!project) return;
+    try {
+      await writeProjectFile(project.id, COLLECTION_PATH, serializeCollection(nextFile));
+      setCollection(nextFile);
+      onNotify?.(msg);
+    } catch (err) {
+      onNotify?.(`保存用例集失败：${err}`);
+    }
+  };
+
+  const createFolder = () => {
+    const name = newFolderName.trim();
+    if (!name) return;
+    const node: CollectionNode = {
+      id: nextWorkspaceId('col'),
+      kind: 'folder',
+      name,
+      parentId: targetFolderId,
+    };
+    setExpandedFolders(prev => ({ ...prev, [node.id]: true }));
+    setNewFolderName('');
+    void persistCollection(upsertNode(collection, node), `已新建目录「${name}」`);
+  };
+
+  const saveActiveToCollection = () => {
+    const name = (caseName.trim() || active.name).trim();
+    if (!name) return;
+    const id = active.collectionNodeId ?? nextWorkspaceId('col');
+    const node: CollectionNode = {
+      id,
+      kind: 'case',
+      name,
+      parentId: targetFolderId,
+      request: { ...tabToWorkspaceRequest(active), id, name },
+    };
+    patchTab(active.id, prev => {
+      const merged = { ...prev, name, collectionNodeId: id };
+      return { ...merged, baseline: requestSignature(merged) };
+    });
+    setCaseName('');
+    void persistCollection(upsertNode(collection, node), `已存入用例集：${name}`);
+  };
+
+  const openCollectionCase = (node: CollectionNode) => {
+    if (!node.request) return;
+    const req: WorkspaceRequest = { ...node.request, id: node.request.id, name: node.name };
+    const existing = tabs.find(t => t.collectionNodeId === node.id);
+    if (existing) {
+      setActiveTabId(existing.id);
+      return;
+    }
+    createTab({ ...requestToTabPatch(req), collectionNodeId: node.id });
+  };
+
+  const removeCollectionNode = (node: CollectionNode) => {
+    if (!window.confirm(`删除${node.kind === 'folder' ? '目录及其内容' : '用例'}「${node.name}」？`)) return;
+    void persistCollection(removeNode(collection, node.id), `已删除「${node.name}」`);
+  };
+
+  const renderCollectionNodes = (parentId: string | null, depth: number): ReactNode[] =>
+    childrenOf(collection, parentId).map(node => {
+      const isFolder = node.kind === 'folder';
+      const open = !!expandedFolders[node.id];
+      const inTab = !isFolder && active.collectionNodeId === node.id;
+      return (
+        <div key={node.id} className="case-tree-file">
+          <div
+            className={`tree-row ${isFolder ? 'folder' : 'request'} ${inTab ? 'active' : ''}`}
+            style={{ paddingLeft: 6 + depth * 12 }}
+            onClick={() => {
+              if (!isFolder) openCollectionCase(node);
+            }}
+            onDoubleClick={() => (isFolder ? setExpandedFolders(p => ({ ...p, [node.id]: !open })) : openCollectionCase(node))}
+            title={isFolder ? '双击展开/收起目录' : '双击在新 Tab 打开该用例'}
+          >
+            {isFolder ? (
+              <>
+                {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                {open ? <FolderOpen size={12} /> : <Folder size={12} />}
+              </>
+            ) : (
+              <span
+                className={`method-badge-mini method-${(node.request?.method ?? 'GET').toLowerCase()}`}
+              >
+                {node.request?.method ?? 'REQ'}
+              </span>
+            )}
+            <span className="tree-label">{node.name}</span>
+            <button
+              type="button"
+              className="icon-button-sm"
+              onClick={e => {
+                e.stopPropagation();
+                removeCollectionNode(node);
+              }}
+              title="删除"
+            >
+              <Trash2 size={11} />
+            </button>
+          </div>
+          {isFolder && open && (
+            <div className="tree-children">{renderCollectionNodes(node.id, depth + 1)}</div>
+          )}
+        </div>
+      );
+    });
 
   const generateCurl = (
     customMethod?: HttpMethod,
@@ -430,29 +811,12 @@ export default function ApiPanel({
     onNotify?.(`已应用 Header: ${key}`);
   };
 
-  const generateHttpSnippet = (title?: string) => {
-    const targetUrl = buildTargetUrl();
-    const lines: string[] = [];
-    const summary = title?.trim() || `${method} ${targetUrl}`;
-    lines.push(`### ${summary}`);
-    lines.push(`${method} ${targetUrl}`);
-
-    for (const h of headers.filter(h => h.enabled && h.key.trim())) {
-      lines.push(`${h.key.trim()}: ${interpolate(h.value.trim())}`);
-    }
-    if (authType === 'bearer' && bearerToken.trim()) {
-      lines.push(`Authorization: Bearer ${interpolate(bearerToken.trim())}`);
-    } else if (authType === 'basic' && (basicUser || basicPass)) {
-      const creds = btoa(`${basicUser}:${basicPass}`);
-      lines.push(`Authorization: Basic ${creds}`);
-    }
-
-    if (method !== 'GET' && method !== 'HEAD' && body.trim()) {
-      lines.push('');
-      lines.push(interpolate(body));
-    }
-    return lines.join('\n');
-  };
+  const generateHttpSnippet = (title?: string) =>
+    serializeRequest({
+      ...tabToWorkspaceRequest(active),
+      name: title?.trim() || active.name,
+      hasSeparator: true,
+    });
 
   const handleSaveHttp = async () => {
     if (!project) return;
@@ -467,6 +831,8 @@ export default function ApiPanel({
       }
       setShowSaveHttpModal(false);
       onNotify?.(`✨ 已保存到项目用例文件：${targetPath}`);
+      await readTree(targetPath, true).catch(() => null);
+      setExpandedFiles(prev => ({ ...prev, [targetPath]: true }));
       onRefresh?.();
     } catch (err) {
       onNotify?.(`保存文件失败：${err}`);
@@ -490,7 +856,7 @@ export default function ApiPanel({
           </div>
           <div>
             <h2 id="api-title">Tongyun API · 接口工作台</h2>
-            <p>Query Params 解析、环境变量（{`{{baseUrl}}`}）、Auth 认证、cURL 导入导出与历史快照。</p>
+            <p>多 Tab 独立调试、.http／.rest 双协议读写、JSON 用例集、cURL 导入导出与历史快照。</p>
           </div>
         </div>
         <div className="workbench-badges">
@@ -519,34 +885,157 @@ export default function ApiPanel({
         </div>
       ) : (
         <div className="api-workbench-split">
+          {/* Left: .http 用例树 + JSON 用例集 */}
+          <aside className="api-case-drawer">
+            <div className="pane-header">
+              <span className="subcard-title-sm">
+                <FileCode size={13} /> 项目用例文件 ({httpPaths.length})
+              </span>
+              <button
+                type="button"
+                className="text-button-xs"
+                onClick={() => httpPaths.forEach(p => void readTree(p, true))}
+                title="重新解析全部用例文件"
+              >
+                <RefreshCw size={12} className={loadingHttpFile ? 'spin' : ''} />
+              </button>
+            </div>
+            {httpPaths.length === 0 ? (
+              <div className="history-empty">项目内暂无 .http / .rest 用例文件</div>
+            ) : (
+              <div className="case-tree">
+                {httpPaths.map(path => {
+                  const tree = httpTrees[path];
+                  const expanded = !!expandedFiles[path];
+                  return (
+                    <div key={path} className="case-tree-file">
+                      <button
+                        type="button"
+                        className={`tree-row file ${selectedHttpFile === path && expanded ? 'active' : ''}`}
+                        onClick={() => void toggleHttpFile(path)}
+                      >
+                        {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                        {expanded ? <FolderOpen size={12} /> : <Folder size={12} />}
+                        <span className="tree-label">{path}</span>
+                        {tree && <span className="tree-count">{tree.requests.length}</span>}
+                      </button>
+                      {expanded && (
+                        <div className="tree-children">
+                          {!tree && (
+                            <div className="tree-empty mono-subtle">
+                              {loadingHttpFile ? '解析中…' : '点击文件名解析'}
+                            </div>
+                          )}
+                          {tree?.requests.map(req => (
+                            <div
+                              key={req.id}
+                              className={`tree-row request ${
+                                active.sourceFile === path && active.sourceLine === req.line
+                                  ? 'active'
+                                  : ''
+                              }`}
+                              onDoubleClick={() => openRequestTab(path, req)}
+                              title="双击在新 Tab 打开该请求"
+                            >
+                              <span className={`method-badge-mini method-${req.method.toLowerCase()}`}>
+                                {req.method}
+                              </span>
+                              <span className="tree-label">{req.name}</span>
+                            </div>
+                          ))}
+                          {tree && tree.requests.length === 0 && (
+                            <div className="tree-empty mono-subtle">未识别到请求行</div>
+                          )}
+                          {tree?.warnings.map((w, idx) => (
+                            <div key={`w-${w.line}-${idx}`} className="tree-warn mono-subtle">
+                              L{w.line} {w.message}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="pane-header">
+              <span className="subcard-title-sm">
+                <Layers size={13} /> JSON 用例集 ({collection.nodes.length})
+              </span>
+              <button
+                type="button"
+                className="text-button-xs"
+                onClick={() => setShowCollections(v => !v)}
+              >
+                {showCollections ? '收起' : '展开'}
+              </button>
+            </div>
+            {showCollections && (
+              <>
+                <div className="case-tree">
+                  {collection.nodes.length === 0 ? (
+                    <div className="history-empty">暂无用例，先把当前请求「存入用例集」</div>
+                  ) : (
+                    renderCollectionNodes(null, 0)
+                  )}
+                </div>
+                <div className="collection-tools">
+                  <div className="collection-row">
+                    <input
+                      className="collection-input"
+                      placeholder="新目录名"
+                      value={newFolderName}
+                      onChange={e => setNewFolderName(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') createFolder();
+                      }}
+                    />
+                    <button type="button" className="text-button-sm" onClick={createFolder}>
+                      <Folder size={12} />
+                      新建目录
+                    </button>
+                  </div>
+                  <div className="collection-row">
+                    <input
+                      className="collection-input"
+                      placeholder="用例名（留空用当前 Tab 名）"
+                      value={caseName}
+                      onChange={e => setCaseName(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="text-button-sm"
+                      onClick={saveActiveToCollection}
+                    >
+                      <Plus size={12} />
+                      存入当前请求
+                    </button>
+                  </div>
+                  <div className="collection-row">
+                    <span className="preset-label">放入目录:</span>
+                    <select
+                      className="collection-select"
+                      value={targetFolderId ?? ''}
+                      onChange={e => setTargetFolderId(e.target.value || null)}
+                    >
+                      <option value="">根目录</option>
+                      {collection.nodes
+                        .filter(n => n.kind === 'folder')
+                        .map(f => (
+                          <option key={f.id} value={f.id}>
+                            {f.name}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                </div>
+              </>
+            )}
+          </aside>
+
           {/* Main Request & Response Section */}
           <div className="api-main-pane">
-            {/* Discovered .http files */}
-            {httpPaths.length > 0 && (
-              <section className="panel-subcard-compact">
-                <div className="section-heading">
-                  <span className="subcard-title-sm">
-                    <FileCode size={13} /> 项目用例 ({httpPaths.length})
-                  </span>
-                </div>
-                <div className="http-file-pills">
-                  {httpPaths.map(p => (
-                    <button
-                      key={p}
-                      className={`http-pill ${selectedHttpFile === p ? 'selected' : ''}`}
-                      onClick={() => void loadHttpFile(p)}
-                    >
-                      {loadingHttpFile && selectedHttpFile === p ? (
-                        <LoaderCircle size={11} className="spin" />
-                      ) : (
-                        <FileCode size={11} />
-                      )}
-                      <span>{p}</span>
-                    </button>
-                  ))}
-                </div>
-              </section>
-            )}
 
             {/* Agent Automated API Verifications */}
             {agentHttpActions.length > 0 && (
@@ -584,8 +1073,106 @@ export default function ApiPanel({
               </section>
             )}
 
+            {/* 请求 Tab 条：多标签独立状态 */}
+            <div className="api-tab-strip" role="tablist" aria-label="接口请求 Tab">
+              {tabs.map(tab => {
+                const tabDirty = requestSignature(tab) !== tab.baseline;
+                const isActive = tab.id === active.id;
+                return (
+                  <div
+                    key={tab.id}
+                    role="tab"
+                    aria-selected={isActive}
+                    tabIndex={0}
+                    className={`api-tab ${isActive ? 'active' : ''}`}
+                    onClick={() => setActiveTabId(tab.id)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' || e.key === ' ') setActiveTabId(tab.id);
+                    }}
+                    title={`${tab.name}${tab.sourceFile ? ` · ${tab.sourceFile}` : ''}${tabDirty ? '（未保存）' : ''}`}
+                  >
+                    <span className={`method-badge-mini method-${tab.method.toLowerCase()}`}>
+                      {tab.method}
+                    </span>
+                    <span className="api-tab-name">{tab.name}</span>
+                    {tabDirty && <span className="tab-dirty-dot" title="有未保存的修改" />}
+                    <button
+                      type="button"
+                      className="tab-close"
+                      aria-label={`关闭 ${tab.name}`}
+                      title="关闭（Ctrl+W）"
+                      onClick={e => {
+                        e.stopPropagation();
+                        closeTab(tab.id);
+                      }}
+                    >
+                      <X size={11} />
+                    </button>
+                  </div>
+                );
+              })}
+              <button
+                type="button"
+                className="tab-add"
+                onClick={() => createTab()}
+                title="新建请求 Tab（Ctrl+W 关闭当前）"
+              >
+                <Plus size={12} />
+                新建
+              </button>
+            </div>
+
             {/* HTTP Request Builder Workbench */}
             <section className="api-requester-card">
+              <div className="api-case-meta">
+                <input
+                  className="case-name-input"
+                  aria-label="用例名称"
+                  placeholder="用例名称（写入 .http 的 ### 标题）"
+                  value={active.name}
+                  onChange={e => patchTab(active.id, { name: e.target.value })}
+                />
+                {active.sourceFile ? (
+                  <>
+                    <button
+                      type="button"
+                      className="secondary-button-sm"
+                      disabled={writingBack}
+                      onClick={() => void writeBackActive()}
+                      title={`只改写 ${active.sourceFile} 中该请求所占的行区间`}
+                    >
+                      {writingBack ? (
+                        <LoaderCircle size={12} className="spin" />
+                      ) : (
+                        <Check size={12} />
+                      )}
+                      写回源文件
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button-sm"
+                      onClick={() => void reloadSourceIntoTab()}
+                      title="丢弃本地改动，按原位置重新载入"
+                    >
+                      <RefreshCw size={12} />
+                      重新载入
+                    </button>
+                    <span className="mono-subtle">源：{active.sourceFile}</span>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="secondary-button-sm"
+                    onClick={saveActiveToCollection}
+                    title="存入项目 JSON 用例集"
+                  >
+                    <Layers size={12} />
+                    存入用例集
+                  </button>
+                )}
+                {dirty && <span className="tab-dirty-hint">未保存的修改</span>}
+              </div>
+
               <form onSubmit={handleSend} className="api-url-bar">
                 <select
                   className={`method-select method-${method.toLowerCase()}`}
@@ -1168,7 +1755,7 @@ export default function ApiPanel({
               <button className="secondary-button" onClick={() => setShowCurlModal(false)}>
                 取消
               </button>
-              <button className="primary-button" onClick={parseCurlCommand}>
+              <button className="primary-button" onClick={applyCurlToActiveTab}>
                 解析并导入
               </button>
             </div>
