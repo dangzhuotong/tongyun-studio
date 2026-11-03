@@ -13,6 +13,7 @@ pub type Result<T> = std::result::Result<T, String>;
 
 pub mod agent_http;
 pub mod dev_runtime;
+pub mod diagnostics;
 pub mod processes;
 pub mod toolchain;
 pub use agent_http::{
@@ -23,6 +24,11 @@ pub use dev_runtime::{
     format_port_occupied_error, port_occupants, port_occupied_error, scan_dev_directory,
     DevCandidate, DevProfile, DevScanReport, EnvPreset, ExistingProject, LifeState, PortOccupant,
     PreparedImport,
+};
+pub use diagnostics::{
+    default_diagnostics_filename, export_diagnostics_to_file, export_diagnostics_to_writer,
+    is_sensitive_key, sanitize_dev_profile, sanitize_env_map, sanitize_project, sanitize_text,
+    DiagnosticMetadata, DiagnosticReport,
 };
 pub use processes::{
     default_log_dir, project_log_path, project_log_path_rolled, read_tail, read_tail_with_backup,

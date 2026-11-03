@@ -540,6 +540,31 @@ fn append_project_file(
     studio_core::append_project_file(&project, &relative_path, &content)
 }
 
+#[tauri::command]
+async fn export_diagnostics(
+    state: tauri::State<'_, AppState>,
+    destination_path: Option<String>,
+) -> Result<studio_core::DiagnosticReport, String> {
+    let workspace = state.store.load()?;
+    let path_to_use = match destination_path {
+        Some(p) => PathBuf::from(p),
+        None => {
+            let default_name = studio_core::default_diagnostics_filename();
+            let file = rfd::AsyncFileDialog::new()
+                .set_file_name(&default_name)
+                .add_filter("ZIP Archive", &["zip"])
+                .save_file()
+                .await;
+            match file {
+                Some(handle) => handle.path().to_path_buf(),
+                None => return Err("用户取消导出".to_string()),
+            }
+        }
+    };
+
+    studio_core::export_diagnostics_to_file(&workspace, &state.services, &path_to_use)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -628,6 +653,7 @@ pub fn run() {
             install_project_dependencies,
             write_project_file,
             append_project_file,
+            export_diagnostics,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
