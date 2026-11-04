@@ -1,14 +1,30 @@
-import { useEffect, useState } from 'react';
-import type { Project, ProjectInspection, SqlQueryResult, DbTableInfo, DbColumnInfo, PaginatedData, AgentSessionState } from '../contracts';
+import { useEffect, useRef, useState } from 'react';
+import type { Project, ProjectInspection, DbTableInfo, DbColumnInfo, PaginatedData, RowChangePlan, AgentSessionState } from '../contracts';
 import {
   executeSqlQuery,
   getDbTables,
   getTableColumns,
   getTableData,
+  planRowChange,
   readProjectFileContent,
   openProjectFile,
   isDesktop,
 } from '../bridge';
+import {
+  applyTabResult,
+  buildColumnChanges,
+  closeQueryTab,
+  createQueryTab,
+  cursorForPage,
+  formatPlanForClipboard,
+  rememberCursor,
+  renameQueryTab,
+  templateSql,
+  toCsv,
+  toJson,
+  type QueryTab,
+  type TemplateKind,
+} from './dbWorkspace';
 import {
   Bot,
   ChevronDown,
@@ -20,10 +36,14 @@ import {
   Key,
   LoaderCircle,
   Play,
+  Plus,
   RefreshCw,
   ShieldAlert,
   Table,
+  X,
 } from '../components/Icons';
+
+const PAGE_SIZES = [20, 50, 100, 200];
 
 export default function DatabasePanel({
   project,
@@ -59,12 +79,34 @@ export default function DatabasePanel({
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [loadingData, setLoadingData] = useState(false);
+  const [sortBy, setSortBy] = useState<string | null>(null);
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const [cursorStack, setCursorStack] = useState<Record<number, string>>({});
+  const loadToken = useRef(0);
 
-  // SQL Console
-  const [sqlQuery, setSqlQuery] = useState("SELECT name, type FROM sqlite_master WHERE type IN ('table','view') ORDER BY name;");
-  const [runningSql, setRunningSql] = useState(false);
-  const [queryResult, setQueryResult] = useState<SqlQueryResult | null>(null);
-  const [tableError, setTableError] = useState<string | null>(null);
+  // SQL console: one tab per query, each keeping its own text, source and result.
+  const [queryTabs, setQueryTabs] = useState<QueryTab[]>(() => [
+    {
+      id: 'tab-initial',
+      name: '查询 1',
+      sql: "SELECT name, type FROM sqlite_master WHERE type IN ('table','view') ORDER BY name;",
+      dbPath: sqliteFiles[0]?.path ?? 'local.db',
+      result: null,
+      running: false,
+    },
+  ]);
+  const [activeTabId, setActiveTabId] = useState('tab-initial');
+  const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
+  const activeTab = queryTabs.find(tab => tab.id === activeTabId) ?? queryTabs[0];
+
+  // Row edit with change control preview
+  const [editingRowIndex, setEditingRowIndex] = useState<number | null>(null);
+  const [rowEdits, setRowEdits] = useState<Record<number, string>>({});
+  const [changePlan, setChangePlan] = useState<RowChangePlan | null>(null);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [planConfirmed, setPlanConfirmed] = useState(false);
+
+  const [errorText, setErrorText] = useState<string | null>(null);
 
   // Schema file preview
   const [selectedSchemaFile, setSelectedSchemaFile] = useState<string | null>(null);
@@ -76,7 +118,7 @@ export default function DatabasePanel({
     if (!project) return;
     const target = path ?? dbPath;
     setLoadingTables(true);
-    setTableError(null);
+    setErrorText(null);
     try {
       const list = await getDbTables(project.id, target);
       setTables(list);
@@ -85,7 +127,7 @@ export default function DatabasePanel({
         void loadTableData(list[0].name, 1, pageSize, target);
       }
     } catch (error) {
-      setTableError(String(error));
+      setErrorText(String(error));
       setTables([]);
       setPaginatedData(null);
     } finally {
@@ -120,39 +162,112 @@ export default function DatabasePanel({
     newPage: number,
     newSize: number,
     customPath?: string,
+    sort?: string | null,
+    dir?: 'asc' | 'desc',
+    cursor?: string | null,
   ) => {
     if (!project) return;
+    const projectId = project.id;
+    const token = loadToken.current + 1;
+    loadToken.current = token;
     setSelectedTable(tableName);
     setActiveView('data');
+    setEditingRowIndex(null);
     setLoadingData(true);
     try {
-      const res = await getTableData(
-        project.id,
-        customPath ?? dbPath,
-        tableName,
-        newPage,
-        newSize,
-      );
+      const res = await getTableData(projectId, customPath ?? dbPath, tableName, newPage, newSize, {
+        sortBy: sort ?? null,
+        sortDir: dir ?? 'asc',
+        cursor: cursor ?? null,
+      });
+      // A slower response must not overwrite a newer page, a sort change or another project.
+      if (loadToken.current !== token || project?.id !== projectId) return;
       setPaginatedData(res);
       setPage(newPage);
       setPageSize(newSize);
+      setCursorStack(stack => rememberCursor(stack, newPage, res.nextCursor));
     } catch (e) {
+      if (loadToken.current !== token) return;
       onNotify?.(`读取表数据失败：${e}`);
     } finally {
-      setLoadingData(false);
+      if (loadToken.current === token) setLoadingData(false);
     }
   };
 
-  const handleRunSql = async () => {
-    if (!project || runningSql) return;
-    const trimmed = sqlQuery.trim();
-    if (!trimmed) return;
+  const resetPaging = () => {
+    loadToken.current += 1;
+    setCursorStack({});
+    setPage(1);
+    setPaginatedData(null);
+  };
 
-    setRunningSql(true);
-    setQueryResult(null);
+  const openTable = (tableName: string) => {
+    resetPaging();
+    setSortBy(null);
+    setSortDir('asc');
+    void loadTableData(tableName, 1, pageSize, undefined, null, 'asc', null);
+  };
+
+  const sortByColumn = (column: string) => {
+    if (!selectedTable) return;
+    const nextDir = sortBy === column && sortDir === 'asc' ? 'desc' : 'asc';
+    resetPaging();
+    setSortBy(column);
+    setSortDir(nextDir);
+    void loadTableData(selectedTable, 1, pageSize, undefined, column, nextDir, null);
+  };
+
+  const goToPage = (target: number) => {
+    if (!selectedTable || target < 1) return;
+    void loadTableData(
+      selectedTable,
+      target,
+      pageSize,
+      undefined,
+      sortBy,
+      sortDir,
+      cursorForPage(cursorStack, target),
+    );
+  };
+
+  const changePageSize = (size: number) => {
+    if (!selectedTable) return;
+    resetPaging();
+    void loadTableData(selectedTable, 1, size, undefined, sortBy, sortDir, null);
+  };
+
+  const updateActiveTab = (patch: Partial<QueryTab>) => {
+    setQueryTabs(tabs => tabs.map(tab => (tab.id === activeTab.id ? { ...tab, ...patch } : tab)));
+  };
+
+  const addQueryTab = () => {
+    const tab = createQueryTab(dbPath, queryTabs, selectedTable);
+    setQueryTabs(tabs => [...tabs, tab]);
+    setActiveTabId(tab.id);
+  };
+
+  const removeQueryTab = (id: string) => {
+    const closed = closeQueryTab(queryTabs, id);
+    setQueryTabs(closed.tabs);
+    setActiveTabId(closed.activeId);
+  };
+
+  const applyTemplate = (kind: TemplateKind) => {
+    updateActiveTab({ sql: templateSql(kind, selectedTable) });
+  };
+
+  const handleRunSql = async () => {
+    if (!project || activeTab.running) return;
+    const trimmed = activeTab.sql.trim();
+    if (!trimmed) return;
+    const tabId = activeTab.id;
+    const sourcePath = dbPath;
+    const projectId = project.id;
+
+    setQueryTabs(tabs => applyTabResult(tabs, tabId, { running: true, result: null, dbPath: sourcePath }));
     try {
-      const res = await executeSqlQuery(project.id, dbPath, trimmed);
-      setQueryResult(res);
+      const res = await executeSqlQuery(projectId, sourcePath, trimmed);
+      setQueryTabs(tabs => applyTabResult(tabs, tabId, { running: false, result: res }));
       setActiveView('sql');
       if (res.error) {
         onNotify?.(`SQL 执行报错：${res.error}`);
@@ -160,50 +275,37 @@ export default function DatabasePanel({
         onNotify?.(`查询成功：返回 ${res.rowCount} 行 (${res.durationMs}ms)`);
       }
     } catch (e) {
-      setQueryResult({
-        columns: [],
-        rows: [],
-        rowCount: 0,
-        durationMs: 0,
-        error: String(e),
-      });
-    } finally {
-      setRunningSql(false);
+      setQueryTabs(tabs =>
+        applyTabResult(tabs, tabId, {
+          running: false,
+          result: { columns: [], rows: [], rowCount: 0, durationMs: 0, error: String(e) },
+        }),
+      );
     }
   };
 
+  const download = (content: string, filename: string, mime: string) => {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
   const exportData = (format: 'csv' | 'json') => {
-    const cols = activeView === 'data' ? paginatedData?.columns : queryResult?.columns;
-    const rows = activeView === 'data' ? paginatedData?.rows : queryResult?.rows;
+    const cols = activeView === 'data' ? paginatedData?.columns : activeTab.result?.columns;
+    const rows = activeView === 'data' ? paginatedData?.rows : activeTab.result?.rows;
     if (!cols || !rows || rows.length === 0) {
       onNotify?.('当前无数据可供导出');
       return;
     }
-
-    let content = '';
-    let filename = `${selectedTable || 'query_result'}.${format}`;
-
-    if (format === 'csv') {
-      content = `${cols.join(',')}\n` + rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
-    } else {
-      const objects = rows.map(r => {
-        const obj: Record<string, any> = {};
-        cols.forEach((col, idx) => {
-          obj[col] = r[idx];
-        });
-        return obj;
-      });
-      content = JSON.stringify(objects, null, 2);
-    }
-
-    const blob = new Blob([content], { type: format === 'csv' ? 'text/csv' : 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
-    onNotify?.(`已导出为 ${filename}`);
+    const base = (selectedTable || activeTab.name).replace(/[^\w.-]+/g, '_');
+    const content = format === 'csv' ? toCsv(cols, rows) : toJson(cols, rows);
+    const mime = format === 'csv' ? 'text/csv' : 'application/json';
+    download(content, `${base}-p${page}.${format}`, mime);
+    onNotify?.(`已导出 ${rows.length} 行为 ${format.toUpperCase()}`);
   };
 
   const loadSchema = async (relPath: string) => {
@@ -219,7 +321,58 @@ export default function DatabasePanel({
     }
   };
 
+  const keyColumnIndex = paginatedData?.keyColumn
+    ? paginatedData.columns.indexOf(paginatedData.keyColumn)
+    : -1;
+  const editingRow = editingRowIndex !== null ? paginatedData?.rows[editingRowIndex] : undefined;
+  const pendingChanges =
+    paginatedData && editingRow ? buildColumnChanges(paginatedData.columns, editingRow, rowEdits) : [];
+
+  const startRowEdit = (rowIndex: number) => {
+    setEditingRowIndex(rowIndex);
+    setRowEdits({});
+    setChangePlan(null);
+    setPlanError(null);
+    setPlanConfirmed(false);
+  };
+
+  const buildPlan = async () => {
+    if (!project || !selectedTable || !paginatedData || !editingRow) return;
+    if (keyColumnIndex < 0) {
+      setPlanError('该表没有单列主键，无法生成可回滚的单行变更');
+      return;
+    }
+    setPlanError(null);
+    try {
+      const plan = await planRowChange(
+        project.id,
+        dbPath,
+        selectedTable,
+        [editingRow[keyColumnIndex]],
+        pendingChanges,
+      );
+      setChangePlan(plan);
+      setPlanConfirmed(false);
+    } catch (e) {
+      setChangePlan(null);
+      setPlanError(String(e));
+    }
+  };
+
+  const copyPlan = async (kind: 'forward' | 'rollback') => {
+    if (!changePlan) return;
+    const text = formatPlanForClipboard(changePlan, kind);
+    try {
+      await navigator.clipboard.writeText(text);
+      onNotify?.(`已复制${kind === 'forward' ? '正向' : '回滚'} SQL`);
+    } catch {
+      download(`${text}\n`, `${changePlan.table}-${kind}.sql`, 'text/plain');
+      onNotify?.('剪贴板不可用，已改为下载 SQL 文件');
+    }
+  };
+
   const totalPages = paginatedData ? Math.ceil(paginatedData.totalRows / pageSize) || 1 : 1;
+  const pageLabel = paginatedData?.keyColumn && cursorStack[page - 1] ? '游标' : '偏移';
 
   return (
     <div className="feature-panel-layout" aria-labelledby="db-title">
@@ -230,7 +383,7 @@ export default function DatabasePanel({
           </div>
           <div>
             <h2 id="db-title">Tongyun Database · 数据工作台</h2>
-            <p>库表对象树、可视化分页数据网格、SQLite 只读查询、数据导出（CSV/JSON）与模式追溯。</p>
+            <p>多查询标签页、主键游标分页数据网格、单行变更预览与回滚 SQL、数据导出（CSV/JSON）与模式追溯。</p>
           </div>
         </div>
         <div className="workbench-badges">
@@ -269,11 +422,11 @@ export default function DatabasePanel({
                     className="agent-action-mini-item clickable"
                     onClick={() => {
                       if (act.detail) {
-                        setSqlQuery(act.detail);
+                        updateActiveTab({ sql: act.detail });
                         setActiveView('sql');
                       }
                     }}
-                    title="点击将此 SQL 载入查询控制台"
+                    title="点击将此 SQL 载入当前查询标签"
                   >
                     <div className="action-mini-header">
                       <span className={`status-dot ${act.status === 'done' ? 'available' : 'error'}`} />
@@ -314,13 +467,13 @@ export default function DatabasePanel({
               </div>
               <div className="tree-list-content">
                 {tables.length === 0 ? (
-                  <div className="tree-empty-hint" role={tableError ? 'alert' : undefined}>{tableError || '数据库中没有数据表'}</div>
+                  <div className="tree-empty-hint" role={errorText ? 'alert' : undefined}>{errorText || '数据库中没有数据表'}</div>
                 ) : (
                   tables.map(t => (
                     <div key={t.name} className="tree-table-item">
                       <div
                         className={`tree-table-row ${selectedTable === t.name && activeView === 'data' ? 'selected' : ''}`}
-                        onClick={() => void loadTableData(t.name, 1, pageSize)}
+                        onClick={() => openTable(t.name)}
                       >
                         <button
                           className="tree-expand-btn"
@@ -406,7 +559,7 @@ export default function DatabasePanel({
                   onClick={() => setActiveView('sql')}
                 >
                   <Play size={13} />
-                  SQL 控制台
+                  SQL 控制台 ({queryTabs.length})
                 </button>
                 {selectedSchemaFile && (
                   <button
@@ -420,7 +573,7 @@ export default function DatabasePanel({
               </div>
             </div>
 
-            {/* View 1: Paginated Data Grid */}
+            {/* View 1: Cursor-paginated Data Grid */}
             {activeView === 'data' && (
               <section className="table-data-workbench">
                 <div className="table-data-toolbar">
@@ -428,23 +581,38 @@ export default function DatabasePanel({
                     <span className="active-table-title">{selectedTable || '未选择数据表'}</span>
                     {paginatedData && (
                       <span className="meta">
-                        共 {paginatedData.totalRows} 条数据 · 第 {page} / {totalPages} 页
+                        共 {paginatedData.totalRows} 条 · 第 {page} / {totalPages} 页 · {pageLabel}翻页
+                        {paginatedData.keyColumn ? ` · 主键 ${paginatedData.keyColumn}` : ' · 无单列主键'}
                       </span>
                     )}
                   </div>
                   <div className="toolbar-pagination">
+                    <label className="page-size-picker">
+                      <span className="toolbar-label">每页</span>
+                      <select
+                        className="page-size-select"
+                        value={pageSize}
+                        onChange={e => changePageSize(Number(e.target.value))}
+                      >
+                        {PAGE_SIZES.map(size => (
+                          <option key={size} value={size}>
+                            {size}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
                     <button
                       className="pagination-btn"
                       disabled={page <= 1 || loadingData}
-                      onClick={() => selectedTable && void loadTableData(selectedTable, page - 1, pageSize)}
+                      onClick={() => goToPage(page - 1)}
                     >
                       上一页
                     </button>
                     <span className="page-indicator">{page}</span>
                     <button
                       className="pagination-btn"
-                      disabled={page >= totalPages || loadingData}
-                      onClick={() => selectedTable && void loadTableData(selectedTable, page + 1, pageSize)}
+                      disabled={!paginatedData?.hasMore || loadingData}
+                      onClick={() => goToPage(page + 1)}
                     >
                       下一页
                     </button>
@@ -460,96 +628,289 @@ export default function DatabasePanel({
                   ) : !paginatedData || paginatedData.rows.length === 0 ? (
                     <div className="grid-empty">该表暂无数据记录</div>
                   ) : (
-                    <table className="enterprise-data-table">
+                    <table className="enterprise-data-table auto-column-width">
                       <thead>
                         <tr>
                           {paginatedData.columns.map((col, idx) => (
-                            <th key={idx}>{col}</th>
+                            <th key={idx}>
+                              <button
+                                className={`sort-header ${sortBy === col ? 'sorting' : ''}`}
+                                onClick={() => sortByColumn(col)}
+                                aria-label={`按 ${col} 排序`}
+                              >
+                                {col}
+                                <span className="sort-arrow">
+                                  {sortBy === col ? (sortDir === 'asc' ? '↑' : '↓') : ''}
+                                </span>
+                              </button>
+                            </th>
                           ))}
+                          <th className="row-action-col">行操作</th>
                         </tr>
                       </thead>
                       <tbody>
                         {paginatedData.rows.map((row, rIdx) => (
-                          <tr key={rIdx}>
+                          <tr key={rIdx} className={editingRowIndex === rIdx ? 'editing-row' : ''}>
                             {row.map((cell, cIdx) => (
                               <td key={cIdx} className="mono">
-                                {cell === 'NULL' ? <span className="null-val">NULL</span> : cell}
+                                {editingRowIndex === rIdx && cIdx !== keyColumnIndex ? (
+                                  <input
+                                    className="cell-edit-input"
+                                    aria-label={`第 ${rIdx + 1} 行 ${paginatedData.columns[cIdx]} 新值`}
+                                    defaultValue={cell}
+                                    onChange={e =>
+                                      setRowEdits(prev => ({ ...prev, [cIdx]: e.target.value }))
+                                    }
+                                  />
+                                ) : cell === 'NULL' ? (
+                                  <span className="null-val">NULL</span>
+                                ) : (
+                                  cell
+                                )}
                               </td>
                             ))}
+                            <td className="row-action-cell">
+                              {editingRowIndex === rIdx ? (
+                                <div className="row-editor-actions">
+                                  <button
+                                    className="secondary-button-sm"
+                                    disabled={pendingChanges.length === 0}
+                                    onClick={() => void buildPlan()}
+                                  >
+                                    生成变更预览
+                                  </button>
+                                  <button
+                                    className="icon-button-sm"
+                                    aria-label="取消编辑"
+                                    onClick={() => {
+                                      setEditingRowIndex(null);
+                                      setRowEdits({});
+                                      setChangePlan(null);
+                                      setPlanError(null);
+                                    }}
+                                  >
+                                    <X size={12} />
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  className="secondary-button-sm"
+                                  disabled={keyColumnIndex < 0}
+                                  title={
+                                    keyColumnIndex < 0
+                                      ? '无单列主键的表或视图不生成可回滚变更'
+                                      : '编辑该行并生成回滚 SQL'
+                                  }
+                                  onClick={() => startRowEdit(rIdx)}
+                                >
+                                  编辑
+                                </button>
+                              )}
+                            </td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   )}
                 </div>
+
+                {editingRowIndex !== null && (
+                  <section className="panel-subcard change-control-card">
+                    <div className="section-heading">
+                      <div className="subcard-title">
+                        <ShieldAlert size={15} className="accent-color" />
+                        <h3>变更控制预览</h3>
+                        <span className="mini-badge-accent">
+                          {pendingChanges.length} 个字段
+                        </span>
+                      </div>
+                      <span className="meta">参数化 SQL · 只读连接不代为执行</span>
+                    </div>
+                    {planError && <div className="sql-error-box" role="alert">{planError}</div>}
+                    {!changePlan && pendingChanges.length === 0 && (
+                      <p className="change-control-hint">
+                        改动任意非主键单元格后点击「生成变更预览」，正向与回滚 SQL 都会带上绑定参数。
+                      </p>
+                    )}
+                    {changePlan && (
+                      <div className="change-plan-body">
+                        <div className="change-plan-block">
+                          <span className="toolbar-label">正向变更</span>
+                          <code className="change-plan-sql">{changePlan.forwardSql}</code>
+                          <span className="mono-subtle">
+                            参数: [{changePlan.forwardParameters.map(value => value ?? 'NULL').join(', ')}]
+                          </span>
+                        </div>
+                        <div className="change-plan-block">
+                          <span className="toolbar-label">反向回滚（按主键还原旧值）</span>
+                          <code className="change-plan-sql">{changePlan.rollbackSql}</code>
+                          <span className="mono-subtle">
+                            参数: [{changePlan.rollbackParameters.map(value => value ?? 'NULL').join(', ')}]
+                          </span>
+                        </div>
+                        <label className="change-plan-confirm">
+                          <input
+                            type="checkbox"
+                            checked={planConfirmed}
+                            onChange={e => setPlanConfirmed(e.target.checked)}
+                          />
+                          <span>我已确认改动 {changePlan.changedColumns.join('、')} 只影响主键 {changePlan.keyPredicate} 的一行</span>
+                        </label>
+                        <div className="change-plan-actions">
+                          <button
+                            className="secondary-button-sm"
+                            disabled={!planConfirmed}
+                            onClick={() => void copyPlan('forward')}
+                          >
+                            复制正向 SQL
+                          </button>
+                          <button
+                            className="secondary-button-sm"
+                            disabled={!planConfirmed}
+                            onClick={() => void copyPlan('rollback')}
+                          >
+                            复制回滚 SQL
+                          </button>
+                        </div>
+                        <p className="change-control-hint">
+                          工作台以只读方式打开 SQLite，正向与回滚 SQL 需要你在外部客户端执行；回滚 SQL 请随变更一起留存。
+                        </p>
+                      </div>
+                    )}
+                  </section>
+                )}
               </section>
             )}
 
-            {/* View 2: SQL Console */}
+            {/* View 2: SQL Console with independent query tabs */}
             {activeView === 'sql' && (
               <section className="sql-workbench-card">
-                {(
-                  <div className="safety-warning-banner">
-                    <ShieldAlert size={16} />
-                    <span>只读查询：禁止写入、建表和附加数据库。单次最多 1000 行、4 MiB，执行限时 2 秒。</span>
-                  </div>
-                )}
+                <div className="query-tab-bar" role="tablist" aria-label="查询标签页">
+                  {queryTabs.map(tab => (
+                    <div
+                      key={tab.id}
+                      className={`query-tab ${tab.id === activeTab.id ? 'active' : ''}`}
+                      role="tab"
+                      tabIndex={0}
+                      aria-selected={tab.id === activeTab.id}
+                      onClick={() => setActiveTabId(tab.id)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' || e.key === ' ') setActiveTabId(tab.id);
+                      }}
+                    >
+                      {renamingTabId === tab.id ? (
+                        <input
+                          className="query-tab-rename"
+                          autoFocus
+                          defaultValue={tab.name}
+                          aria-label="标签名称"
+                          onBlur={e => {
+                            setQueryTabs(tabs => renameQueryTab(tabs, tab.id, e.target.value));
+                            setRenamingTabId(null);
+                          }}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') {
+                              setQueryTabs(tabs =>
+                                renameQueryTab(tabs, tab.id, (e.target as HTMLInputElement).value),
+                              );
+                              setRenamingTabId(null);
+                            }
+                          }}
+                        />
+                      ) : (
+                        <button
+                          className="query-tab-name"
+                          onDoubleClick={() => setRenamingTabId(tab.id)}
+                          title="双击重命名"
+                        >
+                          {tab.name}
+                        </button>
+                      )}
+                      {tab.result && (
+                        <span className="query-tab-meta">
+                          {tab.result.error ? '异常' : `${tab.result.rowCount} 行 · ${tab.result.durationMs}ms`}
+                        </span>
+                      )}
+                      <button
+                        className="query-tab-close"
+                        aria-label={`关闭 ${tab.name}`}
+                        onClick={e => {
+                          e.stopPropagation();
+                          removeQueryTab(tab.id);
+                        }}
+                      >
+                        <X size={11} />
+                      </button>
+                    </div>
+                  ))}
+                  <button className="query-tab-add" onClick={addQueryTab}>
+                    <Plus size={12} />
+                    新建查询
+                  </button>
+                </div>
+
+                <div className="safety-warning-banner">
+                  <ShieldAlert size={16} />
+                  <span>
+                    只读查询：禁止写入、建表和附加数据库。单次最多 1000 行、4 MiB，执行限时 2 秒。当前源：{activeTab.dbPath}
+                  </span>
+                </div>
 
                 <div className="sql-editor-container">
                   <textarea
                     className="sql-textarea"
+                    aria-label="SQL 查询语句"
                     rows={4}
-                    value={sqlQuery}
-                    onChange={e => setSqlQuery(e.target.value)}
+                    value={activeTab.sql}
+                    onChange={e => updateActiveTab({ sql: e.target.value })}
                     placeholder="输入单条 SELECT 或只读表结构查询…"
                   />
                   <div className="sql-editor-footer">
                     <div className="sql-presets">
-                      <button
-                        className="preset-btn"
-                        onClick={() => setSqlQuery("SELECT name, type FROM sqlite_master WHERE type IN ('table','view');")}
-                      >
+                      <button className="preset-btn" onClick={() => applyTemplate('sample')}>
+                        SELECT 前 50 条
+                      </button>
+                      <button className="preset-btn" onClick={() => applyTemplate('tables')}>
                         所有表
                       </button>
                       {selectedTable && (
-                        <button
-                          className="preset-btn"
-                          onClick={() => setSqlQuery(`SELECT * FROM "${selectedTable}" LIMIT 20;`)}
-                        >
-                          查询 {selectedTable} 前20条
+                        <button className="preset-btn" onClick={() => applyTemplate('describe')}>
+                          DESCRIBE {selectedTable}
                         </button>
                       )}
                     </div>
                     <button
                       className="primary-button"
-                      onClick={handleRunSql}
-                      disabled={runningSql || !sqlQuery.trim()}
+                      onClick={() => void handleRunSql()}
+                      disabled={activeTab.running || !activeTab.sql.trim()}
                     >
-                      {runningSql ? <LoaderCircle size={14} className="spin" /> : <Play size={14} />}
+                      {activeTab.running ? <LoaderCircle size={14} className="spin" /> : <Play size={14} />}
                       只读查询
                     </button>
                   </div>
                 </div>
 
-                {queryResult && (
+                {activeTab.result && (
                   <div className="sql-results-area">
                     <div className="results-header">
-                      <span>执行结果：{queryResult.error ? '异常' : `${queryResult.durationMs}ms · ${queryResult.rowCount} 行`}</span>
+                      <span>
+                        {activeTab.name} · {activeTab.result.error ? '异常' : `${activeTab.result.durationMs}ms · ${activeTab.result.rowCount} 行`}
+                      </span>
                     </div>
-                    {queryResult.error ? (
-                      <div className="sql-error-box">{queryResult.error}</div>
+                    {activeTab.result.error ? (
+                      <div className="sql-error-box">{activeTab.result.error}</div>
                     ) : (
                       <div className="data-grid-container max-height-300">
-                        <table className="enterprise-data-table">
+                        <table className="enterprise-data-table auto-column-width">
                           <thead>
                             <tr>
-                              {queryResult.columns.map((col, idx) => (
+                              {activeTab.result.columns.map((col, idx) => (
                                 <th key={idx}>{col}</th>
                               ))}
                             </tr>
                           </thead>
                           <tbody>
-                            {queryResult.rows.map((row, rIdx) => (
+                            {activeTab.result.rows.map((row, rIdx) => (
                               <tr key={rIdx}>
                                 {row.map((cell, cIdx) => (
                                   <td key={cIdx} className="mono">

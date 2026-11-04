@@ -81,7 +81,7 @@ fn select_and_table_inspection_keep_column_order_and_duration_contract() {
     assert!(columns[0].pk);
     assert_eq!(columns[1].name, "label");
     assert!(columns[1].not_null);
-    let page = get_table_data(&project, "test.sqlite", "notes", 2, 1).unwrap();
+    let page = get_table_data(&project, "test.sqlite", "notes", 2, 1, None, None, None).unwrap();
     assert_eq!(page.total_rows, 2);
     assert_eq!(page.rows[0], ["2", "second"]);
     let empty = execute_sql_query(

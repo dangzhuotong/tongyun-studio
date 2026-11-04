@@ -244,6 +244,7 @@ export interface DbColumnInfo {
   notNull: boolean;
   dfltValue: string | null;
   pk: boolean;
+  pkPosition: number;
 }
 
 export interface PaginatedData {
@@ -252,6 +253,27 @@ export interface PaginatedData {
   totalRows: number;
   page: number;
   pageSize: number;
+  sortBy: string | null;
+  sortDir: 'asc' | 'desc';
+  keyColumn: string | null;
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
+export interface ColumnChange {
+  column: string;
+  oldValue: string;
+  newValue: string;
+}
+
+export interface RowChangePlan {
+  table: string;
+  forwardSql: string;
+  forwardParameters: (string | null)[];
+  rollbackSql: string;
+  rollbackParameters: (string | null)[];
+  keyPredicate: string;
+  changedColumns: string[];
 }
 
 export interface ListeningPort {

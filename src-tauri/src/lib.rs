@@ -3,10 +3,10 @@ use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use studio_core::agent_http::ServerHandle;
 use studio_core::{
-    AiProjectContext, DbColumnInfo, DbTableInfo, DevCandidate, DevImportOutcome, ExecutionResult,
-    ExistingProject, FileEntry, GitCommitDetails, GitFileChange, GitHistoryResult, HttpResponse,
-    ListeningPort, ManagedService,
-    PaginatedData, Project, ProjectInspection, ServiceManager, SqlQueryResult, Workspace, WorkspaceStore,
+    AiProjectContext, ColumnChange, DbColumnInfo, DbTableInfo, DevCandidate, DevImportOutcome,
+    ExecutionResult, ExistingProject, FileEntry, GitCommitDetails, GitFileChange, GitHistoryResult,
+    HttpResponse, ListeningPort, ManagedService, PaginatedData, Project, ProjectInspection,
+    RowChangePlan, ServiceManager, SqlQueryResult, Workspace, WorkspaceStore,
 };
 use tauri::Manager;
 
@@ -394,9 +394,34 @@ fn get_table_data(
     table_name: String,
     page: usize,
     page_size: usize,
+    sort_by: Option<String>,
+    sort_dir: Option<String>,
+    cursor: Option<String>,
 ) -> Result<PaginatedData, String> {
     let project = state.store.project(&id)?;
-    studio_core::get_table_data(&project, &db_path, &table_name, page, page_size)
+    studio_core::get_table_data(
+        &project,
+        &db_path,
+        &table_name,
+        page,
+        page_size,
+        sort_by.as_deref(),
+        sort_dir.as_deref(),
+        cursor.as_deref(),
+    )
+}
+
+#[tauri::command]
+fn plan_row_change(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    db_path: String,
+    table_name: String,
+    key_values: Vec<String>,
+    changes: Vec<ColumnChange>,
+) -> Result<RowChangePlan, String> {
+    let project = state.store.project(&id)?;
+    studio_core::plan_table_row_change(&project, &db_path, &table_name, &key_values, &changes)
 }
 
 #[tauri::command]
@@ -685,6 +710,7 @@ pub fn run() {
             get_db_tables,
             get_table_columns,
             get_table_data,
+            plan_row_change,
             detect_listening_ports,
             generate_ai_project_context,
             open_project_directory,

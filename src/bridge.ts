@@ -1,5 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import type { Project, Workspace, ProjectInspection, FileEntry, GitFileChange, GitHistoryResult, GitCommitDetails, GitStashEntry, ExecutionResult, HttpResponse, SqlQueryResult, DbTableInfo, DbColumnInfo, PaginatedData, ListeningPort, AiProjectContext, ManagedService, AgentSessionState, DevScanReport, DevCandidate, DevImportResult, AgentHttpInfo, DiagnosticReport } from './contracts';
+import type { Project, Workspace, ProjectInspection, FileEntry, GitFileChange, GitHistoryResult, GitCommitDetails, GitStashEntry, ExecutionResult, HttpResponse, SqlQueryResult, DbTableInfo, DbColumnInfo, PaginatedData, ColumnChange, RowChangePlan, ListeningPort, AiProjectContext, ManagedService, AgentSessionState, DevScanReport, DevCandidate, DevImportResult, AgentHttpInfo, DiagnosticReport } from './contracts';
 
 export const isDesktop = isTauri();
 function native<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -43,7 +43,31 @@ export const sendHttpRequest = (method: string, url: string, headers: [string, s
 export const executeSqlQuery = (id: string, dbPath: string, sql: string) => native<SqlQueryResult>('execute_sql_query', { id, dbPath, sql });
 export const getDbTables = (id: string, dbPath: string) => native<DbTableInfo[]>('get_db_tables', { id, dbPath });
 export const getTableColumns = (id: string, dbPath: string, tableName: string) => native<DbColumnInfo[]>('get_table_columns', { id, dbPath, tableName });
-export const getTableData = (id: string, dbPath: string, tableName: string, page: number, pageSize: number) => native<PaginatedData>('get_table_data', { id, dbPath, tableName, page, pageSize });
+export const getTableData = (
+  id: string,
+  dbPath: string,
+  tableName: string,
+  page: number,
+  pageSize: number,
+  pageQuery?: { sortBy?: string | null; sortDir?: 'asc' | 'desc'; cursor?: string | null },
+) =>
+  native<PaginatedData>('get_table_data', {
+    id,
+    dbPath,
+    tableName,
+    page,
+    pageSize,
+    sortBy: pageQuery?.sortBy ?? null,
+    sortDir: pageQuery?.sortDir ?? null,
+    cursor: pageQuery?.cursor ?? null,
+  });
+export const planRowChange = (
+  id: string,
+  dbPath: string,
+  tableName: string,
+  keyValues: string[],
+  changes: ColumnChange[],
+) => native<RowChangePlan>('plan_row_change', { id, dbPath, tableName, keyValues, changes });
 export const detectListeningPorts = () => native<ListeningPort[]>('detect_listening_ports');
 export const generateAiProjectContext = (id: string) => native<AiProjectContext>('generate_ai_project_context', { id });
 export const openProjectDirectory = (id: string) => native<void>('open_project_directory', { id });
