@@ -47,6 +47,7 @@ import {
 import Modal from './components/Modal';
 import AiContextModal from './components/AiContextModal';
 import AgentCockpit from './components/AgentCockpit';
+import { UpdateModal } from './components/UpdateModal';
 import { parseAgentSnapshot } from './agent-session';
 import { toolDefinitions } from './features/tools';
 import './styles/app.css';
@@ -94,6 +95,7 @@ export default function App() {
   // Three-column layout & Agent Cockpit states
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showAgentCockpit, setShowAgentCockpit] = useState(false);
+  const [showUpdateModal, setShowUpdateModal] = useState(false);
 
   const project = workspace.projects.find(item => item.id === workspace.activeProjectId) ?? null;
   const projectId = project?.id ?? null;
@@ -591,6 +593,16 @@ export default function App() {
               <div className="sidebar-footer-info" title={isDesktop ? '本地桌面宿主' : '浏览器演示环境'}>
                 <span className={`status-dot ${isDesktop ? 'available' : ''}`} />
                 <span>{isDesktop ? '桌面宿主' : '演示环境'}</span>
+                <button
+                  type="button"
+                  className="sidebar-version-badge"
+                  onClick={() => setShowUpdateModal(true)}
+                  title="点击检查更新 (v0.1.0)"
+                  aria-label="检查更新"
+                >
+                  <RefreshCw size={10} />
+                  <span>v0.1.0</span>
+                </button>
               </div>
               <div className="sidebar-footer-actions">
                 <button
@@ -615,6 +627,15 @@ export default function App() {
             </>
           ) : (
             <div className="sidebar-footer-collapsed">
+              <button
+                type="button"
+                className="sidebar-footer-btn"
+                onClick={() => setShowUpdateModal(true)}
+                title="检查更新 (v0.1.0)"
+                aria-label="检查更新"
+              >
+                <RefreshCw size={14} />
+              </button>
               <button
                 type="button"
                 className="sidebar-footer-btn"
@@ -1176,6 +1197,12 @@ export default function App() {
           onNotify={notify}
         />
       )}
+
+      <UpdateModal
+        isOpen={showUpdateModal}
+        onClose={() => setShowUpdateModal(false)}
+        currentVersion="0.1.0"
+      />
 
       {toast && (
         <div className="toast-notification" role="status">

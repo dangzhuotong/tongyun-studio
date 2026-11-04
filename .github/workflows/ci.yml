@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    name: Lint, Test & Build Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: 'npm'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './crates/studio-core -> target\n./src-tauri -> target'
+
+      - name: Install Linux system dependencies for Tauri check
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libayatana-appindicator3-dev
+
+      - name: Install Node dependencies
+        run: npm install
+
+      - name: Check version consistency
+        run: npm run version:check
+
+      - name: Frontend Typecheck
+        run: npm run typecheck
+
+      - name: Frontend Vitest Tests
+        run: npm test
+
+      - name: Frontend Build
+        run: npm run build
+
+      - name: Rust Core Tests (studio-core)
+        run: cargo test -p studio-core
+
+      - name: Tauri Host Check (tongyun-studio)
+        run: cargo check -p tongyun-studio

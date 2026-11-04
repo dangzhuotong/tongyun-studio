@@ -8,11 +8,15 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build": "tsc --noEmit && vite build",
-    "check": "npm run typecheck && npm test && npm run build",
-    "tauri": "tauri"
+    "check": "npm run version:check && npm run typecheck && npm test && npm run build",
+    "tauri": "tauri",
+    "bump": "node scripts/bump-version.js",
+    "version:check": "node scripts/bump-version.js --check"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-process": "^2.4.0",
+    "@tauri-apps/plugin-updater": "^2.14.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "lucide-react": "^0.468.0"
