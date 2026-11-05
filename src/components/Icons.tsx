@@ -1,5 +1,6 @@
 import {
   Activity,
+  AlertCircle,
   ArrowUpRight,
   Archive,
   Bot,
@@ -68,6 +69,7 @@ export {
   PanelLeft as PanelLeftOpen,
   PanelRight as PanelRightOpen,
   Activity,
+  AlertCircle,
   ArrowUpRight,
   Archive,
   Bot,

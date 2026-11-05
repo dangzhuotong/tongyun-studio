@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  release:
+    name: Build & Release (${{ matrix.platform }})
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest'
+            os: 'macos'
+            args: '--target universal-apple-darwin'
+          - platform: 'windows-latest'
+            os: 'windows'
+            args: ''
+          - platform: 'ubuntu-22.04'
+            os: 'linux'
+            args: ''
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: 'npm'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './crates/studio-core -> target\n./src-tauri -> target'
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install Node dependencies
+        run: npm install
+
+      - name: Verify Version Consistency
+        run: npm run version:check
+
+      - name: Build Application & Publish Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          releaseName: ${{ startsWith(github.ref, 'refs/tags/') && 'Tongyun Studio v__VERSION__' || '' }}
+          releaseBody: |
+            Tongyun Studio (橦云工作台) v__VERSION__ 发布！
+
+            ### 下载指引
+            - **macOS 用户**：下载 `*_universal.dmg`（同时支持 Apple Silicon M 系列芯片与 Intel 架构 Mac）。
+            - **Windows 用户**：下载 `*-setup.exe` 或 `*.msi`（推荐企业/静默安装）。
+            - **Linux 用户**：下载 `*.AppImage` 或 `*.deb`。
+
+            ### 首次安装打开提示（未进行 Apple / Microsoft 商业签名）
+            - **macOS**：首次打开如提示「无法验证开发者」，请在访达（Finder）的「应用程序」中**右键点击该应用并选择「打开」**，或前往「系统设置」→「隐私与安全性」中点击「仍要打开」。
+            - **Windows**：出现 Windows Defender SmartScreen 提示时，请点击**「更多信息」→「仍要运行」**。
+
+            ### 自动更新
+            - 已内置 Tauri 2 Updater，新版本发布后支持自动检查与平滑热升级；最新元数据与签名位于 `latest.json`。
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
+          includeUpdaterJson: ${{ startsWith(github.ref, 'refs/tags/') }}
+          updaterJsonPreferNsis: false
