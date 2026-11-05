@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * @file bump-version.js
  * Synchronize and validate version string across:
