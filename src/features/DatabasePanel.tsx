@@ -2,12 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import type {
   Project,
   ProjectInspection,
-  SqlQueryResult,
   DbTableInfo,
   DbColumnInfo,
   PaginatedData,
   RowChangePlan,
-  ColumnChange,
   AgentSessionState,
   SavedDbConnection,
   DbConnectionInput,
@@ -236,7 +234,7 @@ export default function DatabasePanel({
     setColumnsMap({});
     setPaginatedData(null);
     setActiveView('data');
-    setTableError(null);
+    setErrorText(null);
     setLoadingTables(true);
     try {
       const list =
@@ -250,7 +248,7 @@ export default function DatabasePanel({
       }
     } catch (error) {
       if (stamp !== seq.current) return;
-      setTableError(String(error));
+      setErrorText(String(error));
       setTables([]);
     } finally {
       if (stamp === seq.current) setLoadingTables(false);
@@ -282,12 +280,28 @@ export default function DatabasePanel({
           totalRows: res.error ? 0 : 1,
           page: 1,
           pageSize,
+          sortBy: null,
+          sortDir: 'asc',
+          keyColumn: null,
+          nextCursor: null,
+          hasMore: false,
         });
         if (res.error) onNotify?.(`读取键失败：${res.error}`);
         return;
       }
       if (unsafeIdent(target)) {
-        setPaginatedData({ columns: [], rows: [], totalRows: 0, page: 1, pageSize });
+        setPaginatedData({
+          columns: [],
+          rows: [],
+          totalRows: 0,
+          page: 1,
+          pageSize,
+          sortBy: null,
+          sortDir: 'asc',
+          keyColumn: null,
+          nextCursor: null,
+          hasMore: false,
+        });
         onNotify?.('该对象名含引号或空格，请在 SQL 控制台手写查询');
         return;
       }
@@ -307,6 +321,11 @@ export default function DatabasePanel({
         totalRows: res.rowCount,
         page: 1,
         pageSize,
+        sortBy: null,
+        sortDir: 'asc',
+        keyColumn: null,
+        nextCursor: null,
+        hasMore: res.rowCount > res.rows.length,
       });
     } finally {
       if (stamp === seq.current) setLoadingData(false);

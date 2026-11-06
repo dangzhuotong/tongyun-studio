@@ -114,7 +114,7 @@ describe('DatabasePanel 多引擎连接管理', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: /只读查询/i }));
 
-    await waitFor(() => expect(screen.getByText('执行结果：异常')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/· 异常/)).toBeInTheDocument());
     expect(screen.getByText(/GUARD_READONLY/)).toBeInTheDocument();
     expect(notify).toHaveBeenCalledWith(expect.stringContaining('GUARD_READONLY'));
   });

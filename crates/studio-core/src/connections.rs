@@ -1079,6 +1079,7 @@ pub fn table_columns(store: &ConnectionStore, id: &str, table: &str) -> Result<V
                     not_null: row[3] == "1",
                     dflt_value: if row[4] == "NULL" { None } else { Some(row[4].clone()) },
                     pk: row[5] == "1",
+                    pk_position: if row[5] == "1" { row[0].parse().unwrap_or(0) } else { 0 },
                 })
                 .collect())
         }
@@ -1104,6 +1105,7 @@ pub fn table_columns(store: &ConnectionStore, id: &str, table: &str) -> Result<V
                     not_null: !nullable.eq("YES"),
                     dflt_value: dflt,
                     pk: key.as_deref().unwrap_or_default().eq_ignore_ascii_case("PRI"),
+                    pk_position: if key.as_deref().unwrap_or_default().eq_ignore_ascii_case("PRI") { cid } else { 0 },
                 })
                 .collect())
         }
@@ -1126,6 +1128,7 @@ pub fn table_columns(store: &ConnectionStore, id: &str, table: &str) -> Result<V
                     not_null: row[3] == "NO",
                     dflt_value: if row[4] == "NULL" { None } else { Some(row[4].clone()) },
                     pk: primary.contains(&row[1]),
+                    pk_position: if primary.contains(&row[1]) { row[0].parse().unwrap_or(index as i64 + 1) } else { 0 },
                 })
                 .collect())
         }
