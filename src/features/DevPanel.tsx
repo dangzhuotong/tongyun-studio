@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, type FormEvent } from 'react';
-import type { Project, ProjectInspection, ManagedService, ListeningPort, AgentSessionState, DevCandidate, DevScanReport, Workspace } from '../contracts';
+import type { Project, ProjectInspection, ManagedService, ListeningPort, AgentSessionState, DevCandidate, Workspace, TongyunDevSyncReport, TongyunDevSkipped } from '../contracts';
 import {
   isDesktop,
   startProjectService,
@@ -11,6 +11,7 @@ import {
   chooseProjectDirectory,
   scanDevDirectory,
   importDevCandidates,
+  readTongyunDevRegistry,
   startDevGroup,
   stopDevGroup,
   updateProjectDev,
@@ -116,6 +117,30 @@ export function formatErrorSummary(
   return parts.join('\n');
 }
 
+/** Candidates waiting to be registered, whichever way they were discovered. */
+type ProjectReview = {
+  summary: string;
+  candidates: DevCandidate[];
+  skipped?: TongyunDevSkipped[];
+};
+
+const registrySourceLabel: Record<string, string> = {
+  env: '环境变量 TONGYUN_DEV_CONFIG',
+  remembered: 'tongyun-dev 记下的配置文件',
+  user_default: '默认配置文件',
+  repo: '仓库内 config/projects.toml',
+};
+
+export function formatRegistrySummary(report: TongyunDevSyncReport): string {
+  const source = registrySourceLabel[report.configSource] ?? report.configSource;
+  const head = report.candidates.length
+    ? `从 tongyun-dev 读到 ${report.candidates.length} 个可登记项目`
+    : 'tongyun-dev 里暂时没有可登记的项目';
+  const skipped = report.skipped.length ? `，跳过 ${report.skipped.length} 个` : '';
+  const capped = report.truncated ? '，超过 64 个已截断' : '';
+  return `${head}${skipped}${capped}。来源：${source}（${report.configPath}）。`;
+}
+
 export default function DevPanel({
   project,
   projects = [],
@@ -145,7 +170,7 @@ export default function DevPanel({
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
   const [scanDepth, setScanDepth] = useState('3');
   const [scanBusy, setScanBusy] = useState(false);
-  const [report, setReport] = useState<DevScanReport | null>(null);
+  const [review, setReview] = useState<ProjectReview | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [drafts, setDrafts] = useState<Record<string, { command: string; port: string }>>({});
   const [exporting, setExporting] = useState(false);
@@ -241,6 +266,14 @@ export default function DevPanel({
   function run(command: string, profileKey?: string | null) { if (command.trim()) void mutate(`start:${command}`, id => profileKey ? startProjectService(id, command.trim(), profileKey) : startProjectService(id, command.trim())); }
   function submit(event: FormEvent) { event.preventDefault(); run(customCommand); }
 
+  function applyReview(next: ProjectReview) {
+    setReview(next);
+    const nextDrafts: Record<string, { command: string; port: string }> = {};
+    for (const item of next.candidates) nextDrafts[item.path] = { command: item.command, port: item.port ? String(item.port) : '' };
+    setDrafts(nextDrafts);
+    setSelected(new Set(next.candidates.filter(item => item.command.trim() && !item.existingHasDev && item.confidence !== 'low').map(item => item.path)));
+  }
+
   async function scanDirectory() {
     if (!isDesktop || scanBusy || !scanPath.trim()) return;
     setScanBusy(true);
@@ -250,11 +283,31 @@ export default function DevPanel({
       const depth = Number(scanDepth);
       const next = await scanDevDirectory(scanPath.trim(), Number.isInteger(depth) ? depth : 3);
       if (!mounted.current) return;
-      setReport(next);
-      const draftsNext: Record<string, { command: string; port: string }> = {};
-      for (const item of next.candidates) draftsNext[item.path] = { command: item.command, port: item.port ? String(item.port) : '' };
-      setDrafts(draftsNext);
-      setSelected(new Set(next.candidates.filter(item => item.command.trim() && !item.existingHasDev && item.confidence !== 'low').map(item => item.path)));
+      applyReview({
+        summary: `已查看 ${next.dirsVisited} 个目录，找到 ${next.candidates.length} 个候选。${next.truncated ? '结果已截断，请缩小目录或层数。' : ''}${next.candidates.length ? '' : '这个目录下没有识别到可运行项目。'}`,
+        candidates: next.candidates,
+      });
+    } catch (cause) {
+      if (mounted.current) { errorSource.current = 'action'; setError(String(cause)); }
+    } finally {
+      if (mounted.current) setScanBusy(false);
+    }
+  }
+
+  async function reviewTongyunDevRegistry() {
+    if (!isDesktop || scanBusy) return;
+    setScanBusy(true);
+    errorSource.current = null;
+    setError(null);
+    try {
+      const next = await readTongyunDevRegistry();
+      if (!mounted.current) return;
+      applyReview({
+        summary: formatRegistrySummary(next),
+        candidates: next.candidates,
+        skipped: next.skipped,
+      });
+      onNotify?.(`已读取 tongyun-dev 的登记：${next.candidates.length} 个可导入，${next.skipped.length} 个跳过。`);
     } catch (cause) {
       if (mounted.current) { errorSource.current = 'action'; setError(String(cause)); }
     } finally {
@@ -275,8 +328,8 @@ export default function DevPanel({
   }
 
   async function registerSelected() {
-    if (!isDesktop || !report || busy || scanBusy) return;
-    const chosen = report.candidates.filter(item => selected.has(item.path) && !item.existingHasDev);
+    if (!isDesktop || !review || busy || scanBusy) return;
+    const chosen = review.candidates.filter(item => selected.has(item.path) && !item.existingHasDev);
     if (!chosen.length) return;
     setBusy('import');
     errorSource.current = null;
@@ -287,7 +340,7 @@ export default function DevPanel({
       if (!mounted.current) return;
       onWorkspace?.(result.workspace);
       onNotify?.(`已登记 ${result.added} 个项目，补上运行配置 ${result.attached} 个，未改动 ${result.unchanged} 个。`);
-      setReport(null);
+      setReview(null);
       setSelected(new Set());
     } catch (cause) {
       if (mounted.current) { errorSource.current = 'action'; setError(String(cause)); }
@@ -413,10 +466,12 @@ export default function DevPanel({
         <input className="command-input" aria-label="扫描层数" inputMode="numeric" value={scanDepth} onChange={event => setScanDepth(event.target.value)} disabled={!isDesktop || scanBusy}/>
         <button type="button" className="secondary-button" disabled={!isDesktop || scanBusy} onClick={() => void pickScanDirectory()}><FolderOpen size={13}/>选择</button>
         <button type="submit" className="secondary-button" disabled={!isDesktop || scanBusy || !scanPath.trim()}>{scanBusy ? <LoaderCircle size={13} className="spin"/> : <Search size={13}/>}扫描</button>
+        <button type="button" className="secondary-button" disabled={!isDesktop || scanBusy} onClick={() => void reviewTongyunDevRegistry()}><Download size={13}/>从 tongyun-dev 读取</button>
       </form>
-      {report && <p className="meta">已查看 {report.dirsVisited} 个目录，找到 {report.candidates.length} 个候选。{report.truncated ? '结果已截断，请缩小目录或层数。' : ''}</p>}
-      {report && report.candidates.length === 0 && <p className="subcard-empty">这个目录下没有识别到可运行项目。</p>}
-      {report && report.candidates.length > 0 && <div className="dev-candidate-list">{report.candidates.map(item => {
+      {review && <p className="meta">{review.summary}</p>}
+      {!!review?.skipped?.length && <p className="meta">{review.skipped.slice(0, 10).map(item => `${item.name}：${item.reason}`).join('；')}{review.skipped.length > 10 ? `；另有 ${review.skipped.length - 10} 条已跳过` : ''}</p>}
+      {review && review.candidates.length === 0 && <p className="subcard-empty">没有识别到可登记的项目。</p>}
+      {review && review.candidates.length > 0 && <div className="dev-candidate-list">{review.candidates.map(item => {
         const draft = drafts[item.path] ?? { command: item.command, port: item.port ? String(item.port) : '' };
         const locked = !!item.existingHasDev;
         return <label key={item.path} className="dev-candidate">
@@ -436,7 +491,7 @@ export default function DevPanel({
           </span>
         </label>;
       })}</div>}
-      {report && <button type="button" className="secondary-button" disabled={!isDesktop || !!busy || scanBusy || ![...selected].some(path => report.candidates.some(item => item.path === path && !item.existingHasDev))} onClick={() => void registerSelected()}>{busy === 'import' ? <LoaderCircle size={13} className="spin"/> : <Check size={13}/>}登记所选</button>}
+      {review && <button type="button" className="secondary-button" disabled={!isDesktop || !!busy || scanBusy || ![...selected].some(path => review.candidates.some(item => item.path === path && !item.existingHasDev))} onClick={() => void registerSelected()}>{busy === 'import' ? <LoaderCircle size={13} className="spin"/> : <Check size={13}/>}登记所选</button>}
     </section>
     {!project ? <div className="panel-empty-placeholder"><Terminal size={32} strokeWidth={1.2}/><p>请先在左侧选择一个项目，或用上面的扫描登记新项目，再启动命令和查看日志。</p></div> : <>
       <p className="meta">正常退出工作台会停止这里启动的全部进程组。仅支持 macOS / Unix；请以前台模式运行命令，不要使用自行脱离进程组的守护模式。进程存活不等于服务就绪。</p>

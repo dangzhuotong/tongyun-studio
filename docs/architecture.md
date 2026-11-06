@@ -21,6 +21,7 @@ Dev 面板继承的是运行契约，不是把 tongyun-dev 仓库嵌进来，也
 已继承：
 
 - 扫描目录、预览候选、登记到工作台（或给尚无运行配置的已有登记补上命令和端口）
+- 只读导入 tongyun-dev 的全局登记：按 `$TONGYUN_DEV_CONFIG` → tongyun-dev 记下的配置路径 → `~/.config/tongyun-dev/projects.toml` → 仓库内 `config/projects.toml` 的顺序定位配置，解析其中的 `[projects.*]` 生成候选（类型为 `tongyun-dev`、置信度 high），带出启动命令、端口、分组、depends_on、env 与 profiles；目录不存在、被停用、命令或标识不合法的条目只跳过并在界面注明原因，单批上限 64 个（与登记守卫一致），候选仍需在面板里勾选后才登记，Studio 不回写该配置文件
 - 启停、重启、同组批量启停（支持 depends_on 依赖拓扑排序、就绪等待、环路拦截与依赖失败跳过，批量停止按依赖逆序）
 - 生命周期 `stopped` / `starting` / `installing` / `port_open` / `ready` / `failed`，以及一次性成功的 `exited`
 - 日志尾部（内存中的末尾行；每个输出流另有 64 KiB 上限）
@@ -34,7 +35,7 @@ Dev 面板继承的是运行契约，不是把 tongyun-dev 仓库嵌进来，也
 
 仍未接入：
 
-- 独立 CLI、`~/.config/tongyun-dev/projects.toml` 和网页控制台 `:9099`（Studio 只在后台启动供外部 Agent 调用的 Agent HTTP 服务，不挂载独立 CLI、独立项目文件或 :9099 网页控制台）
+- 独立 CLI 与网页控制台 `:9099`（Studio 只把 tongyun-dev 的 `projects.toml` 当作只读登记来源，不挂载独立 CLI、不接管它的进程，也不提供 `:9099` 网页控制台）
 - 跨产品的完整后端协议、共享数据库、Agent 调度
 - PTY、自动应答、向进程写入输入
 - 工作台重启后恢复跨进程托管（Studio 仅持久化日志供重启后回看，不恢复历史进程生命周期）

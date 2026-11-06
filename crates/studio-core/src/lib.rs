@@ -15,6 +15,7 @@ pub mod agent_http;
 pub mod dev_runtime;
 pub mod diagnostics;
 pub mod processes;
+pub mod tongyun_dev;
 pub mod toolchain;
 pub use agent_http::{
     bind_from, is_studio_server, resolve_agent_port, start_agent_server, AgentHttpInfo,
@@ -35,6 +36,9 @@ pub use processes::{
     safe_project_filename, ManagedService, RollingLogWriter, ServiceManager, MAX_LOG_FILE_BYTES,
 };
 pub use toolchain::{check_catalina_home, resolve_catalina_home, toolchain_env, HostOs, ToolchainError, ToolchainRoots};
+pub use tongyun_dev::{
+    read_registry as read_tongyun_dev_registry, TongyunDevSkipped, TongyunDevSyncReport,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

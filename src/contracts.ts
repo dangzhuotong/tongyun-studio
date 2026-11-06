@@ -94,6 +94,19 @@ export interface DevImportResult {
   unchanged: number;
 }
 
+export interface TongyunDevSkipped {
+  name: string;
+  reason: string;
+}
+
+export interface TongyunDevSyncReport {
+  configPath: string;
+  configSource: string;
+  candidates: DevCandidate[];
+  skipped: TongyunDevSkipped[];
+  truncated: boolean;
+}
+
 export interface Workspace {
   version: number;
   projects: Project[];

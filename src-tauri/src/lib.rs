@@ -6,7 +6,7 @@ use studio_core::{
     AiProjectContext, ColumnChange, DbColumnInfo, DbTableInfo, DevCandidate, DevImportOutcome,
     ExecutionResult, ExistingProject, FileEntry, GitCommitDetails, GitFileChange, GitHistoryResult,
     HttpResponse, ListeningPort, ManagedService, PaginatedData, Project, ProjectInspection,
-    RowChangePlan, ServiceManager, SqlQueryResult, Workspace, WorkspaceStore,
+    RowChangePlan, ServiceManager, SqlQueryResult, TongyunDevSyncReport, Workspace, WorkspaceStore,
 };
 use tauri::Manager;
 
@@ -549,6 +549,24 @@ fn import_dev_candidates(
     state.store.import_dev_candidates(&candidates)
 }
 
+/// Read tongyun-dev's own registry so the workbench can register the same projects without a second config.
+#[tauri::command]
+fn read_tongyun_dev_registry(
+    state: tauri::State<'_, AppState>,
+) -> Result<TongyunDevSyncReport, String> {
+    let workspace = state.store.load()?;
+    let existing = workspace
+        .projects
+        .iter()
+        .map(|project| ExistingProject {
+            id: project.id.clone(),
+            path: project.path.clone(),
+            has_dev: project.dev.is_some(),
+        })
+        .collect::<Vec<_>>();
+    studio_core::read_tongyun_dev_registry(&existing)
+}
+
 #[tauri::command]
 fn start_dev_group(
     state: tauri::State<'_, AppState>,
@@ -726,6 +744,7 @@ pub fn run() {
             update_project_auto_restart,
             scan_dev_directory,
             import_dev_candidates,
+            read_tongyun_dev_registry,
             start_dev_group,
             stop_dev_group,
             dev_service_log_tail,
