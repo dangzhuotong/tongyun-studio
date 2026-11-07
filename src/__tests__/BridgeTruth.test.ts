@@ -31,6 +31,14 @@ describe('browser preview never invents local results', () => {
       () => bridge.devServiceLogTail('p', 's', 20),
       () => bridge.devProjectLogTail('p', 20),
       () => bridge.openUrl('http://localhost:1234'),
+      () => bridge.listDbConnections(), () => bridge.deleteDbConnection('c'),
+      () => bridge.testDbConnection('c'), () => bridge.connectionTables('c'),
+      () => bridge.connectionColumns('c', 'table'), () => bridge.connectionRedisKeys('c', 'user*'),
+      () => bridge.runConnectionQuery('c', 'SELECT 1'),
+      () => bridge.saveDbConnection({
+        id: '', name: 'synthetic', engine: null, host: '', port: null, user: '',
+        password: null, database: '', tls: false, readOnly: true, revision: null,
+      }),
     ];
     for (const call of calls) await expect(call()).rejects.toThrow('桌面版');
   });
