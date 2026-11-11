@@ -14,7 +14,7 @@ interface AgentCockpitProps {
   onTogglePause?: () => Promise<void> | void;
 }
 
-const unavailableReason = '尚未接入 Agent 调度与审计服务，无法投递指令或暂停执行。读取文件后可导出本地快照。';
+const unavailableReason = '只读文件快照 · 调度服务未接入';
 
 export default function AgentCockpit({
   project,
@@ -42,23 +42,8 @@ export default function AgentCockpit({
             <span className="cockpit-title">Agent 操作监视舱</span>
           </div>
           <div className="cockpit-controls">
-            {observed ? (
-              <button
-                className="icon-button-sm"
-                onClick={() => void onExportAudit?.()}
-                title="导出 Agent 审计轨迹"
-                aria-label="导出 Agent 审计轨迹"
-              >
-                <Copy size={13} />
-              </button>
-            ) : (
-              <button
-                className="icon-button-sm"
-                disabled
-                title={unavailableReason}
-                aria-label="导出 Agent 审计轨迹"
-                aria-describedby="cockpit-unavailable"
-              >
+            {observed && onExportAudit && (
+              <button className="icon-button-sm" onClick={() => void onExportAudit()} title="导出 Agent 快照" aria-label="导出 Agent 快照">
                 <Copy size={13} />
               </button>
             )}
@@ -67,6 +52,7 @@ export default function AgentCockpit({
             </button>
           </div>
         </div>
+        {observed ? <>
         <div className="agent-hud-card">
           <div className="hud-identity">
             <div className="hud-avatar"><Bot size={16} strokeWidth={1.6} /></div>
@@ -88,10 +74,20 @@ export default function AgentCockpit({
           <button className={`cockpit-tab-btn ${activeSubTab === 'stream' ? 'active' : ''}`} onClick={() => setActiveSubTab('stream')}><Zap size={12} />执行记录</button>
           <button className={`cockpit-tab-btn ${activeSubTab === 'plan' ? 'active' : ''}`} onClick={() => setActiveSubTab('plan')}><Workflow size={12} />任务计划</button>
         </div>
+        </> : <p className="mono-subtle">当前项目：{project?.name ?? '未选择项目'}</p>}
       </div>
 
       <div className="cockpit-body">
-        {activeSubTab === 'stream' ? (
+        {!observed ? (
+          <div className="panel-empty-placeholder">
+            <Bot size={24} strokeWidth={1.3} />
+            <p>{project ? '暂无 Agent 快照' : '选择一个项目查看 Agent 快照'}</p>
+            {project && <span>记录来自项目内的 .tongyun/agent-session.json。</span>}
+            {project && onInitializeSession && (
+              <button type="button" className="secondary-button-xs" onClick={onInitializeSession}>初始化跟踪模板</button>
+            )}
+          </div>
+        ) : activeSubTab === 'stream' ? (
           <div className="action-stream-list">
             <div className="stream-section-lead"><span>已接收的执行记录</span><span className="mono-subtle">最近心跳：{observed?.lastHeartbeat ?? '未知'}</span></div>
             {observed?.actions.length ? observed.actions.slice().reverse().map(action => (
@@ -104,17 +100,6 @@ export default function AgentCockpit({
               <div className="panel-empty-placeholder">
                 <Bot size={28} strokeWidth={1.3} />
                 <p>暂无真实执行记录</p>
-                <span>接入真实事件来源后，才能显示工人、模型和执行过程。</span>
-                {project && onInitializeSession && (
-                  <button
-                    type="button"
-                    className="secondary-button-xs"
-                    style={{ marginTop: 10 }}
-                    onClick={onInitializeSession}
-                  >
-                    初始化跟踪模板 (.tongyun/agent-session.json)
-                  </button>
-                )}
               </div>
             )}
           </div>
@@ -126,73 +111,28 @@ export default function AgentCockpit({
         )}
       </div>
 
-      <div className="cockpit-footer">
-        {observed && <p id="cockpit-unavailable" className="mono-subtle">{unavailableReason}</p>}
-        {observed ? (
-          <>
-            <form
-              className="cockpit-prompt-form"
-              onSubmit={e => {
-                e.preventDefault();
-                if (instruction.trim()) {
-                  void onSendInstruction?.(instruction);
-                  setInstruction('');
-                }
-              }}
-            >
+      {observed && (
+        <div className="cockpit-footer">
+          {onSendInstruction && (
+            <form className="cockpit-prompt-form" onSubmit={event => {
+              event.preventDefault();
+              if (instruction.trim()) {
+                void onSendInstruction(instruction);
+                setInstruction('');
+              }
+            }}>
               <div className="prompt-input-row">
-                <input
-                  className="cockpit-input"
-                  aria-label="Agent 补充指令"
-                  placeholder="向当前 Agent 投递补充指令..."
-                  disabled={!onSendInstruction}
-                      aria-describedby="cockpit-unavailable"
-                      value={instruction}
-                  onChange={e => setInstruction(e.target.value)}
-                />
-                <button
-                  type="submit"
-                  className="primary-button-sm"
-                  disabled={!onSendInstruction || !instruction.trim()}
-                  title="发送 Agent 指令"
-                  aria-label="发送 Agent 指令"
-                >
-                  <Send size={13} />
-                </button>
+                <input className="cockpit-input" aria-label="Agent 补充指令" placeholder="输入补充指令" value={instruction} onChange={event => setInstruction(event.target.value)} />
+                <button type="submit" className="primary-button-sm" disabled={!instruction.trim()} aria-label="发送 Agent 指令"><Send size={13} /></button>
               </div>
             </form>
-            <div className="cockpit-actions-bar">
-              <button
-                type="button"
-                className="secondary-button-xs"
-                disabled={!onTogglePause}
-                      aria-describedby="cockpit-unavailable"
-                      onClick={() => void onTogglePause?.()}
-                title="暂停调度"
-                aria-label="暂停调度"
-              >
-                <Square size={11} />
-                <span>暂停调度</span>
-              </button>
-              <span className="footer-meta-tag">本地文件快照</span>
-            </div>
-          </>
-        ) : (
-          <>
-            <p id="cockpit-unavailable" className="mono-subtle">{unavailableReason}</p>
-            <div className="cockpit-prompt-form">
-              <div className="prompt-input-row">
-                <input className="cockpit-input" aria-label="Agent 补充指令" placeholder="接入调度服务后可发送指令" disabled aria-describedby="cockpit-unavailable" />
-                <button className="primary-button-sm" disabled title={unavailableReason} aria-label="发送 Agent 指令" aria-describedby="cockpit-unavailable"><Send size={13} /></button>
-              </div>
-            </div>
-            <div className="cockpit-actions-bar">
-              <button className="secondary-button-xs" disabled title={unavailableReason} aria-describedby="cockpit-unavailable"><Square size={11} /><span>暂停调度</span></button>
-              <span className="footer-meta-tag">调度服务未接入</span>
-            </div>
-          </>
-        )}
-      </div>
+          )}
+          {onTogglePause && (
+            <button type="button" className="secondary-button-xs" onClick={() => void onTogglePause()}><Square size={11} />暂停调度</button>
+          )}
+          {!onSendInstruction && !onTogglePause && <p className="mono-subtle">{unavailableReason}</p>}
+        </div>
+      )}
     </aside>
   );
 }

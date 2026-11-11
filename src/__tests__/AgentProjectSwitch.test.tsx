@@ -38,8 +38,7 @@ describe('Agent session project binding', () => {
     expect(await within(cockpit).findByText('当前项目：Beta')).toBeInTheDocument();
     await waitFor(() => expect(getInitialAgentSession).toHaveBeenCalledWith('beta'));
     expect(within(cockpit).queryByText('当前项目：Alpha')).not.toBeInTheDocument();
-    expect(within(cockpit).getByText('暂无真实执行记录')).toBeInTheDocument();
-    expect(within(cockpit).getByText('模型：未知')).toBeInTheDocument();
-    expect(within(cockpit).getByRole('button', { name: '暂停调度' })).toBeDisabled();
+    expect(within(cockpit).getByText('暂无 Agent 快照')).toBeInTheDocument();
+    expect(within(cockpit).queryByRole('button', { name: '暂停调度' })).not.toBeInTheDocument();
   });
 });

@@ -9,17 +9,17 @@ describe('App', () => {
 
     expect(screen.getByText('橦云工作台')).toBeInTheDocument();
     expect(screen.getAllByText('TONGYUN STUDIO').length).toBeGreaterThan(0);
-    expect(screen.getByText('把开发现场，放在一起。')).toBeInTheDocument();
+    expect(screen.getByText('打开本地项目')).toBeInTheDocument();
     expect(screen.getByText('从一个本地目录开始')).toBeInTheDocument();
   });
 
   it('renders all four developer tools in overview', () => {
     render(<App />);
 
-    expect(screen.getByText('Dev')).toBeInTheDocument();
-    expect(screen.getByText('API')).toBeInTheDocument();
-    expect(screen.getByText('Database')).toBeInTheDocument();
-    expect(screen.getByText('Git')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '运行' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '接口' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '数据' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '版本' })).toBeInTheDocument();
   });
 
   it('allows switching to dev panel tab', async () => {
@@ -30,9 +30,9 @@ describe('App', () => {
     fireEvent.click(devTab);
 
     expect(
-      await screen.findByRole('heading', { name: 'Tongyun Dev · 服务与终端' }),
+      await screen.findByRole('heading', { name: '运行' }),
     ).toBeInTheDocument();
-    expect(screen.getByText('本地进程控制')).toBeInTheDocument();
+    expect(screen.getByText('扫描并登记项目')).toBeInTheDocument();
   });
 
   it('allows switching to api panel tab', async () => {
@@ -43,9 +43,9 @@ describe('App', () => {
     fireEvent.click(apiTab);
 
     expect(
-      await screen.findByRole('heading', { name: 'Tongyun API · 接口工作台' }),
+      await screen.findByRole('heading', { name: '接口' }),
     ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /导入 cURL/ })).toBeInTheDocument();
+    expect(screen.getByText(/请选择|请先在左侧选择/)).toBeInTheDocument();
   });
 
   it('allows switching to database panel tab', async () => {
@@ -56,7 +56,7 @@ describe('App', () => {
     fireEvent.click(dbTab);
 
     expect(
-      await screen.findByRole('heading', { name: 'Tongyun Database · 数据工作台' }),
+      await screen.findByRole('heading', { name: '数据' }),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /导出 CSV/ })).toBeInTheDocument();
   });
@@ -69,9 +69,9 @@ describe('App', () => {
     fireEvent.click(gitTab);
 
     expect(
-      await screen.findByRole('heading', { name: 'Tongyun Git · 版本工作台' }),
+      await screen.findByRole('heading', { name: '版本' }),
     ).toBeInTheDocument();
-    expect(screen.getByText('双栏暂存工作流')).toBeInTheDocument();
+    expect(screen.getByText(/以管理代码版本/)).toBeInTheDocument();
   });
 
   it('allows switching to files panel tab', async () => {
@@ -82,9 +82,9 @@ describe('App', () => {
     fireEvent.click(filesTab);
 
     expect(
-      await screen.findByRole('heading', { name: 'Tongyun Files · 项目文件与源码' }),
+      await screen.findByRole('heading', { name: '文件' }),
     ).toBeInTheDocument();
-    expect(screen.getByText('原生文件浏览')).toBeInTheDocument();
+    expect(screen.getByText(/以浏览其内部文件/)).toBeInTheDocument();
   });
 
   it('shows the disconnected Agent state instead of a fabricated mission', async () => {
@@ -95,10 +95,10 @@ describe('App', () => {
     fireEvent.click(agentTab);
 
     expect(
-      await screen.findByRole('heading', { name: 'Tongyun Agent · 执行记录与计划' }),
+      await screen.findByRole('heading', { name: '智能体' }),
     ).toBeInTheDocument();
     expect(screen.getByText('Agent 未接入')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '导出审计轨迹' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: '导出快照' })).not.toBeInTheDocument();
     expect(screen.queryByText('Agent 在线协同')).not.toBeInTheDocument();
   });
 
@@ -112,10 +112,9 @@ describe('App', () => {
     const agentCockpitBtn = screen.getByTitle(/切换 Agent 监视舱/);
     fireEvent.click(agentCockpitBtn);
     expect(screen.getByText('Agent 操作监视舱')).toBeInTheDocument();
-    expect(screen.getByText('暂无真实执行记录')).toBeInTheDocument();
-    expect(screen.getByText('模型：未知')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '发送 Agent 指令' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '暂停调度' })).toBeDisabled();
+    expect(screen.getByText('选择一个项目查看 Agent 快照')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '发送 Agent 指令' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '暂停调度' })).not.toBeInTheDocument();
   });
 
   it('verifies tool definitions completeness', () => {

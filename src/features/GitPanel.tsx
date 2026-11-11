@@ -506,14 +506,7 @@ export default function GitPanel({
           <div className="large-tool-icon">
             <GitBranch size={22} strokeWidth={1.5} />
           </div>
-          <div>
-            <h2 id="git-title">Tongyun Git · 版本工作台</h2>
-            <p>暂存区精细化管理、分支创建切换、远程同步、代码差异对比与 本地规则提交草稿。</p>
-          </div>
-        </div>
-        <div className="workbench-badges">
-          <span className="badge-matcha">双栏暂存工作流</span>
-          {project && <span className="mono-subtle">{project.name}</span>}
+          <h2 id="git-title">版本</h2>
         </div>
       </div>
 
@@ -638,7 +631,7 @@ export default function GitPanel({
               className={`git-view-tab ${view === 'changes' ? 'active' : ''}`}
               onClick={() => setView('changes')}
             >
-              改动视图 (Changes)
+              改动
             </button>
             <button
               type="button"
@@ -647,7 +640,7 @@ export default function GitPanel({
               className={`git-view-tab ${view === 'log' ? 'active' : ''}`}
               onClick={() => setView('log')}
             >
-              提交历史 (Log Tree)
+              提交历史
             </button>
           </div>
 
@@ -756,15 +749,15 @@ export default function GitPanel({
           )}
 
           {agentGitActions.length > 0 && (
-            <div className="panel-subcard agent-subcard" style={{ marginBottom: 12 }}>
-              <div className="section-heading">
+            <details className="panel-subcard workbench-activity">
+              <summary className="section-heading">
                 <div className="subcard-title">
                   <Bot size={15} className="accent-color" />
-                  <h3>Agent 代码变动与交付流</h3>
+                  <span>Agent 版本记录</span>
                   <span className="mini-badge-accent">{session?.agentName ?? 'Agent'}</span>
                 </div>
                 <span className="meta">{agentGitActions.length} 项变动交付</span>
-              </div>
+              </summary>
               <div className="agent-action-mini-list">
                 {agentGitActions.slice(-3).reverse().map(act => (
                   <div key={act.id} className="agent-action-mini-item">
@@ -778,7 +771,7 @@ export default function GitPanel({
                   </div>
                 ))}
               </div>
-            </div>
+            </details>
           )}
 
           {/* Side-by-Side Workbench: Left Changes Dual-List, Right Diff & Commit */}
@@ -789,10 +782,10 @@ export default function GitPanel({
               {/* Staged Section */}
               <div className="staging-section">
                 <div className="pane-header">
-                  <span>已暂存改动 (Staged: {stagedFiles.length})</span>
+                  <span>已暂存 ({stagedFiles.length})</span>
                   {stagedFiles.length > 0 && (
                     <button className="text-button-xs" onClick={handleUnstageAll}>
-                      取消全选
+                      全部取消暂存
                     </button>
                   )}
                 </div>

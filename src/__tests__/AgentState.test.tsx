@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import AgentPanel from '../features/AgentPanel';
 import AgentCockpit from '../components/AgentCockpit';
 import { getInitialAgentSession } from '../bridge';
@@ -32,23 +32,14 @@ describe('Agent observations', () => {
     expect(getInitialAgentSession().projectId).toBeNull();
   });
 
-  it('keeps delivery, pause and audit export unavailable and explains why', () => {
-    const notify = vi.fn();
-    render(<AgentPanel project={project} session={getInitialAgentSession(project.id)} onNavigate={vi.fn()} onNotify={notify} />);
-    expect(screen.getByText('模型：未知')).toBeInTheDocument();
-    expect(screen.getByText('最近心跳：未知')).toBeInTheDocument();
-    expect(screen.getByText('暂无真实任务计划')).toBeInTheDocument();
-    expect(screen.getByText('暂无真实执行记录')).toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: 'Agent 补充指令' })).toBeDisabled();
-    for (const name of ['投递指令', '暂停', '导出审计轨迹']) {
-      const button = screen.getByRole('button', { name: new RegExp(`^${name}$`) });
-      expect(button).toBeDisabled();
-      expect(button).toHaveAccessibleDescription(/尚未接入 Agent 调度与审计服务/);
-      fireEvent.click(button);
+  it('shows a single empty state without unsupported Agent controls', () => {
+    render(<AgentPanel project={project} session={getInitialAgentSession(project.id)} onNavigate={vi.fn()} />);
+    expect(screen.getByText('暂无 Agent 快照')).toBeInTheDocument();
+    expect(screen.getByText(/agent-session\.json/)).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Agent 补充指令' })).not.toBeInTheDocument();
+    for (const name of ['投递指令', '暂停', '导出快照']) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
     }
-    expect(notify).not.toHaveBeenCalled();
-    expect(screen.queryByText('0')).not.toBeInTheDocument();
-    expect(screen.queryByText('0%')).not.toBeInTheDocument();
   });
 
   it('hides the prior project session immediately when the full panel changes project', () => {
@@ -56,12 +47,10 @@ describe('Agent observations', () => {
     const { rerender } = render(<AgentPanel project={project} session={session} onNavigate={vi.fn()} />);
     expect(screen.getByText('Prior project event')).toBeInTheDocument();
     rerender(<AgentPanel project={otherProject} session={session} onNavigate={vi.fn()} />);
-    expect(screen.getByText('当前项目：Project B')).toBeInTheDocument();
+    expect(screen.getByText('暂无 Agent 快照')).toBeInTheDocument();
     expect(screen.queryByText('Prior project event')).not.toBeInTheDocument();
     expect(screen.queryByText('prior-project-worker')).not.toBeInTheDocument();
     expect(screen.queryByText('Prior project goal')).not.toBeInTheDocument();
-    expect(screen.getByText('模型：未知')).toBeInTheDocument();
-    expect(screen.getByText('暂无真实执行记录')).toBeInTheDocument();
   });
 
   it('protects cockpit telemetry and traces when the project changes or is removed', () => {
@@ -70,13 +59,11 @@ describe('Agent observations', () => {
     const { rerender } = render(<AgentCockpit project={project} {...props} />);
     expect(screen.getByText('Prior project event')).toBeInTheDocument();
     rerender(<AgentCockpit project={otherProject} {...props} />);
-    expect(screen.getByText('暂无真实执行记录')).toBeInTheDocument();
-    expect(screen.getByText('最近心跳：未知')).toBeInTheDocument();
+    expect(screen.getByText('暂无 Agent 快照')).toBeInTheDocument();
     expect(screen.queryByText('Prior project event')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '任务计划' }));
-    expect(screen.getByText('暂无真实任务计划')).toBeInTheDocument();
-    for (const name of ['发送 Agent 指令', '暂停调度', '导出 Agent 审计轨迹']) {
-      expect(screen.getByRole('button', { name: new RegExp(`^${name}$`) })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: '任务计划' })).not.toBeInTheDocument();
+    for (const name of ['发送 Agent 指令', '暂停调度', '导出 Agent 快照']) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
     }
     rerender(<AgentCockpit project={null} {...props} />);
     expect(screen.getByText('当前项目：未选择项目')).toBeInTheDocument();

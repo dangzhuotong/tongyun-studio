@@ -739,6 +739,7 @@ export default function App() {
                 onClick={() => void openAiContext()}
                 disabled={loadingAi}
                 title="生成并复制当前项目的 AI 上下文与 Prompt"
+                aria-label="AI 上下文协同"
               >
                 {loadingAi ? (
                   <LoaderCircle size={13} className="spin" />
@@ -752,6 +753,7 @@ export default function App() {
             <button
               className={`agent-topbar-pill ${showAgentCockpit ? 'active' : ''}`}
               onClick={() => setShowAgentCockpit(prev => !prev)}
+              aria-label="切换 Agent 监视舱"
               title={showAgentCockpit ? '收起 Agent 监视舱 (⌘J)' : '切换 Agent 监视舱 · 未接入 (⌘J)'}
             >
               <Bot size={13} />
@@ -764,7 +766,7 @@ export default function App() {
         {!isDesktop && (
           <div className="preview-banner">
             <span className="status-dot available" />
-            <span>浏览器演示模式 · 本机文件与命令执行已启用模拟器预览</span>
+            <span>浏览器预览 · 请在桌面版打开本机项目</span>
           </div>
         )}
 
@@ -791,32 +793,6 @@ export default function App() {
 
             {project && (
               <div className="header-actions">
-                <button
-                  className="secondary-button"
-                  onClick={openDirectory}
-                  disabled={!isDesktop || current?.result?.exists === false}
-                  title="在访达中打开项目所在目录"
-                >
-                  <FolderOpen size={14} />
-                  访达
-                </button>
-                <button
-                  className="secondary-button"
-                  onClick={openTerminal}
-                  disabled={!isDesktop || current?.result?.exists === false}
-                  title="在系统终端中打开当前目录"
-                >
-                  <Terminal size={14} />
-                  终端
-                </button>
-                <button
-                  className="secondary-button"
-                  onClick={copyProjectPath}
-                  title="复制项目完整物理路径"
-                >
-                  {copiedPath ? <Check size={14} className="accent-color" /> : <Copy size={14} />}
-                  复制路径
-                </button>
                 <button
                   className="icon-button"
                   aria-label="移除项目登记"
@@ -880,9 +856,7 @@ export default function App() {
                   <div className="welcome-icon">
                     <FolderOpen size={28} strokeWidth={1.3} />
                   </div>
-                  <div className="section-eyebrow">从项目开始</div>
-                  <h2>把开发现场，放在一起。</h2>
-                  <p>添加本地项目，在同一个工作区找到运行、接口、数据与版本工具。</p>
+                  <h2>打开本地项目</h2>
                   <button className="primary-button" disabled={!isDesktop} onClick={beginAdd}>
                     <Plus size={16} />
                     添加本地项目
@@ -928,7 +902,6 @@ export default function App() {
                             />
                             {current.result.exists ? '可访问' : '目录不存在'}
                           </span>
-                          <span className="meta">本机文件系统状态</span>
                         </div>
                         <div className="stat-card">
                           <span className="stat-label">当前分支</span>
@@ -940,9 +913,7 @@ export default function App() {
                               : '非 Git 仓库'}
                           </span>
                           <span className="meta">
-                            {current.result.git.head
-                              ? current.result.git.head.slice(0, 8)
-                              : '本地版本信息'}
+                            {current.result.git.head?.slice(0, 8)}
                           </span>
                         </div>
                         <div className="stat-card">
@@ -960,7 +931,7 @@ export default function App() {
                           <span className="meta">未提交的文件变更</span>
                         </div>
                         <div className="stat-card">
-                          <span className="stat-label">接口测试用例</span>
+                          <span className="stat-label">接口请求文件</span>
                           <span className="stat-value">
                             {current.result.exists ? (
                               <>
@@ -1024,7 +995,6 @@ export default function App() {
               <section className="tools-section">
                 <div className="section-heading">
                   <h2>工作台模块</h2>
-                  <span className="meta">原生内嵌 · 实时工作</span>
                 </div>
                 <div className="tools-grid">
                   {toolDefinitions.map(tool => (
@@ -1033,34 +1003,19 @@ export default function App() {
                       key={tool.id}
                       onClick={() => setTab(tool.id)}
                     >
-                      <div className="tool-card-top">
-                        <div className="tool-icon">
-                          <tool.Icon size={20} strokeWidth={1.5} />
-                        </div>
-                        <ArrowUpRight size={15} />
+                      <div className="tool-icon">
+                        <tool.Icon size={18} strokeWidth={1.5} />
                       </div>
-                      <h3>
-                        {tool.label}
-                        <span>{tool.name.replace('Tongyun ', '')}</span>
-                      </h3>
-                      <p>{tool.description}</p>
-                      <div className="tool-card-bottom">
-                        <span className="badge-matcha-soft">原生内嵌</span>
-                        <span>
-                          进入工作台 <ChevronRight size={12} />
-                        </span>
+                      <div className="tool-card-label">
+                        <h3>{tool.label}</h3>
+                        <p>{tool.description}</p>
                       </div>
+                      <ArrowUpRight size={15} className="tool-card-arrow" aria-hidden="true" />
                     </button>
                   ))}
                 </div>
               </section>
 
-              <div className="workspace-note">
-                <GitBranch size={15} />
-                <p>
-                  所有操作直接在项目工作区执行，数据留在本机，随时切换。
-                </p>
-              </div>
             </>
           )}
         </main>

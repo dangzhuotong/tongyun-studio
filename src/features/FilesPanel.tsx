@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Project, FileEntry } from '../contracts';
 import { readProjectTree, readProjectFileContent, openProjectFile, isDesktop } from '../bridge';
 import {
@@ -28,18 +28,25 @@ export default function FilesPanel({
   const [fileContent, setFileContent] = useState<string>('');
   const [loadingContent, setLoadingContent] = useState(false);
   const [copiedFile, setCopiedFile] = useState(false);
+  const [treeError, setTreeError] = useState<{ message: string; dir?: string } | null>(null);
+  const [contentError, setContentError] = useState<string | null>(null);
+  const treeRequest = useRef(0);
+  const contentRequest = useRef(0);
 
   const loadTree = async (dir?: string) => {
     if (!project) return;
+    const request = ++treeRequest.current;
+    setTreeError(null);
     setLoadingTree(true);
     try {
       const list = await readProjectTree(project.id, dir || undefined);
+      if (request !== treeRequest.current) return;
       setEntries(list);
       setCurrentDir(dir || '');
     } catch (e) {
-      onNotify?.(`读取目录树失败：${e}`);
+      if (request === treeRequest.current) setTreeError({ message: String(e), dir });
     } finally {
-      setLoadingTree(false);
+      if (request === treeRequest.current) setLoadingTree(false);
     }
   };
 
@@ -49,6 +56,7 @@ export default function FilesPanel({
       setFileContent('');
       void loadTree('');
     }
+    return () => { treeRequest.current++; contentRequest.current++; };
   }, [project?.id]);
 
   const handleEntryClick = (entry: FileEntry) => {
@@ -62,22 +70,33 @@ export default function FilesPanel({
 
   const loadContent = async (filePath: string) => {
     if (!project) return;
+    const request = ++contentRequest.current;
+    setContentError(null);
+    setCopiedFile(false);
     setLoadingContent(true);
     try {
       const text = await readProjectFileContent(project.id, filePath);
-      setFileContent(text);
+      if (request === contentRequest.current) setFileContent(text);
     } catch (e) {
-      setFileContent(`无法预览文件内容：${e}`);
+      if (request === contentRequest.current) setContentError(String(e));
     } finally {
-      setLoadingContent(false);
+      if (request === contentRequest.current) setLoadingContent(false);
     }
   };
 
-  const copyContent = () => {
-    navigator.clipboard.writeText(fileContent);
-    setCopiedFile(true);
-    onNotify?.('已复制文件内容');
-    setTimeout(() => setCopiedFile(false), 2000);
+  const copyContent = async () => {
+    const request = contentRequest.current;
+    try {
+      await navigator.clipboard.writeText(fileContent);
+      if (request !== contentRequest.current) return;
+      setCopiedFile(true);
+      onNotify?.('已复制文件内容');
+      setTimeout(() => {
+        if (request === contentRequest.current) setCopiedFile(false);
+      }, 2000);
+    } catch (error) {
+      onNotify?.(`复制失败：${error}`);
+    }
   };
 
   const formatSize = (bytes: number) => {
@@ -94,14 +113,7 @@ export default function FilesPanel({
           <div className="large-tool-icon">
             <FolderOpen size={22} strokeWidth={1.5} />
           </div>
-          <div>
-            <h2 id="files-title">Tongyun Files · 项目文件与源码</h2>
-            <p>浏览项目目录结构，快速预览配置文件、源代码与文本文件内容。</p>
-          </div>
-        </div>
-        <div className="workbench-badges">
-          <span className="badge-matcha">原生文件浏览</span>
-          {project && <span className="mono-subtle">{project.name}</span>}
+          <h2 id="files-title">文件</h2>
         </div>
       </div>
 
@@ -142,22 +154,29 @@ export default function FilesPanel({
               </button>
             </div>
 
+            {treeError && <div className="files-tree-error" role="alert">
+              <span>读取目录失败：{treeError.message}</span>
+              <button className="text-button" onClick={() => void loadTree(treeError.dir)}>重试</button>
+            </div>}
             <div className="files-tree-list">
               {loadingTree ? (
                 <div className="tree-loading">
                   <LoaderCircle size={14} className="spin" />
                   <span>读取中…</span>
                 </div>
-              ) : entries.length === 0 ? (
+              ) : entries.length === 0 && !treeError ? (
                 <div className="tree-empty">
                   <span>(空目录)</span>
                 </div>
               ) : (
                 entries.map(item => (
-                  <div
+                  <button
+                    type="button"
                     key={item.path}
                     className={`file-tree-row ${selectedFile?.path === item.path ? 'selected' : ''}`}
                     onClick={() => handleEntryClick(item)}
+                    title={item.path}
+                    aria-pressed={item.isDir ? undefined : selectedFile?.path === item.path}
                   >
                     {item.isDir ? (
                       <Folder size={15} className="folder-icon" />
@@ -168,7 +187,7 @@ export default function FilesPanel({
                     {!item.isDir && (
                       <span className="file-entry-size">{formatSize(item.sizeBytes)}</span>
                     )}
-                  </div>
+                  </button>
                 ))
               )}
             </div>
@@ -181,17 +200,18 @@ export default function FilesPanel({
                 <div className="file-preview-header">
                   <div className="file-header-info">
                     <FileCode size={15} />
-                    <span className="file-header-path">{selectedFile.path}</span>
+                    <span className="file-header-path" title={selectedFile.path}>{selectedFile.path}</span>
                     <span className="meta">{formatSize(selectedFile.sizeBytes)}</span>
                   </div>
                   <div className="file-header-actions">
                     <button
                       className="terminal-btn"
-                      onClick={copyContent}
+                      onClick={() => void copyContent()}
+                      disabled={loadingContent || !!contentError}
                       title="复制文件内容"
                     >
                       {copiedFile ? <Check size={12} /> : <Copy size={12} />}
-                      复制
+                      {copiedFile ? '已复制' : '复制'}
                     </button>
                     {isDesktop && (
                       <button
@@ -211,6 +231,11 @@ export default function FilesPanel({
                     <div className="content-loading">
                       <LoaderCircle size={16} className="spin" />
                       <span>正在加载文件内容…</span>
+                    </div>
+                  ) : contentError ? (
+                    <div className="files-tree-error" role="alert">
+                      <span>读取文件失败：{contentError}</span>
+                      <button className="text-button" onClick={() => void loadContent(selectedFile.path)}>重试</button>
                     </div>
                   ) : (
                     <pre className="file-code-block">

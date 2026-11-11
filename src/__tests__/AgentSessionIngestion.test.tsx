@@ -70,9 +70,9 @@ describe('Real Agent Session Ingestion & Monitoring', () => {
       expect(screen.getByText('All 17 tests passed')).toBeInTheDocument();
       expect(screen.getByText('75%')).toBeInTheDocument();
       expect(screen.getByText('已读取本地快照')).toBeInTheDocument();
-      expect(screen.getByRole('button', {name: '暂停'})).toBeDisabled();
-      expect(screen.getByRole('button', {name: '投递指令'})).toBeDisabled();
-      expect(screen.getByRole('textbox', {name: 'Agent 补充指令'})).toBeDisabled();
+      expect(screen.queryByRole('button', {name: '暂停'})).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', {name: '投递指令'})).not.toBeInTheDocument();
+      expect(screen.queryByRole('textbox', {name: 'Agent 补充指令'})).not.toBeInTheDocument();
       expect(screen.queryByRole('button', {name: /初始化跟踪模板/})).not.toBeInTheDocument();
     });
   });

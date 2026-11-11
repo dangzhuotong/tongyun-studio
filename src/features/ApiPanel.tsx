@@ -200,28 +200,24 @@ function requestSignature(tab: RequestTab): string {
   return JSON.stringify(EDITABLE_FIELDS.map(key => tab[key]));
 }
 
-function freshRow(key = '', value = ''): ParamRow {
-  return { id: nextWorkspaceId('row'), key, value, enabled: true };
-}
-
 function newRequestTab(patch: Partial<RequestTab> = {}): RequestTab {
   const base: RequestTab = {
     id: nextWorkspaceId('tab'),
     name: '未命名请求',
     method: 'GET',
-    url: 'http://localhost:3000/api/health',
-    params: [freshRow('version', '1')],
-    headers: [freshRow('Content-Type', 'application/json'), freshRow('Accept', 'application/json')],
+    url: '',
+    params: [],
+    headers: [],
     authType: 'none',
     bearerToken: '',
     basicUser: '',
     basicPass: '',
-    body: '{\n  "query": "hello"\n}',
+    body: '',
     response: null,
     sending: false,
     section: 'params',
     envName: '',
-    envVars: [{ id: 'e1', key: 'baseUrl', value: 'http://localhost:3000', enabled: true }],
+    envVars: [],
     assertions: [{ id: 'a1', kind: 'status', enabled: true, name: '', expected: '200' }],
     assertionResults: [],
     extractRules: [],
@@ -1100,34 +1096,29 @@ export default function ApiPanel({
           <div className="large-tool-icon">
             <Code2 size={22} strokeWidth={1.5} />
           </div>
-          <div>
-            <h2 id="api-title">Tongyun API · 接口工作台</h2>
-            <p>
-              多 Tab 独立调试、.http／.rest 双协议读写、JSON 用例集、环境预设级联（{`{{baseUrl}}`}）、断言与变量提取、7 种语言代码生成与 cURL 导入导出。
-            </p>
-          </div>
+          <h2 id="api-title">接口</h2>
         </div>
-        <div className="workbench-badges">
+        {project && <div className="workbench-badges">
           <button className="secondary-button-sm" onClick={() => setShowEnvModal(true)}>
             <Key size={12} />
             环境变量 ({active.envVars.length + envVars.length})
           </button>
-          <button className="secondary-button-sm" onClick={() => setShowCodeModal(true)}>
+          <button className="secondary-button-sm" onClick={() => setShowCodeModal(true)} disabled={!url.trim()}>
             <Zap size={12} />
             代码生成
           </button>
           <button className="secondary-button-sm" onClick={() => setShowCurlModal(true)}>
             导入 cURL
           </button>
-          <button className="secondary-button-sm" onClick={exportAsCurl}>
+          <button className="secondary-button-sm" onClick={exportAsCurl} disabled={!url.trim()}>
             <Copy size={12} />
             复制 cURL
           </button>
-          <button className="secondary-button-sm" onClick={() => setShowSaveHttpModal(true)}>
+          <button className="secondary-button-sm" onClick={() => setShowSaveHttpModal(true)} disabled={!url.trim()}>
             <FileCode size={12} />
             保存为 .http
           </button>
-        </div>
+        </div>}
       </div>
 
       {!project ? (
@@ -1137,193 +1128,8 @@ export default function ApiPanel({
         </div>
       ) : (
         <div className="api-workbench-split">
-          {/* Left: .http 用例树 + JSON 用例集 */}
-          <aside className="api-case-drawer">
-            <div className="pane-header">
-              <span className="subcard-title-sm">
-                <FileCode size={13} /> 项目用例文件 ({httpPaths.length})
-              </span>
-              <button
-                type="button"
-                className="text-button-xs"
-                onClick={() => httpPaths.forEach(p => void readTree(p, true))}
-                title="重新解析全部用例文件"
-              >
-                <RefreshCw size={12} className={loadingHttpFile ? 'spin' : ''} />
-              </button>
-            </div>
-            {httpPaths.length === 0 ? (
-              <div className="history-empty">项目内暂无 .http / .rest 用例文件</div>
-            ) : (
-              <div className="case-tree">
-                {httpPaths.map(path => {
-                  const tree = httpTrees[path];
-                  const expanded = !!expandedFiles[path];
-                  return (
-                    <div key={path} className="case-tree-file">
-                      <button
-                        type="button"
-                        className={`tree-row file ${selectedHttpFile === path && expanded ? 'active' : ''}`}
-                        onClick={() => void toggleHttpFile(path)}
-                      >
-                        {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                        {expanded ? <FolderOpen size={12} /> : <Folder size={12} />}
-                        <span className="tree-label">{path}</span>
-                        {tree && <span className="tree-count">{tree.requests.length}</span>}
-                      </button>
-                      {expanded && (
-                        <div className="tree-children">
-                          {!tree && (
-                            <div className="tree-empty mono-subtle">
-                              {loadingHttpFile ? '解析中…' : '点击文件名解析'}
-                            </div>
-                          )}
-                          {tree?.requests.map(req => (
-                            <div
-                              key={req.id}
-                              className={`tree-row request ${
-                                active.sourceFile === path && active.sourceLine === req.line
-                                  ? 'active'
-                                  : ''
-                              }`}
-                              onDoubleClick={() => openRequestTab(path, req)}
-                              title="双击在新 Tab 打开该请求"
-                            >
-                              <span className={`method-badge-mini method-${req.method.toLowerCase()}`}>
-                                {req.method}
-                              </span>
-                              <span className="tree-label">{req.name}</span>
-                            </div>
-                          ))}
-                          {tree && tree.requests.length === 0 && (
-                            <div className="tree-empty mono-subtle">未识别到请求行</div>
-                          )}
-                          {tree?.warnings.map((w, idx) => (
-                            <div key={`w-${w.line}-${idx}`} className="tree-warn mono-subtle">
-                              L{w.line} {w.message}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            <div className="pane-header">
-              <span className="subcard-title-sm">
-                <Layers size={13} /> JSON 用例集 ({collection.nodes.length})
-              </span>
-              <button
-                type="button"
-                className="text-button-xs"
-                onClick={() => setShowCollections(v => !v)}
-              >
-                {showCollections ? '收起' : '展开'}
-              </button>
-            </div>
-            {showCollections && (
-              <>
-                <div className="case-tree">
-                  {collection.nodes.length === 0 ? (
-                    <div className="history-empty">暂无用例，先把当前请求「存入用例集」</div>
-                  ) : (
-                    renderCollectionNodes(null, 0)
-                  )}
-                </div>
-                <div className="collection-tools">
-                  <div className="collection-row">
-                    <input
-                      className="collection-input"
-                      placeholder="新目录名"
-                      value={newFolderName}
-                      onChange={e => setNewFolderName(e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === 'Enter') createFolder();
-                      }}
-                    />
-                    <button type="button" className="text-button-sm" onClick={createFolder}>
-                      <Folder size={12} />
-                      新建目录
-                    </button>
-                  </div>
-                  <div className="collection-row">
-                    <input
-                      className="collection-input"
-                      placeholder="用例名（留空用当前 Tab 名）"
-                      value={caseName}
-                      onChange={e => setCaseName(e.target.value)}
-                    />
-                    <button
-                      type="button"
-                      className="text-button-sm"
-                      onClick={saveActiveToCollection}
-                    >
-                      <Plus size={12} />
-                      存入当前请求
-                    </button>
-                  </div>
-                  <div className="collection-row">
-                    <span className="preset-label">放入目录:</span>
-                    <select
-                      className="collection-select"
-                      value={targetFolderId ?? ''}
-                      onChange={e => setTargetFolderId(e.target.value || null)}
-                    >
-                      <option value="">根目录</option>
-                      {collection.nodes
-                        .filter(n => n.kind === 'folder')
-                        .map(f => (
-                          <option key={f.id} value={f.id}>
-                            {f.name}
-                          </option>
-                        ))}
-                    </select>
-                  </div>
-                </div>
-              </>
-            )}
-          </aside>
-
           {/* Main Request & Response Section */}
           <div className="api-main-pane">
-            {/* Agent Automated API Verifications */}
-            {agentHttpActions.length > 0 && (
-              <section className="panel-subcard agent-subcard">
-                <div className="section-heading">
-                  <div className="subcard-title">
-                    <Bot size={15} className="accent-color" />
-                    <h3>Agent 接口测试验证流</h3>
-                    <span className="mini-badge-accent">{session?.agentName ?? 'Agent'}</span>
-                  </div>
-                  <span className="meta">{agentHttpActions.length} 项接口探针</span>
-                </div>
-                <div className="agent-action-mini-list">
-                  {agentHttpActions.slice(-4).reverse().map(act => (
-                    <div
-                      key={act.id}
-                      className="agent-action-mini-item clickable"
-                      onClick={() => {
-                        if (act.detail && act.detail.startsWith('http')) {
-                          setUrl(act.detail);
-                        }
-                      }}
-                      title="点击将此接口载入上方调试栏"
-                    >
-                      <div className="action-mini-header">
-                        <span className={`status-dot ${act.status === 'done' ? 'available' : 'error'}`} />
-                        <span className="mini-badge">HTTP</span>
-                        <code className="action-mini-cmd">{act.title}</code>
-                        <span className="mono-subtle">{act.timestamp}</span>
-                      </div>
-                      <div className="action-mini-detail mono-subtle">{act.detail}</div>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
-
             {/* 请求 Tab 条：多标签独立状态 */}
             <div className="api-tab-strip" role="tablist" aria-label="接口请求 Tab">
               {tabs.map(tab => {
@@ -1483,6 +1289,7 @@ export default function ApiPanel({
               <form onSubmit={handleSend} className="api-url-bar">
                 <select
                   className={`method-select method-${method.toLowerCase()}`}
+                  aria-label="请求方法"
                   value={method}
                   onChange={e => setMethod(e.target.value as HttpMethod)}
                 >
@@ -1496,6 +1303,7 @@ export default function ApiPanel({
 
                 <input
                   className="url-input"
+                  aria-label="请求地址"
                   placeholder="https://api.example.com/v1/... 或 {{baseUrl}}/api/..."
                   value={url}
                   onChange={e => setUrl(e.target.value)}
@@ -2078,7 +1886,192 @@ export default function ApiPanel({
                 )}
               </section>
             )}
+            {agentHttpActions.length > 0 && (
+              <details className="panel-subcard workbench-activity">
+                <summary className="section-heading">
+                  <div className="subcard-title">
+                    <Bot size={15} className="accent-color" />
+                    <span>Agent 请求记录</span>
+                    <span className="mini-badge-accent">{session?.agentName ?? 'Agent'}</span>
+                  </div>
+                  <span className="meta">{agentHttpActions.length} 项接口探针</span>
+                </summary>
+                <div className="agent-action-mini-list">
+                  {agentHttpActions.slice(-4).reverse().map(act => (
+                    <div
+                      key={act.id}
+                      className="agent-action-mini-item clickable"
+                      onClick={() => {
+                        if (act.detail && act.detail.startsWith('http')) {
+                          setUrl(act.detail);
+                        }
+                      }}
+                      title="点击将此接口载入上方调试栏"
+                    >
+                      <div className="action-mini-header">
+                        <span className={`status-dot ${act.status === 'done' ? 'available' : 'error'}`} />
+                        <span className="mini-badge">HTTP</span>
+                        <code className="action-mini-cmd">{act.title}</code>
+                        <span className="mono-subtle">{act.timestamp}</span>
+                      </div>
+                      <div className="action-mini-detail mono-subtle">{act.detail}</div>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+
           </div>
+
+          {/* Left: .http 用例树 + JSON 用例集 */}
+          <aside className="api-case-drawer">
+            <div className="pane-header">
+              <span className="subcard-title-sm">
+                <FileCode size={13} /> 项目用例文件 ({httpPaths.length})
+              </span>
+              <button
+                type="button"
+                className="text-button-xs"
+                onClick={() => httpPaths.forEach(p => void readTree(p, true))}
+                title="重新解析全部用例文件"
+              >
+                <RefreshCw size={12} className={loadingHttpFile ? 'spin' : ''} />
+              </button>
+            </div>
+            {httpPaths.length === 0 ? (
+              <div className="history-empty">项目内暂无 .http / .rest 用例文件</div>
+            ) : (
+              <div className="case-tree">
+                {httpPaths.map(path => {
+                  const tree = httpTrees[path];
+                  const expanded = !!expandedFiles[path];
+                  return (
+                    <div key={path} className="case-tree-file">
+                      <button
+                        type="button"
+                        className={`tree-row file ${selectedHttpFile === path && expanded ? 'active' : ''}`}
+                        onClick={() => void toggleHttpFile(path)}
+                      >
+                        {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                        {expanded ? <FolderOpen size={12} /> : <Folder size={12} />}
+                        <span className="tree-label">{path}</span>
+                        {tree && <span className="tree-count">{tree.requests.length}</span>}
+                      </button>
+                      {expanded && (
+                        <div className="tree-children">
+                          {!tree && (
+                            <div className="tree-empty mono-subtle">
+                              {loadingHttpFile ? '解析中…' : '点击文件名解析'}
+                            </div>
+                          )}
+                          {tree?.requests.map(req => (
+                            <button
+                              type="button"
+                              key={req.id}
+                              className={`tree-row request ${
+                                active.sourceFile === path && active.sourceLine === req.line
+                                  ? 'active'
+                                  : ''
+                              }`}
+                              onClick={() => openRequestTab(path, req)}
+                              title="在请求标签页打开"
+                            >
+                              <span className={`method-badge-mini method-${req.method.toLowerCase()}`}>
+                                {req.method}
+                              </span>
+                              <span className="tree-label">{req.name}</span>
+                            </button>
+                          ))}
+                          {tree && tree.requests.length === 0 && (
+                            <div className="tree-empty mono-subtle">未识别到请求行</div>
+                          )}
+                          {tree?.warnings.map((w, idx) => (
+                            <div key={`w-${w.line}-${idx}`} className="tree-warn mono-subtle">
+                              L{w.line} {w.message}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="pane-header">
+              <span className="subcard-title-sm">
+                <Layers size={13} /> JSON 用例集 ({collection.nodes.length})
+              </span>
+              <button
+                type="button"
+                className="text-button-xs"
+                onClick={() => setShowCollections(v => !v)}
+              >
+                {showCollections ? '收起' : '展开'}
+              </button>
+            </div>
+            {showCollections && (
+              <>
+                <div className="case-tree">
+                  {collection.nodes.length === 0 ? (
+                    <div className="history-empty">暂无用例，先把当前请求「存入用例集」</div>
+                  ) : (
+                    renderCollectionNodes(null, 0)
+                  )}
+                </div>
+                <div className="collection-tools">
+                  <div className="collection-row">
+                    <input
+                      className="collection-input"
+                      placeholder="新目录名"
+                      value={newFolderName}
+                      onChange={e => setNewFolderName(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') createFolder();
+                      }}
+                    />
+                    <button type="button" className="text-button-sm" onClick={createFolder}>
+                      <Folder size={12} />
+                      新建目录
+                    </button>
+                  </div>
+                  <div className="collection-row">
+                    <input
+                      className="collection-input"
+                      placeholder="用例名（留空用当前 Tab 名）"
+                      value={caseName}
+                      onChange={e => setCaseName(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="text-button-sm"
+                      onClick={saveActiveToCollection}
+                    >
+                      <Plus size={12} />
+                      存入当前请求
+                    </button>
+                  </div>
+                  <div className="collection-row">
+                    <span className="preset-label">放入目录:</span>
+                    <select
+                      className="collection-select"
+                      value={targetFolderId ?? ''}
+                      onChange={e => setTargetFolderId(e.target.value || null)}
+                    >
+                      <option value="">根目录</option>
+                      {collection.nodes
+                        .filter(n => n.kind === 'folder')
+                        .map(f => (
+                          <option key={f.id} value={f.id}>
+                            {f.name}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                </div>
+              </>
+            )}
+          </aside>
 
           {/* Right Column: History Drawer */}
           <aside className="api-history-drawer">

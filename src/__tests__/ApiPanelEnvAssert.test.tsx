@@ -80,6 +80,9 @@ const lastSentUrl = () => {
 };
 
 async function clickSend() {
+  if (!(urlInput() as HTMLInputElement).value) {
+    fireEvent.change(urlInput(), { target: { value: 'http://localhost:3000/api/health' } });
+  }
   fireEvent.click(sendButton());
   await waitFor(() => {
     expect(bridge.sendHttpRequest).toHaveBeenCalled();
@@ -141,6 +144,11 @@ describe('ApiPanel 环境预设级联与缺失告警', () => {
     await loadProjectEnv();
     fireEvent.change(envSelect(), { target: { value: 'Development' } });
 
+    fireEvent.click(screen.getByRole('button', { name: /^环境变量/ }));
+    fireEvent.click(screen.getByRole('button', { name: /添加新变量/ }));
+    fireEvent.change(screen.getByPlaceholderText('baseUrl'), { target: { value: 'baseUrl' } });
+    fireEvent.change(screen.getByPlaceholderText('http://127.0.0.1:3000'), { target: { value: 'http://localhost:3000' } });
+    fireEvent.click(screen.getByRole('button', { name: '完成' }));
     fireEvent.change(urlInput(), { target: { value: '{{baseUrl}}/api/ping' } });
     await clickSend();
     expect(lastSentUrl()).toContain('http://localhost:3000/api/ping');
@@ -337,6 +345,7 @@ describe('ApiPanel 多语言代码生成', () => {
   it('弹窗列出 7 种语言，切换后复制对应代码', () => {
     const notify = vi.fn();
     render(<ApiPanel project={mockProject} inspection={mockInspection} onNotify={notify} />);
+    fireEvent.change(urlInput(), { target: { value: 'http://localhost:3000/api/health' } });
     fireEvent.click(screen.getByRole('button', { name: /代码生成/ }));
     for (const label of [
       'cURL',

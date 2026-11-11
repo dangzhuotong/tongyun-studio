@@ -56,10 +56,12 @@ describe('ApiPanel Polish & Enhancements', () => {
   it('renders workbench action bar with "复制 cURL" and "保存为 .http" buttons', () => {
     render(<ApiPanel project={mockProject} inspection={mockInspection} />);
 
-    expect(screen.getByRole('heading', { name: 'Tongyun API · 接口工作台' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '接口' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /复制 cURL/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /保存为 \.http/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /导入 cURL/i })).toBeInTheDocument();
+    expect(screen.getByLabelText('请求地址')).toHaveValue('');
+    expect(screen.getByRole('button', { name: '发送' })).toBeDisabled();
   });
 
   it('provides header quick presets and autocompletion datalists in Headers tab', () => {
@@ -97,6 +99,7 @@ describe('ApiPanel Polish & Enhancements', () => {
       />
     );
 
+    fireEvent.change(screen.getByLabelText('请求地址'), { target: { value: 'http://localhost:3000/api/health' } });
     const saveHttpBtn = screen.getByRole('button', { name: /保存为 \.http/i });
     fireEvent.click(saveHttpBtn);
 
@@ -145,10 +148,10 @@ describe('ApiPanel Polish & Enhancements', () => {
     });
 
     // 侧栏以树形式展示解析结果
-    const requestNode = await screen.findByTitle('双击在新 Tab 打开该请求');
+    const requestNode = await screen.findByTitle('在请求标签页打开');
     expect(requestNode).toHaveTextContent('Get User');
 
-    fireEvent.doubleClick(requestNode);
+    fireEvent.click(requestNode);
 
     // 新 Tab 内载入完整请求：方法、URL、Header、Auth、Body
     expect(screen.getByDisplayValue('https://api.example.com/users/1')).toBeInTheDocument();
@@ -164,7 +167,7 @@ describe('ApiPanel Polish & Enhancements', () => {
   it('多 Tab 状态互不干扰，脏标记与关闭确认生效', async () => {
     render(<ApiPanel project={mockProject} inspection={mockInspection} />);
 
-    const firstUrl = screen.getByDisplayValue('http://localhost:3000/api/health');
+    const firstUrl = screen.getByLabelText('请求地址');
     fireEvent.change(firstUrl, { target: { value: 'https://a.test/one' } });
     fireEvent.change(screen.getByLabelText('用例名称'), { target: { value: '甲请求' } });
     expect(document.querySelector('.tab-dirty-dot')).toBeInTheDocument();
@@ -172,8 +175,8 @@ describe('ApiPanel Polish & Enhancements', () => {
     fireEvent.click(screen.getByRole('button', { name: /^新建$/ }));
 
     // 第二个 Tab 是全新的默认请求，不受第一个 Tab 影响
-    expect(screen.getByDisplayValue('http://localhost:3000/api/health')).toBeInTheDocument();
-    fireEvent.change(screen.getByDisplayValue('http://localhost:3000/api/health'), {
+    expect(screen.getByLabelText('请求地址')).toHaveValue('');
+    fireEvent.change(screen.getByLabelText('请求地址'), {
       target: { value: 'https://a.test/two' },
     });
     fireEvent.change(screen.getByLabelText('用例名称'), { target: { value: '乙请求' } });
@@ -203,8 +206,8 @@ describe('ApiPanel Polish & Enhancements', () => {
     render(<ApiPanel project={mockProject} inspection={mockInspection} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'requests.http' }));
-    const requestNode = await screen.findByTitle('双击在新 Tab 打开该请求');
-    fireEvent.doubleClick(requestNode);
+    const requestNode = await screen.findByTitle('在请求标签页打开');
+    fireEvent.click(requestNode);
 
     fireEvent.change(screen.getByDisplayValue('https://api.example.com/users/1'), {
       target: { value: 'https://api.example.com/users/42?tag=beta' },
@@ -228,7 +231,7 @@ describe('ApiPanel Polish & Enhancements', () => {
   it('把当前请求存入项目 JSON 用例集并可再打开', async () => {
     render(<ApiPanel project={mockProject} inspection={mockInspection} />);
 
-    fireEvent.change(screen.getByDisplayValue('http://localhost:3000/api/health'), {
+    fireEvent.change(screen.getByLabelText('请求地址'), {
       target: { value: 'https://a.test/case' },
     });
     fireEvent.click(screen.getByRole('button', { name: '存入当前请求' }));
@@ -259,6 +262,7 @@ describe('ApiPanel Polish & Enhancements', () => {
       />
     );
 
+    fireEvent.change(screen.getByLabelText('请求地址'), { target: { value: 'http://localhost:3000/api/health' } });
     // Copy cURL from header badge
     const copyCurlBadge = screen.getByRole('button', { name: /复制 cURL/i });
     fireEvent.click(copyCurlBadge);

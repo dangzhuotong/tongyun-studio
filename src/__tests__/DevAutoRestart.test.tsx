@@ -104,8 +104,8 @@ describe('DevPanel auto-restart UI', () => {
     const onNotify = vi.fn();
     render(<DevPanel project={projectDefault} onNotify={onNotify} />);
 
-    // Default indicates auto-restart is off
-    expect(screen.getByText(/异常自动重启默认关闭/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText('运行设置'));
+    expect(screen.getByText('异常退出自动重启（默认关闭）')).toBeVisible();
 
     const checkbox = screen.getByLabelText('异常退出自动重启');
     expect(checkbox).not.toBeChecked();
@@ -138,14 +138,12 @@ describe('DevPanel auto-restart UI', () => {
 
     render(<DevPanel project={projectWithRestart} />);
 
-    // Shows auto-restart configured in registration
-    expect(await screen.findByText(/异常退出自动重启（上限 3 次）/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText('运行设置'));
+    expect(screen.getByText('上限 3 次 · 窗口 60s')).toBeVisible();
 
-    // Shows restart badges and footer counts
-    expect(screen.getByText('已重启 2 次')).toBeInTheDocument();
-    expect(screen.getByText('累计重启 2 次')).toBeInTheDocument();
+    // Shows restart counts on both process rows
+    expect(await screen.findByText('已重启 2 次')).toBeInTheDocument();
     expect(screen.getByText('已重启 3 次')).toBeInTheDocument();
-    expect(screen.getByText('累计重启 3 次')).toBeInTheDocument();
 
     // Shows failure reason at limit
     expect(

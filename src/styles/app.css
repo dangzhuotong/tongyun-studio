@@ -772,10 +772,10 @@ body, html {
 
 .workbench-title-group h2 {
   margin: 0;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 20px;
+  font-weight: 500;
   color: var(--text-primary);
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .workbench-title-group p {
@@ -834,7 +834,7 @@ body, html {
 
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 155px), 1fr));
   gap: 12px;
 }
 
@@ -886,7 +886,7 @@ body, html {
 
 .tools-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
   gap: 12px;
 }
 
@@ -894,14 +894,23 @@ body, html {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--ty-radius-md);
-  padding: 16px;
+  padding: 12px;
   text-align: left;
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 10px;
   cursor: pointer;
-  transition: all 0.15s ease;
-  box-shadow: var(--ty-shadow-card);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.tool-card-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.tool-card-arrow {
+  flex: none;
+  color: var(--text-meta);
 }
 
 .tool-card:hover {
@@ -910,14 +919,8 @@ body, html {
   transform: translateY(-1px);
 }
 
-.tool-card-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  color: var(--accent);
-}
-
 .tool-icon {
+  flex: none;
   width: 34px;
   height: 34px;
   border-radius: var(--ty-radius-sm);
@@ -951,16 +954,6 @@ body, html {
   flex: 1;
 }
 
-.tool-card-bottom {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
-  font-size: 11px;
-  color: var(--text-meta);
-}
-
 /* Panel Subcard */
 .panel-subcard {
   background: var(--card);
@@ -985,14 +978,6 @@ body, html {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-}
-
-.tech-badge-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--text-meta);
 }
 
 .tech-badge {
@@ -1281,6 +1266,7 @@ body, html {
 
 .url-input {
   flex: 1;
+  min-width: 0;
   background: var(--sunken);
   border: 1px solid var(--border);
   border-radius: var(--ty-radius-sm);
@@ -1837,7 +1823,7 @@ body, html {
 
 .git-workbench-split {
   display: grid;
-  grid-template-columns: minmax(220px, 280px) 1fr;
+  grid-template-columns: minmax(175px, 29%) minmax(0, 1fr);
   gap: 12px;
   min-height: 440px;
 }
@@ -2178,7 +2164,7 @@ body, html {
 /* Files Explorer Workbench */
 .files-workbench-split {
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: minmax(170px, 30%) minmax(0, 1fr);
   gap: 14px;
   min-height: 480px;
 }
@@ -2220,6 +2206,12 @@ body, html {
 
 .file-tree-row {
   display: flex;
+  width: 100%;
+  min-height: 32px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
@@ -2286,6 +2278,8 @@ body, html {
 
 .file-header-info {
   display: flex;
+  min-width: 0;
+  flex: 1;
   align-items: center;
   gap: 8px;
   font-size: 12px;
@@ -2295,6 +2289,7 @@ body, html {
 
 .file-header-actions {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 6px;
 }
@@ -2558,14 +2553,6 @@ body, html {
   justify-content: center;
 }
 
-.section-eyebrow {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--accent);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
 .welcome-card h2 {
   margin: 0;
   font-size: 20px;
@@ -2583,21 +2570,6 @@ body, html {
 .welcome-footnote {
   font-size: 11px;
   color: var(--text-meta);
-}
-
-.workspace-note {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  background: var(--sunken);
-  border-radius: var(--ty-radius-sm);
-  font-size: 11px;
-  color: var(--text-meta);
-}
-
-.workspace-note p {
-  margin: 0;
 }
 
 .commit-list {
@@ -2896,25 +2868,6 @@ body, html {
   gap: 8px;
 }
 
-.dev-metrics-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--ty-radius-md);
-  padding: 8px 14px;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.metrics-ports-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-}
-
 .port-link-pill {
   display: inline-flex;
   align-items: center;
@@ -2934,13 +2887,6 @@ body, html {
 .port-link-pill:hover {
   background: var(--accent);
   color: var(--accent-text);
-}
-
-.listening-ports-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
 }
 
 .port-chips-list {
@@ -3306,17 +3252,30 @@ body, html {
   gap: 8px;
 }
 
-/* API Enterprise Layout */
+/* Request editor and supporting panes */
 .api-workbench-split {
   display: grid;
-  grid-template-columns: 232px minmax(0, 1fr) 240px;
+  grid-template-columns: minmax(170px, 24%) minmax(0, 1fr);
+  grid-template-areas: "cases request" "cases history";
+  align-items: start;
   gap: 14px;
-  min-height: 480px;
 }
 
-@media (max-width: 1180px) {
+.api-main-pane { grid-area: request; }
+.api-case-drawer { grid-area: cases; }
+.api-history-drawer { grid-area: history; }
+
+@media (min-width: 1500px) {
   .api-workbench-split {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: 212px minmax(0, 1fr) 212px;
+    grid-template-areas: "cases request history";
+  }
+}
+
+@media (max-width: 1000px) {
+  .api-workbench-split {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas: "request request" "cases history";
   }
 }
 
@@ -3875,7 +3834,7 @@ body, html {
 /* Database Enterprise Layout */
 .db-workbench-split {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  grid-template-columns: minmax(170px, 27%) minmax(0, 1fr);
   gap: 14px;
   min-height: 480px;
 }
@@ -3996,6 +3955,7 @@ body, html {
 
 .db-path-mini-input {
   flex: 1;
+  min-width: 0;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--ty-radius-xs);
@@ -5224,9 +5184,6 @@ body, html {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 16px 20px;
-  height: 100%;
-  overflow-y: auto;
 }
 
 .agent-overview-bar {
@@ -5296,7 +5253,7 @@ body, html {
 
 .agent-dashboard-split {
   display: grid;
-  grid-template-columns: 320px 1fr;
+  grid-template-columns: minmax(200px, 32%) minmax(0, 1fr);
   gap: 16px;
   flex: 1;
   min-height: 0;
@@ -5740,7 +5697,7 @@ body, html {
 
 .git-log-split {
   display: grid;
-  grid-template-columns: minmax(340px, 5fr) minmax(320px, 7fr);
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
   gap: 12px;
   align-items: start;
 }
@@ -6595,4 +6552,321 @@ thead .row-action-col {
   background: var(--card);
   color: var(--text-primary);
   border-color: var(--border-strong);
+}
+
+/* Studio run workspace */
+.dev-workbench {
+  gap: 16px;
+}
+
+.dev-workbench .dev-header {
+  padding-bottom: 12px;
+}
+
+.dev-launch-card {
+  box-shadow: none;
+}
+
+.dev-launch-card .script-run-card {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  flex-wrap: wrap;
+}
+
+.dev-launch-card .script-run-info {
+  flex: 1 1 260px;
+}
+
+.dev-launch-card .script-run-name {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.dev-launch-card .script-run-cmd,
+.dev-workbench .service-cmd {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.dev-launch-actions,
+.dev-services-actions,
+.dev-workbench .terminal-actions,
+.dev-workbench .profile-presets-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dev-workbench .profile-presets-row button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+}
+
+.dev-workbench .services-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.dev-workbench .service-card {
+  padding: 12px 16px;
+  background: var(--card);
+  border-color: var(--border);
+  border-radius: var(--ty-radius-md);
+}
+
+.dev-workbench .service-header,
+.dev-workbench .service-title-info,
+.dev-workbench .service-footer,
+.dev-workbench .terminal-console-header {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dev-workbench .service-name,
+.dev-workbench .terminal-title {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.dev-workbench .service-btn,
+.dev-workbench .terminal-btn,
+.dev-launch-actions button {
+  min-height: 32px;
+}
+
+.dev-workbench .terminal-console-card {
+  box-shadow: none;
+}
+
+.dev-workbench .active-services-section > .subcard-empty {
+  padding: 12px 16px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--ty-radius-md);
+}
+
+.dev-tools {
+  display: grid;
+  gap: 8px;
+}
+
+.dev-tools > h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.dev-tools-list {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--ty-radius-md);
+}
+
+.dev-disclosure + .dev-disclosure {
+  border-top: 1px solid var(--border);
+}
+
+.dev-disclosure > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 8px 14px;
+  color: var(--text-primary);
+  cursor: pointer;
+  list-style: none;
+}
+
+.dev-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.dev-disclosure > summary:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: -3px;
+  border-radius: var(--ty-radius-sm);
+}
+
+.dev-disclosure > summary:hover {
+  background: var(--surface-hover);
+}
+
+.dev-disclosure-chevron {
+  margin-left: auto;
+  flex: none;
+  color: var(--text-meta);
+}
+
+.dev-disclosure[open] > summary .dev-disclosure-chevron {
+  transform: rotate(180deg);
+}
+
+.dev-disclosure-body {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+  padding: 4px 14px 14px;
+}
+
+.dev-disclosure-body > .meta {
+  margin: 0;
+}
+
+.dev-disclosure-body > button {
+  justify-self: start;
+}
+
+.dev-disclosure .command-input {
+  min-width: 0;
+}
+
+.dev-disclosure input[aria-label="扫描层数"] {
+  flex: 0 0 3em;
+  text-align: center;
+}
+
+.dev-workbench .service-footer {
+  justify-content: flex-start;
+  gap: 8px 16px;
+}
+
+.dev-disclosure .dev-settings-row {
+  display: grid;
+  gap: 8px;
+}
+
+.dev-disclosure .toolchain-info-row,
+.dev-disclosure .profile-config-row,
+.dev-disclosure .dev-settings-row label {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+
+.dev-disclosure .dev-settings-row label {
+  width: fit-content;
+}
+
+/* Shared workbench layout at desktop window sizes */
+.workbench-activity {
+  padding: 0;
+  box-shadow: none;
+}
+
+.workbench-activity > summary {
+  min-height: 42px;
+  cursor: pointer;
+  padding: 8px 14px;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.workbench-activity > summary .subcard-title {
+  flex-wrap: wrap;
+}
+
+.workbench-activity > summary::after {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(45deg);
+}
+
+.workbench-activity[open] > summary::after {
+  transform: rotate(225deg);
+}
+
+.workbench-activity .agent-action-mini-list {
+  padding: 0 14px 12px;
+}
+
+.feature-panel-layout .sub-tabs,
+.table-data-toolbar,
+.table-data-toolbar .toolbar-left,
+.toolbar-pagination,
+.git-toolbar-meta,
+.agent-overview-bar,
+.agent-name-row,
+.agent-metrics-trio {
+  flex-wrap: wrap;
+}
+
+.table-data-toolbar {
+  gap: 8px;
+}
+
+.file-header-path,
+.stat-value.mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.files-tree-error {
+  padding: 10px 12px;
+  color: var(--error);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.files-tree-error .text-button {
+  margin-left: 8px;
+}
+
+.agent-readonly-note {
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 1100px) {
+  .agent-dashboard-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .agent-col-stream {
+    grid-row: 1;
+  }
+
+  .agent-cockpit-pane {
+    position: absolute;
+    right: 0;
+    top: 0;
+    box-shadow: var(--ty-shadow-card);
+  }
+}
+
+@media (max-width: 1000px) {
+  .topbar-project-actions .topbar-action-btn span,
+  .ai-topbar-pill span,
+  .agent-topbar-pill span {
+    display: none;
+  }
+
+  .topbar-project-actions .topbar-action-btn,
+  .ai-topbar-pill,
+  .agent-topbar-pill {
+    min-width: 32px;
+    min-height: 32px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .git-log-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.db-sidebar-pane .conn-row {
+  flex-wrap: wrap;
+}
+
+.db-sidebar-pane .conn-flags {
+  margin-left: auto;
 }

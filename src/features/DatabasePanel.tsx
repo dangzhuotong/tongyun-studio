@@ -660,6 +660,7 @@ export default function DatabasePanel({
     }
   };
 
+  const canExport = activeView === 'data' ? !!paginatedData?.rows.length : activeView === 'sql' && !!activeTab.result?.rows.length;
   const totalPages = paginatedData ? Math.ceil(paginatedData.totalRows / pageSize) || 1 : 1;
   const pageLabel = paginatedData?.keyColumn && cursorStack[page - 1] ? '游标' : '偏移';
 
@@ -684,10 +685,7 @@ export default function DatabasePanel({
           <div className="large-tool-icon">
             <Database size={22} strokeWidth={1.5} />
           </div>
-          <div>
-            <h2 id="db-title">Tongyun Database · 数据工作台</h2>
-            <p>多引擎连接管理（SQLite / MySQL / PostgreSQL / Redis）、多查询标签页、主键游标分页数据网格、单行变更预览与回滚 SQL、数据导出（CSV/JSON）与模式追溯。</p>
-          </div>
+          <h2 id="db-title">数据</h2>
         </div>
         <div className="workbench-badges">
           {isDesktop && (
@@ -696,11 +694,11 @@ export default function DatabasePanel({
               新建连接
             </button>
           )}
-          <button className="secondary-button-sm" onClick={() => exportData('csv')}>
+          <button className="secondary-button-sm" onClick={() => exportData('csv')} disabled={!canExport}>
             <Download size={12} />
             导出 CSV
           </button>
-          <button className="secondary-button-sm" onClick={() => exportData('json')}>
+          <button className="secondary-button-sm" onClick={() => exportData('json')} disabled={!canExport}>
             <Download size={12} />
             导出 JSON
           </button>
@@ -715,15 +713,15 @@ export default function DatabasePanel({
       ) : (
         <>
           {project && agentSqlActions.length > 0 && (
-            <div className="panel-subcard agent-subcard" style={{ marginBottom: 12 }}>
-              <div className="section-heading">
+            <details className="panel-subcard workbench-activity">
+              <summary className="section-heading">
                 <div className="subcard-title">
                   <Bot size={15} className="accent-color" />
-                  <h3>Agent SQL 探查与校验审计</h3>
+                  <span>Agent 查询记录</span>
                   <span className="mini-badge-accent">{session?.agentName ?? 'Agent'}</span>
                 </div>
                 <span className="meta">{agentSqlActions.length} 项数据操作</span>
-              </div>
+              </summary>
               <div className="agent-action-mini-list">
                 {agentSqlActions.slice(-4).reverse().map(act => (
                   <div
@@ -747,7 +745,7 @@ export default function DatabasePanel({
                   </div>
                 ))}
               </div>
-            </div>
+            </details>
           )}
 
           <div className="db-workbench-split">
@@ -824,7 +822,7 @@ export default function DatabasePanel({
             {activeConn ? (
               <div className="db-target-header">
                 <span className="toolbar-label">当前连接:</span>
-                <input className="db-path-mini-input" value={activeConn.name} readOnly />
+                <input className="db-path-mini-input" aria-label="当前连接名称" value={activeConn.name} readOnly />
                 <button
                   className="icon-button-sm"
                   onClick={() => void openConnection(activeConn)}
@@ -835,9 +833,10 @@ export default function DatabasePanel({
               </div>
             ) : (
               <div className="db-target-header">
-                <span className="toolbar-label">当前 SQLite 源:</span>
+                <span className="toolbar-label">SQLite</span>
                 <input
                   className="db-path-mini-input"
+                  aria-label="SQLite 文件路径"
                   value={dbPath}
                   onChange={e => setDbPath(e.target.value)}
                   placeholder="local.db"
@@ -1028,7 +1027,7 @@ export default function DatabasePanel({
                       <span>正在加载表数据…</span>
                     </div>
                   ) : !paginatedData || paginatedData.rows.length === 0 ? (
-                    <div className="grid-empty">该表暂无数据记录</div>
+                    <div className="grid-empty">{selectedTable ? '该表暂无数据记录' : '选择数据表后浏览记录'}</div>
                   ) : (
                     <table className="enterprise-data-table auto-column-width">
                       <thead>

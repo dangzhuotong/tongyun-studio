@@ -13,7 +13,7 @@ interface AgentPanelProps {
   onTogglePause?: () => Promise<void> | void;
 }
 
-const unavailableReason = '尚未接入 Agent 调度与审计服务，无法投递指令或暂停执行。读取文件后可导出本地快照。';
+const unavailableReason = '当前为只读文件快照。发送指令和暂停需要接入调度服务。';
 
 export default function AgentPanel({
   project,
@@ -29,46 +29,34 @@ export default function AgentPanel({
     ? session
     : null;
   const plan = observed?.plan;
+  const canControl = Boolean(observed && (onSendInstruction || onTogglePause));
 
   return (
     <div className="feature-panel-layout" aria-labelledby="agent-panel-title">
       <div className="workbench-header">
         <div className="workbench-title-group">
           <div className="large-tool-icon"><Bot size={22} strokeWidth={1.5} /></div>
-          <div>
-            <h2 id="agent-panel-title">Tongyun Agent · 执行记录与计划</h2>
-            <p>展示项目内的 Agent 记录文件；文件快照不代表工人在线，未接入调度控制。</p>
-          </div>
+          <h2 id="agent-panel-title">智能体</h2>
         </div>
         <div className="workbench-badges">
           <span className="mini-badge">{observed ? '已读取本地快照' : 'Agent 未接入'}</span>
-          {observed ? (
-            <button
-              className="secondary-button-sm"
-              onClick={() => void onExportAudit?.()}
-              title="导出审计轨迹"
-              aria-label="导出审计轨迹"
-            >
-              <Copy size={12} />
-              <span>导出审计轨迹</span>
-            </button>
-          ) : (
-            <button
-              className="secondary-button-sm"
-              disabled
-              title={unavailableReason}
-              aria-describedby="agent-unavailable"
-            >
-              <Copy size={12} />
-              <span>导出审计轨迹</span>
+          {observed && onExportAudit && (
+            <button className="secondary-button" onClick={() => void onExportAudit()}>
+              <Copy size={13} />导出快照
             </button>
           )}
         </div>
       </div>
 
-      <p id="agent-unavailable" className="meta">{unavailableReason}</p>
-      {!project ? (
-        <div className="panel-empty-placeholder"><Bot size={32} strokeWidth={1.2} /><p>尚未选择项目。选择项目后也需接入真实 Agent 服务，才会产生执行记录。</p></div>
+      {!observed ? (
+        <div className="panel-empty-placeholder">
+          <Bot size={28} strokeWidth={1.2} />
+          <p>{project ? '暂无 Agent 快照' : '选择一个项目查看 Agent 快照'}</p>
+          {project && <span>工作台从项目内的 .tongyun/agent-session.json 读取计划和执行记录。</span>}
+          {project && onInitializeSession && (
+            <button type="button" className="secondary-button" onClick={onInitializeSession}>初始化跟踪模板</button>
+          )}
+        </div>
       ) : (
         <div className="agent-full-grid">
           <div className="agent-overview-bar">
@@ -76,13 +64,13 @@ export default function AgentPanel({
               <div className="agent-avatar-lg"><Bot size={24} /></div>
               <div>
                 <div className="agent-name-row"><span className="agent-id-name">{observed?.agentName ?? '未接入 Agent'}</span><span className="mini-badge">模型：{observed?.model ?? '未知'}</span></div>
-                <div className="agent-meta-row"><span className="meta">当前项目：{project.name}</span></div>
+                <div className="agent-meta-row"><span className="meta">当前项目：{project?.name}</span></div>
                 <div className="agent-meta-row"><span className="meta">最近心跳：{observed?.lastHeartbeat ?? '未知'}</span></div>
               </div>
             </div>
             <div className="agent-metrics-trio">
               <div className="metric-box"><span className="metric-num">{plan?.progressPercent == null ? '未知' : `${plan.progressPercent}%`}</span><span className="metric-label">计划进度</span></div>
-              <div className="metric-box"><span className="metric-num">{observed ? observed.actions.length : '未知'}</span><span className="metric-label">已接收工具调用</span></div>
+              <div className="metric-box"><span className="metric-num">{observed ? observed.actions.length : '未知'}</span><span className="metric-label">快照记录</span></div>
               <div className="metric-box"><span className="metric-num">{observed?.tokensConsumed ?? '未知'}</span><span className="metric-label">Token 用量</span></div>
               <div className="metric-box"><span className="metric-num">{observed?.filesTouched ?? '未知'}</span><span className="metric-label">涉及文件</span></div>
             </div>
@@ -96,8 +84,7 @@ export default function AgentPanel({
                 {plan && <div className="agent-plan-step-items">{plan.steps.map(step => <div key={step.id} className={`agent-step-row ${step.status}`}><div className="step-body"><span className="step-text">{step.text}</span><span className="step-tag">{step.status}</span></div></div>)}</div>}
               </div>
               <div className="subpanel-card">
-                <div className="subpanel-header"><Zap size={14} /><span className="subpanel-title">工作台联动矩阵</span></div>
-                <p className="meta">{observed ? '当前 Agent 已绑定以下 4 个工作台，点击进入对应开发现场查看详情：' : '供开发现场使用，接入 Agent 后将自动汇总对应工具操作。'}</p>
+                <div className="subpanel-header"><Zap size={14} /><span className="subpanel-title">相关工作台</span></div>
                 <div className="tool-matrix-grid">
                   <button className="matrix-tile" onClick={() => onNavigate('dev')}>
                     <Terminal size={14} />
@@ -135,21 +122,10 @@ export default function AgentPanel({
                     <div className="panel-empty-placeholder">
                       <Bot size={28} strokeWidth={1.3} />
                       <p>暂无真实执行记录</p>
-                      <span>接入真实事件来源后，才会展示操作和结果。</span>
-                      {project && onInitializeSession && (
-                        <button
-                          type="button"
-                          className="secondary-button-sm"
-                          style={{ marginTop: 12 }}
-                          onClick={onInitializeSession}
-                        >
-                          初始化跟踪模板 (.tongyun/agent-session.json)
-                        </button>
-                      )}
                     </div>
                   )}
                 </div>
-                {observed ? (
+                {canControl ? (
                   <form
                     className="agent-prompt-bar"
                     onSubmit={e => {
@@ -160,12 +136,11 @@ export default function AgentPanel({
                       }
                     }}
                   >
+                    {onSendInstruction && <>
                     <input
                       className="agent-prompt-input"
                       aria-label="Agent 补充指令"
                       placeholder="向当前 Agent 投递补充指令..."
-                      disabled={!onSendInstruction}
-                      aria-describedby="agent-unavailable"
                       value={instruction}
                       onChange={e => setInstruction(e.target.value)}
                     />
@@ -178,25 +153,18 @@ export default function AgentPanel({
                       <Send size={13} />
                       <span>投递指令</span>
                     </button>
-                    <button
+                    </>}
+                    {onTogglePause && <button
                       type="button"
                       className="secondary-button"
-                      disabled={!onTogglePause}
-                      aria-describedby="agent-unavailable"
                       onClick={() => void onTogglePause?.()}
                       title="暂停"
                     >
                       <Square size={13} />
                       <span>暂停</span>
-                    </button>
+                    </button>}
                   </form>
-                ) : (
-                  <div className="agent-prompt-bar">
-                    <input className="agent-prompt-input" aria-label="Agent 补充指令" placeholder="接入调度服务后可发送指令" disabled aria-describedby="agent-unavailable" />
-                    <button className="primary-button" disabled title={unavailableReason} aria-describedby="agent-unavailable"><Send size={13} /><span>投递指令</span></button>
-                    <button className="secondary-button" disabled title={unavailableReason} aria-describedby="agent-unavailable"><Square size={13} /><span>暂停</span></button>
-                  </div>
-                )}
+                ) : <p className="meta agent-readonly-note">{unavailableReason}</p>}
               </div>
             </div>
           </div>

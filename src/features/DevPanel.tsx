@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, type FormEvent } from 'react';
+import { useState, useRef, useEffect, useCallback, useId, type FormEvent } from 'react';
 import type { Project, ProjectInspection, ManagedService, ListeningPort, AgentSessionState, DevCandidate, Workspace, TongyunDevSyncReport, TongyunDevSkipped } from '../contracts';
 import {
   isDesktop,
@@ -21,7 +21,7 @@ import {
   loadWorkspace,
   exportDiagnostics,
 } from '../bridge';
-import { Activity, Bot, Check, Copy, Cpu, Download, FolderOpen, LoaderCircle, Play, RotateCw, Search, Square, Terminal } from '../components/Icons';
+import { Activity, Bot, Check, ChevronDown, Copy, Cpu, Download, FolderOpen, LoaderCircle, Play, RotateCw, Search, Square, Terminal } from '../components/Icons';
 
 const statusLabel: Record<ManagedService['status'], string> = { running: '进程运行中', stopped: '已停止', exited: '已完成', failed: '执行失败' };
 const lifecycleLabel: Record<string, string> = {
@@ -55,7 +55,6 @@ function primaryStatus(service: Pick<ManagedService, 'status' | 'lifecycle'>): s
 /** Readiness detail that does not contradict the primary label. */
 function secondaryStatus(service: Pick<ManagedService, 'status' | 'lifecycle'>): string {
   if (service.status !== 'running' || service.lifecycle === 'failed') return '';
-  if (service.lifecycle === 'installing') return lifecycleLabel.installing;
   if (service.lifecycle === 'starting') return lifecycleLabel.starting;
   return '';
 }
@@ -166,6 +165,7 @@ export default function DevPanel({
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [hints, setHints] = useState(false);
+  const hintsId = useId();
   const [scanPath, setScanPath] = useState('');
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
   const [scanDepth, setScanDepth] = useState('3');
@@ -454,92 +454,31 @@ export default function DevPanel({
   const registeredCommand = effectiveCommand;
   const registeredRunning = registeredCommand ? services.some(service => service.command === registeredCommand && service.status === 'running') : false;
 
-  return <div className="feature-panel-layout" aria-labelledby="dev-title">
-    <div className="workbench-header"><div className="workbench-title-group"><div className="large-tool-icon"><Terminal size={22} strokeWidth={1.5}/></div><div><h2 id="dev-title">Tongyun Dev · 服务与终端</h2><p>扫描目录并登记可运行项目，按端口和探针区分启动中、端口已通、就绪或失败。切换项目和页签不会停止服务。</p></div></div><div className="workbench-badges"><span className="badge">本地进程控制</span>{project && <span className="mono-subtle">{project.name}</span>}</div></div>
-    {!isDesktop && <p className="inline-error" role="status">浏览器预览无法启动或管理本机进程，请在桌面版使用。</p>}
-    <section className="panel-subcard" aria-labelledby="dev-scan-title">
-      <div className="section-heading"><div className="subcard-title"><Search size={15}/><h3 id="dev-scan-title">扫描目录</h3></div><span className="meta">只读识别，登记不改项目文件</span></div>
-      <p className="meta">向下查看有限层数，跳过 node_modules、target 等目录。已有运行配置的目录不会被覆盖。</p>
-      <form className="command-input-row" onSubmit={event => { event.preventDefault(); void scanDirectory(); }}>
-        <span className="prompt-symbol">/</span>
-        <input className="command-input" aria-label="要扫描的目录" placeholder="要扫描的目录" value={scanPath} onChange={event => setScanPath(event.target.value)} disabled={!isDesktop || scanBusy}/>
-        <input className="command-input" aria-label="扫描层数" inputMode="numeric" value={scanDepth} onChange={event => setScanDepth(event.target.value)} disabled={!isDesktop || scanBusy}/>
-        <button type="button" className="secondary-button" disabled={!isDesktop || scanBusy} onClick={() => void pickScanDirectory()}><FolderOpen size={13}/>选择</button>
-        <button type="submit" className="secondary-button" disabled={!isDesktop || scanBusy || !scanPath.trim()}>{scanBusy ? <LoaderCircle size={13} className="spin"/> : <Search size={13}/>}扫描</button>
-        <button type="button" className="secondary-button" disabled={!isDesktop || scanBusy} onClick={() => void reviewTongyunDevRegistry()}><Download size={13}/>从 tongyun-dev 读取</button>
-      </form>
-      {review && <p className="meta">{review.summary}</p>}
-      {!!review?.skipped?.length && <p className="meta">{review.skipped.slice(0, 10).map(item => `${item.name}：${item.reason}`).join('；')}{review.skipped.length > 10 ? `；另有 ${review.skipped.length - 10} 条已跳过` : ''}</p>}
-      {review && review.candidates.length === 0 && <p className="subcard-empty">没有识别到可登记的项目。</p>}
-      {review && review.candidates.length > 0 && <div className="dev-candidate-list">{review.candidates.map(item => {
-        const draft = drafts[item.path] ?? { command: item.command, port: item.port ? String(item.port) : '' };
-        const locked = !!item.existingHasDev;
-        return <label key={item.path} className="dev-candidate">
-          <input type="checkbox" checked={selected.has(item.path)} disabled={!isDesktop || !!busy || locked} onChange={event => setSelected(previous => {
-            const next = new Set(previous);
-            if (event.target.checked) next.add(item.path); else next.delete(item.path);
-            return next;
-          })} aria-label={`选择 ${item.name}`}/>
-          <span className="dev-candidate-fields">
-            <span className="script-title-row"><span className="script-run-name">{item.name}</span><span className="mini-running-tag">{item.label}</span><span className="meta">{confidenceLabel[item.confidence] ?? item.confidence}</span>{item.portGuessed && <span className="meta">端口为默认猜测</span>}{locked && <span className="meta">已有运行配置，不覆盖</span>}{item.alreadyRegistered && !locked && <span className="meta">已登记，只补运行配置</span>}</span>
-            <code className="script-run-cmd" title={item.path}>{item.path}</code>
-            <span className="dev-inline-fields">
-              <input className="command-input" aria-label={`${item.name} 启动命令`} value={draft.command} disabled={!isDesktop || !!busy || locked} onChange={event => setDrafts(previous => ({ ...previous, [item.path]: { ...draft, command: event.target.value } }))}/>
-              <input className="command-input" aria-label={`${item.name} 端口`} inputMode="numeric" placeholder="端口" value={draft.port} disabled={!isDesktop || !!busy || locked} onChange={event => setDrafts(previous => ({ ...previous, [item.path]: { ...draft, port: event.target.value } }))}/>
-            </span>
-            {!!item.why?.length && <span className="meta">{item.why.join(' ')}</span>}
-          </span>
-        </label>;
-      })}</div>}
-      {review && <button type="button" className="secondary-button" disabled={!isDesktop || !!busy || scanBusy || ![...selected].some(path => review.candidates.some(item => item.path === path && !item.existingHasDev))} onClick={() => void registerSelected()}>{busy === 'import' ? <LoaderCircle size={13} className="spin"/> : <Check size={13}/>}登记所选</button>}
-    </section>
-    {!project ? <div className="panel-empty-placeholder"><Terminal size={32} strokeWidth={1.2}/><p>请先在左侧选择一个项目，或用上面的扫描登记新项目，再启动命令和查看日志。</p></div> : <>
-      <p className="meta">正常退出工作台会停止这里启动的全部进程组。仅支持 macOS / Unix；请以前台模式运行命令，不要使用自行脱离进程组的守护模式。进程存活不等于服务就绪。</p>
-      {error && <div className="error-banner" role="alert"><span>{error}</span><button className="text-button" disabled={!isDesktop || !!busy} onClick={() => void readServices(project.id)}>重新读取状态</button></div>}
-      <div className="dev-metrics-bar">
-        <div className="metrics-ports-group">
-          <Activity size={15}/>
-          <span className="toolbar-label">当前项目托管进程：</span>
-          <span>{loading ? '读取中…' : `${running} 个运行中 · ${readyCount} 个就绪`}</span>
-          <span className="meta">进程存活不代表服务已就绪</span>
-        </div>
-        {devPorts.length > 0 && (
-          <div className="listening-ports-group">
-            <span className="toolbar-label">本机开发端口（不限当前项目）：</span>
-            <div className="port-chips-list">
-              {devPorts.slice(0, 8).map(p => (
-                <button
-                  key={p.port}
-                  type="button"
-                  className="port-chip-btn"
-                  title={`在浏览器中打开 http://localhost:${p.port} (${p.process})`}
-                  onClick={() => void openUrl(`http://localhost:${p.port}`).catch(cause => { errorSource.current = 'action'; setError(String(cause)); })}
-                >
-                  <span className="port-dot active" />
-                  <span className="mono-subtle">:{p.port}</span>
-                  <span className="port-proc-name">({p.process})</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-        {stack.length > 0 && (
-          <div className="tech-badge-list">
-            <span className="tech-badge-label"><Cpu size={13}/>运行时：</span>
-            {stack.map(tech => <span key={tech} className="tech-badge">{tech}</span>)}
-          </div>
-        )}
+  return <div className="feature-panel-layout dev-workbench" aria-labelledby="dev-title">
+    <div className="workbench-header dev-header">
+      <div className="workbench-title-group">
+        <div className="large-tool-icon"><Terminal size={20} strokeWidth={1.5}/></div>
+        <h2 id="dev-title">运行</h2>
       </div>
-      {profile && <section className="panel-subcard"><div className="section-heading"><div className="subcard-title"><Play size={15}/><h3>登记的运行配置</h3></div><span className="meta">{profile.label}{group ? ` · 分组 ${group}` : ''}</span></div>
+      {stack.length > 0 && (
+        <div className="tech-badge-list" aria-label="项目技术栈">
+          {stack.map(tech => <span key={tech} className="tech-badge">{tech}</span>)}
+        </div>
+      )}
+    </div>
+    {!isDesktop && <p className="inline-error" role="status">浏览器预览无法启动或管理本机进程，请在桌面版使用。</p>}
+    {error && <div className="error-banner" role="alert"><span>{error}</span>{project && <button className="text-button" disabled={!isDesktop || !!busy} onClick={() => void readServices(project.id)}>重新读取状态</button>}</div>}
+    {project && <>
+      {profile && <section className="panel-subcard dev-launch-card" aria-label="登记的运行配置">
         {profile.profiles && Object.keys(profile.profiles).length > 0 && (
-          <div className="profile-presets-row" style={{ display: 'flex', gap: '8px', alignItems: 'center', margin: '8px 0' }}>
+          <div className="profile-presets-row">
             <span className="toolbar-label">环境预设：</span>
             {Object.entries(profile.profiles).map(([key, p]) => (
               <button
                 key={key}
                 type="button"
                 className={`secondary-button-sm ${activeProfileKey === key ? 'active-profile' : ''}`}
-                style={activeProfileKey === key ? { borderColor: 'var(--accent, #3b82f6)', fontWeight: 'bold' } : {}}
+                aria-pressed={activeProfileKey === key}
                 onClick={() => setSelectedProfile(key)}
               >
                 {p.label || key}
@@ -547,83 +486,20 @@ export default function DevPanel({
             ))}
           </div>
         )}
-        {(profile.java || profile.node || profile.javaHome || profile.nodeHome || profile.catalinaHome) && (
-          <div className="toolchain-info-row" style={{ margin: '6px 0', fontSize: '12px', color: 'var(--text-muted, #888)' }}>
-            {profile.java && <span style={{ marginRight: '12px' }}>Java: {profile.java}</span>}
-            {profile.javaHome && <span style={{ marginRight: '12px' }}>JAVA_HOME: {profile.javaHome}</span>}
-            {profile.catalinaHome && <span style={{ marginRight: '12px' }}>CATALINA_HOME: {profile.catalinaHome}</span>}
-            {profile.node && <span style={{ marginRight: '12px' }}>Node: {profile.node}</span>}
-            {profile.nodeHome && <span>Node Home: {profile.nodeHome}</span>}
-          </div>
-        )}
-        <div className="dev-settings-row" style={{ margin: '8px 0', display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '13px' }}>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              aria-label="首次启动自动检测并安装依赖"
-              checked={profile.autoInstall !== false}
-              disabled={!isDesktop || !!busy}
-              onChange={e => void handleToggleAutoInstall(e.target.checked)}
-            />
-            <span>首启自动检测并安装依赖{profile.autoInstall === false ? '（已关）' : ''}</span>
-          </label>
-          {(profile.kind.includes('maven') || profile.kind.includes('gradle')) && (
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                aria-label="Maven/Gradle 首启先拉取依赖"
-                checked={!!profile.pullDepsFirst}
-                disabled={!isDesktop || !!busy}
-                onChange={e => void handleTogglePullDepsFirst(e.target.checked)}
-              />
-              <span>首启可选先拉依赖（Maven / Gradle）</span>
-            </label>
-          )}
-          <div className="profile-config-row" style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: '2px 0 0 0', fontSize: '12px' }}>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                aria-label="异常退出自动重启"
-                checked={profile.autoRestart ?? false}
-                disabled={!isDesktop || !!busy}
-                onChange={async (e) => {
-                  const checked = e.target.checked;
-                  try {
-                    await updateProjectAutoRestart(project.id, checked, profile.maxRestarts ?? 3, profile.restartIntervalSecs ?? 60);
-                    if (onWorkspace) {
-                      const ws = await loadWorkspace();
-                      onWorkspace(ws);
-                    }
-                    onNotify?.(`已${checked ? '开启' : '关闭'}该项目异常退出自动重启`);
-                  } catch (err) {
-                    setError(String(err));
-                  }
-                }}
-              />
-              <span>异常退出自动重启（默认关闭）</span>
-            </label>
-            {profile.autoRestart && (
-              <span className="meta" style={{ color: 'var(--text-muted, #888)' }}>
-                上限 {profile.maxRestarts ?? 3} 次 · 窗口 {profile.restartIntervalSecs ?? 60}s
-              </span>
-            )}
-          </div>
-        </div>
         {registeredCommand ? (
           <div className="script-run-card">
             <div className="script-run-info">
               <div className="script-title-row">
                 <span className="script-run-name">{profile.label}</span>
-                {registeredRunning && <span className="mini-running-tag">进程运行中</span>}
+                {group && <span className="meta">分组 {group}</span>}
                 {inspection?.depsMissing && <span className="mini-running-tag" style={{ color: '#d97706', borderColor: '#d97706' }}>缺 node_modules</span>}
               </div>
               <code className="script-run-cmd" title={registeredCommand}>{registeredCommand}</code>
               <span className="meta">
                 {effectivePort ? `就绪端口 ${effectivePort}${profile.healthUrl ? ` · 探针 ${profile.healthUrl}` : ' · 端口可连接即就绪'}` : '未配置端口，进程存活不会标成就绪'}
-                {profile.autoRestart ? ` · 异常退出自动重启（上限 ${profile.maxRestarts ?? 3} 次）` : ' · 异常自动重启默认关闭'}
               </span>
             </div>
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <div className="dev-launch-actions">
               {inspection?.installCommand && (
                 <button
                   type="button"
@@ -642,7 +518,7 @@ export default function DevPanel({
               )}
               <button
                 type="button"
-                className="secondary-button-sm"
+                className={registeredRunning ? 'secondary-button' : 'primary-button'}
                 disabled={!isDesktop || !!busy || loading || registeredRunning}
                 onClick={() => run(registeredCommand, activeProfileKey)}
               >
@@ -654,44 +530,49 @@ export default function DevPanel({
         ) : <p className="subcard-empty">这条登记没有启动命令，不能从这里启动。</p>}
         {members.length > 1 && <div className="script-actions-pair"><span className="meta">同组 {members.length} 个：{members.map(item => item.name).join('、')}</span><button className="secondary-button-sm" disabled={!isDesktop || !!busy} onClick={() => void runGroup('start')}>{busy === 'group-start' ? <LoaderCircle size={13} className="spin"/> : <Play size={13}/>}启动同组</button><button className="secondary-button-sm" disabled={!isDesktop || !!busy} onClick={() => void runGroup('stop')}><Square size={13}/>{busy === 'group-stop' ? '停止中…' : '停止同组'}</button></div>}
       </section>}
-      {agentTerminalActions.length > 0 && (
-        <section className="panel-subcard agent-subcard">
-          <div className="section-heading">
-            <div className="subcard-title">
-              <Bot size={15} className="accent-color" />
-              <h3>Agent 终端执行现场</h3>
-              <span className="mini-badge-accent">{session?.agentName ?? 'Agent'}</span>
-            </div>
-            <span className="meta">{agentTerminalActions.length} 项自动化执行记录</span>
+      <section className="active-services-section" aria-label="托管进程">
+        <div className="section-heading">
+          <div className="subcard-title"><Activity size={15}/><h3>托管进程</h3></div>
+          <div className="dev-services-actions">
+            {!loading && <span className="meta">{running} 个运行中 · {readyCount} 个就绪</span>}
+            <button className="text-button" disabled={!isDesktop || !!busy} onClick={() => void readServices(project.id)}><RotateCw size={13}/>刷新</button>
           </div>
-          <div className="agent-action-mini-list">
-            {agentTerminalActions.slice(-4).reverse().map(act => (
-              <div key={act.id} className="agent-action-mini-item">
-                <div className="action-mini-header">
-                  <span className={`status-dot ${act.status === 'done' ? 'available' : act.status === 'running' ? 'active-pulse' : 'error'}`} />
-                  <code className="action-mini-cmd">{act.title}</code>
-                  <span className="mono-subtle">{act.timestamp}</span>
-                </div>
-                <div className="action-mini-detail mono-subtle">{act.detail}</div>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-      <section className="panel-subcard"><div className="section-heading"><div className="subcard-title"><Play size={15}/><h3>项目命令</h3></div><span className="meta">{scripts.length ? `${scripts.length} 个脚本` : '无 package 脚本'}</span></div>
-        {scripts.length ? <div className="script-grid">{scripts.map(script => {
-          const active = services.find(service => service.command === script.command && service.status === 'running');
-          return <div key={script.name} className="script-run-card"><div className="script-run-info"><div className="script-title-row"><span className="script-run-name">{script.name}</span>{active && <span className="mini-running-tag">进程运行中</span>}</div><code className="script-run-cmd" title={script.command}>{script.command}</code></div><button className="secondary-button-sm" disabled={!isDesktop || !!busy || loading || !!active} onClick={() => run(script.command)}>{busy === `start:${script.command}` ? <LoaderCircle size={13} className="spin"/> : <Play size={13}/>}<span>{active ? '已启动' : '运行'}</span></button></div>;
-        })}</div> : <p className="subcard-empty">项目根目录没有可用的 package 脚本。可在下方输入项目命令。</p>}
-        <form onSubmit={submit} className="command-input-row"><span className="prompt-symbol">$</span><input className="command-input" aria-label="项目命令" placeholder="输入项目命令，如 npm run dev 或 npm test" value={customCommand} onChange={event => setCustomCommand(event.target.value)} disabled={!isDesktop || !!busy}/><button type="submit" className="secondary-button" disabled={!isDesktop || !!busy || !customCommand.trim()}>{busy?.startsWith('start:') ? <LoaderCircle size={13} className="spin"/> : <Play size={13}/>}运行</button></form>
-      </section>
-      <section className="active-services-section"><div className="section-heading"><div className="subcard-title"><Activity size={15}/><h3>进程与执行记录</h3></div><button className="text-button" disabled={!isDesktop || !!busy} onClick={() => void readServices(project.id)}><RotateCw size={13}/>刷新</button></div>
-        {loading ? <p role="status">正在读取托管进程…</p> : services.length === 0 ? <p className="subcard-empty">这个项目还没有执行记录。运行后可在这里查看状态、停止、重启和读取日志。</p> : <div className="services-grid">{services.map(service => {
+        </div>
+        {loading ? <p role="status">正在读取托管进程…</p> : services.length === 0 ? <p className="subcard-empty">当前项目没有运行记录。</p> : <div className="services-grid">{services.map(service => {
           const label = primaryStatus(service);
           const detail = secondaryStatus(service);
           const dot = service.lifecycle === 'failed' || service.status === 'failed' ? 'error' : service.lifecycle === 'ready' ? 'available' : service.lifecycle === 'installing' || service.status === 'running' ? 'active-pulse' : '';
           const failed = isServiceFailed(service);
-          return <div key={service.id} className="service-card"><div className="service-header"><div className="service-title-info"><span className={`status-dot ${dot}`}/><span className="service-name">{label}</span>{service.activeProfile && <span className="mini-running-tag">预设: {service.activeProfile}</span>}{service.restartCount ? <span className="mini-running-tag">已重启 {service.restartCount} 次</span> : null}{detail && <span className="meta">{detail}</span>}<code className="service-cmd">{service.command}</code></div><div className="service-actions">{failed && <button type="button" className="service-btn copy-error" aria-label="复制报错" title="复制报错摘要到剪贴板" onClick={() => void copyError(service)}>{copied === `error:${service.id}` ? <Check size={13} /> : <Copy size={13} />}<span>{copied === `error:${service.id}` ? '已复制' : '复制报错'}</span></button>}<button className="service-btn" disabled={!isDesktop || !!busy} onClick={() => void mutate(`restart:${service.id}`, id => restartProjectService(id, service.id))}><RotateCw size={13}/>{busy === `restart:${service.id}` ? '重启中…' : '重启'}</button><button className="service-btn stop" disabled={!isDesktop || !!busy || service.status !== 'running'} onClick={() => void mutate(`stop:${service.id}`, id => stopProjectService(id, service.id))}><Square size={13}/>{busy === `stop:${service.id}` ? '停止中…' : '停止'}</button></div></div><div className="service-footer"><span className="meta">{service.pid ? `进程组 ${service.pid}` : `退出码 ${service.exitCode ?? '无（信号终止）'}`}</span><span className="meta">{service.port ? `端口 ${service.port}${service.portOpen ? ' 已通' : ' 未通'}` : '无就绪端口'}</span><span className="meta">启动于 {new Date(service.startedAt).toLocaleString()}</span>{service.restartCount ? <span className="meta">累计重启 {service.restartCount} 次</span> : null}</div>{service.failure && <p className="meta">{service.failure}</p>}</div>;
+          return <div key={service.id} className="service-card">
+            <div className="service-header">
+              <div className="service-title-info">
+                <span className={`status-dot ${dot}`}/>
+                <span className="service-name">{label}</span>
+                {detail && <span className="meta">{detail}</span>}
+                {service.activeProfile && <span className="mini-running-tag">预设：{service.activeProfile}</span>}
+                {!!service.restartCount && <span className="mini-running-tag">已重启 {service.restartCount} 次</span>}
+              </div>
+              <div className="service-actions">
+                {failed && <button type="button" className="service-btn copy-error" aria-label="复制报错" title="复制报错摘要到剪贴板" onClick={() => void copyError(service)}>
+                  {copied === `error:${service.id}` ? <Check size={13}/> : <Copy size={13}/>}
+                  <span>{copied === `error:${service.id}` ? '已复制' : '复制报错'}</span>
+                </button>}
+                <button className="service-btn" disabled={!isDesktop || !!busy} onClick={() => void mutate(`restart:${service.id}`, id => restartProjectService(id, service.id))}>
+                  <RotateCw size={13}/>{busy === `restart:${service.id}` ? '重启中…' : '重启'}
+                </button>
+                <button className="service-btn stop" disabled={!isDesktop || !!busy || service.status !== 'running'} onClick={() => void mutate(`stop:${service.id}`, id => stopProjectService(id, service.id))}>
+                  <Square size={13}/>{busy === `stop:${service.id}` ? '停止中…' : '停止'}
+                </button>
+              </div>
+            </div>
+            <code className="service-cmd" title={service.command}>{service.command}</code>
+            <div className="service-footer">
+              <span className="meta">{service.pid ? `进程组 ${service.pid}` : `退出码 ${service.exitCode ?? '无（信号终止）'}`}</span>
+              <span className="meta">{service.port ? `端口 ${service.port}${service.portOpen ? ' 已通' : ' 未通'}` : '无就绪端口'}</span>
+              <span className="meta">启动于 {new Date(service.startedAt).toLocaleString()}</span>
+            </div>
+            {service.failure && <p className="meta">{service.failure}</p>}
+          </div>;
         })}</div>}
       </section>
       <section className="terminal-console-card">
@@ -700,7 +581,7 @@ export default function DevPanel({
             <Terminal size={14}/>
             <span>日志尾部</span>
           </div>
-          <div className="terminal-actions" style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <div className="terminal-actions">
             <button
               type="button"
               className="terminal-btn"
@@ -712,12 +593,12 @@ export default function DevPanel({
               {exporting ? <LoaderCircle size={13} className="spin" /> : <Download size={13} />}
               <span>{exporting ? '导出中…' : '导出诊断包'}</span>
             </button>
-            <button className="terminal-btn" onClick={() => setHints(value => !value)}>
+            <button className="terminal-btn" aria-expanded={hints} aria-controls={hints ? hintsId : undefined} onClick={() => setHints(value => !value)}>
               {hints ? '收起排查提示' : '本地排查提示'}
             </button>
           </div>
         </div>
-        {hints && <div className="ai-diagnostic-banner"><p>以下是固定排查提示，没有调用 AI，也未自动诊断你的项目。</p><ol><li>根据真实退出码和错误日志定位失败步骤。</li><li>核对命令、工作目录、依赖与环境变量。</li><li>仅在日志提示端口冲突时核对端口占用。</li></ol></div>}
+        {hints && <div id={hintsId} className="ai-diagnostic-banner"><p>以下是固定排查提示，没有调用 AI，也未自动诊断你的项目。</p><ol><li>根据真实退出码和错误日志定位失败步骤。</li><li>核对命令、工作目录、依赖与环境变量。</li><li>仅在日志提示端口冲突时核对端口占用。</li></ol></div>}
         <div className="terminal-body">{services.length === 0 ? (
           recentLog ? (
             <div className="terminal-log-entry">
@@ -745,6 +626,172 @@ export default function DevPanel({
         })}</div>
       </section>
     </>}
+    <section className="dev-tools" aria-labelledby="dev-tools-title">
+      <h3 id="dev-tools-title">项目工具</h3>
+      <div className="dev-tools-list">
+        <details className="dev-disclosure" open={!profile}>
+          <summary><Search size={15}/><span>扫描并登记项目</span><ChevronDown size={15} className="dev-disclosure-chevron"/></summary>
+          <div className="dev-disclosure-body">
+            <p className="meta">向下查看有限层数，跳过 node_modules、target 等目录。已有运行配置的目录不会被覆盖。</p>
+            <form className="command-input-row" onSubmit={event => { event.preventDefault(); void scanDirectory(); }}>
+              <span className="prompt-symbol">/</span>
+              <input className="command-input" aria-label="要扫描的目录" placeholder="要扫描的目录" value={scanPath} onChange={event => setScanPath(event.target.value)} disabled={!isDesktop || scanBusy}/>
+              <input className="command-input" aria-label="扫描层数" inputMode="numeric" value={scanDepth} onChange={event => setScanDepth(event.target.value)} disabled={!isDesktop || scanBusy}/>
+              <button type="button" className="secondary-button" disabled={!isDesktop || scanBusy} onClick={() => void pickScanDirectory()}><FolderOpen size={13}/>选择</button>
+              <button type="submit" className="secondary-button" disabled={!isDesktop || scanBusy || !scanPath.trim()}>{scanBusy ? <LoaderCircle size={13} className="spin"/> : <Search size={13}/>}扫描</button>
+            </form>
+            <button type="button" className="secondary-button" disabled={!isDesktop || scanBusy} onClick={() => void reviewTongyunDevRegistry()}><Download size={13}/>从 tongyun-dev 读取</button>
+            {review && <p className="meta">{review.summary}</p>}
+            {!!review?.skipped?.length && <p className="meta">{review.skipped.slice(0, 10).map(item => `${item.name}：${item.reason}`).join('；')}{review.skipped.length > 10 ? `；另有 ${review.skipped.length - 10} 条已跳过` : ''}</p>}
+            {review && review.candidates.length === 0 && <p className="subcard-empty">没有识别到可登记的项目。</p>}
+            {review && review.candidates.length > 0 && <div className="dev-candidate-list">{review.candidates.map(item => {
+              const draft = drafts[item.path] ?? { command: item.command, port: item.port ? String(item.port) : '' };
+              const locked = !!item.existingHasDev;
+              return <label key={item.path} className="dev-candidate">
+                <input type="checkbox" checked={selected.has(item.path)} disabled={!isDesktop || !!busy || locked} onChange={event => setSelected(previous => {
+                  const next = new Set(previous);
+                  if (event.target.checked) next.add(item.path); else next.delete(item.path);
+                  return next;
+                })} aria-label={`选择 ${item.name}`}/>
+                <span className="dev-candidate-fields">
+                  <span className="script-title-row"><span className="script-run-name">{item.name}</span><span className="mini-running-tag">{item.label}</span><span className="meta">{confidenceLabel[item.confidence] ?? item.confidence}</span>{item.portGuessed && <span className="meta">端口为默认猜测</span>}{locked && <span className="meta">已有运行配置，不覆盖</span>}{item.alreadyRegistered && !locked && <span className="meta">已登记，只补运行配置</span>}</span>
+                  <code className="script-run-cmd" title={item.path}>{item.path}</code>
+                  <span className="dev-inline-fields">
+                    <input className="command-input" aria-label={`${item.name} 启动命令`} value={draft.command} disabled={!isDesktop || !!busy || locked} onChange={event => setDrafts(previous => ({ ...previous, [item.path]: { ...draft, command: event.target.value } }))}/>
+                    <input className="command-input" aria-label={`${item.name} 端口`} inputMode="numeric" placeholder="端口" value={draft.port} disabled={!isDesktop || !!busy || locked} onChange={event => setDrafts(previous => ({ ...previous, [item.path]: { ...draft, port: event.target.value } }))}/>
+                  </span>
+                  {!!item.why?.length && <span className="meta">{item.why.join(' ')}</span>}
+                </span>
+              </label>;
+            })}</div>}
+            {review && <button type="button" className="secondary-button" disabled={!isDesktop || !!busy || scanBusy || ![...selected].some(path => review.candidates.some(item => item.path === path && !item.existingHasDev))} onClick={() => void registerSelected()}>{busy === 'import' ? <LoaderCircle size={13} className="spin"/> : <Check size={13}/>}登记所选</button>}
+          </div>
+        </details>
+        {project && <>
+          <details className="dev-disclosure" open={!profile}>
+            <summary><Terminal size={15}/><span>项目命令</span><ChevronDown size={15} className="dev-disclosure-chevron"/></summary>
+            <div className="dev-disclosure-body">
+              {scripts.length ? <div className="script-grid">{scripts.map(script => {
+                const active = services.find(service => service.command === script.command && service.status === 'running');
+                return <div key={script.name} className="script-run-card"><div className="script-run-info"><div className="script-title-row"><span className="script-run-name">{script.name}</span>{active && <span className="mini-running-tag">进程运行中</span>}</div><code className="script-run-cmd" title={script.command}>{script.command}</code></div><button className="secondary-button-sm" disabled={!isDesktop || !!busy || loading || !!active} onClick={() => run(script.command)}>{busy === `start:${script.command}` ? <LoaderCircle size={13} className="spin"/> : <Play size={13}/>}<span>{active ? '已启动' : '运行'}</span></button></div>;
+              })}</div> : <p className="subcard-empty">项目根目录没有可用的 package 脚本。可在下方输入项目命令。</p>}
+              <form onSubmit={submit} className="command-input-row"><span className="prompt-symbol">$</span><input className="command-input" aria-label="项目命令" placeholder="输入项目命令，如 npm run dev 或 npm test" value={customCommand} onChange={event => setCustomCommand(event.target.value)} disabled={!isDesktop || !!busy}/><button type="submit" className="secondary-button" disabled={!isDesktop || !!busy || !customCommand.trim()}>{busy?.startsWith('start:') ? <LoaderCircle size={13} className="spin"/> : <Play size={13}/>}运行</button></form>
+            </div>
+          </details>
+          {profile && <details className="dev-disclosure">
+            <summary><Cpu size={15}/><span>运行设置</span><ChevronDown size={15} className="dev-disclosure-chevron"/></summary>
+            <div className="dev-disclosure-body">
+              {(profile.java || profile.node || profile.javaHome || profile.nodeHome || profile.catalinaHome) && (
+                <div className="toolchain-info-row meta">
+                  {profile.java && <span>Java: {profile.java}</span>}
+                  {profile.javaHome && <span>JAVA_HOME: {profile.javaHome}</span>}
+                  {profile.catalinaHome && <span>CATALINA_HOME: {profile.catalinaHome}</span>}
+                  {profile.node && <span>Node: {profile.node}</span>}
+                  {profile.nodeHome && <span>Node Home: {profile.nodeHome}</span>}
+                </div>
+              )}
+              <div className="dev-settings-row">
+                <label>
+                  <input
+                    type="checkbox"
+                    aria-label="首次启动自动检测并安装依赖"
+                    checked={profile.autoInstall !== false}
+                    disabled={!isDesktop || !!busy}
+                    onChange={e => void handleToggleAutoInstall(e.target.checked)}
+                  />
+                  <span>首启自动检测并安装依赖{profile.autoInstall === false ? '（已关）' : ''}</span>
+                </label>
+                {(profile.kind.includes('maven') || profile.kind.includes('gradle')) && (
+                  <label>
+                    <input
+                      type="checkbox"
+                      aria-label="Maven/Gradle 首启先拉取依赖"
+                      checked={!!profile.pullDepsFirst}
+                      disabled={!isDesktop || !!busy}
+                      onChange={e => void handleTogglePullDepsFirst(e.target.checked)}
+                    />
+                    <span>首启可选先拉依赖（Maven / Gradle）</span>
+                  </label>
+                )}
+                <div className="profile-config-row">
+                  <label>
+                    <input
+                      type="checkbox"
+                      aria-label="异常退出自动重启"
+                      checked={profile.autoRestart ?? false}
+                      disabled={!isDesktop || !!busy}
+                      onChange={async (e) => {
+                        const checked = e.target.checked;
+                        try {
+                          await updateProjectAutoRestart(project.id, checked, profile.maxRestarts ?? 3, profile.restartIntervalSecs ?? 60);
+                          if (onWorkspace) {
+                            const ws = await loadWorkspace();
+                            onWorkspace(ws);
+                          }
+                          onNotify?.(`已${checked ? '开启' : '关闭'}该项目异常退出自动重启`);
+                        } catch (err) {
+                          setError(String(err));
+                        }
+                      }}
+                    />
+                    <span>异常退出自动重启（默认关闭）</span>
+                  </label>
+                  {profile.autoRestart && (
+                    <span className="meta">
+                      上限 {profile.maxRestarts ?? 3} 次 · 窗口 {profile.restartIntervalSecs ?? 60}s
+                    </span>
+                  )}
+                </div>
+              </div>
+              <p className="meta">请以前台模式运行服务。退出工作台会停止由它启动的进程。</p>
+            </div>
+          </details>}
+          {devPorts.length > 0 && (
+            <details className="dev-disclosure">
+              <summary><Activity size={15}/><span>本机监听端口</span><ChevronDown size={15} className="dev-disclosure-chevron"/></summary>
+              <div className="dev-disclosure-body">
+                <p className="meta">包含 Studio 之外的本机进程。</p>
+                <div className="port-chips-list">
+                  {devPorts.slice(0, 8).map(p => (
+                    <button
+                      key={p.port}
+                      type="button"
+                      className="port-chip-btn"
+                      title={`在浏览器中打开 http://localhost:${p.port} (${p.process})`}
+                      onClick={() => void openUrl(`http://localhost:${p.port}`).catch(cause => { errorSource.current = 'action'; setError(String(cause)); })}
+                    >
+                      <span className="port-dot active" />
+                      <span className="mono-subtle">:{p.port}</span>
+                      <span className="port-proc-name">({p.process})</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </details>
+          )}
+          {agentTerminalActions.length > 0 && (
+            <details className="dev-disclosure">
+              <summary><Bot size={15}/><span>Agent 终端记录</span><span className="meta">{agentTerminalActions.length} 项</span><ChevronDown size={15} className="dev-disclosure-chevron"/></summary>
+              <div className="dev-disclosure-body">
+              <p className="meta">{session?.agentName ?? 'Agent'}</p>
+              <div className="agent-action-mini-list">
+                {agentTerminalActions.slice(-4).reverse().map(act => (
+                  <div key={act.id} className="agent-action-mini-item">
+                    <div className="action-mini-header">
+                      <span className={`status-dot ${act.status === 'done' ? 'available' : act.status === 'running' ? 'active-pulse' : 'error'}`} />
+                      <code className="action-mini-cmd">{act.title}</code>
+                      <span className="mono-subtle">{act.timestamp}</span>
+                    </div>
+                    <div className="action-mini-detail mono-subtle">{act.detail}</div>
+                  </div>
+                ))}
+              </div>
+              </div>
+            </details>
+          )}
+        </>}
+      </div>
+    </section>
   </div>;
 }
 
